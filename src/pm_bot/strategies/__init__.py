@@ -1,0 +1,2 @@
+"""Category-local strategies."""
+

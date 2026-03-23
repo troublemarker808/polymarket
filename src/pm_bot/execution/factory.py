@@ -1,0 +1,56 @@
+"""Execution adapter factory.
+
+This keeps runtime wiring separate from adapter implementations so paper and live
+execution can evolve without touching strategies or orchestrators.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+import os
+from typing import Any
+
+from pm_bot.core.settings import BotSettings
+from pm_bot.core.types import RuntimeMode
+from pm_bot.execution.paper_adapter import PaperExecutionAdapter
+from pm_bot.execution.polymarket_live import (
+    PolymarketLiveExecutionAdapter,
+    describe_live_execution_configuration,
+)
+
+
+def build_execution_adapter(
+    settings: BotSettings,
+    *,
+    env: Mapping[str, str] | None = None,
+    client_factory: Any = None,
+) -> object:
+    """Build the configured execution adapter."""
+
+    if settings.app.mode != RuntimeMode.LIVE:
+        return PaperExecutionAdapter()
+
+    return PolymarketLiveExecutionAdapter.from_settings(
+        settings=settings.polymarket,
+        ttl_seconds=settings.trading.default_quote_ttl_seconds,
+        env=env,
+        client_factory=client_factory,
+    )
+
+
+def describe_execution_configuration(
+    settings: BotSettings,
+    env: Mapping[str, str] | None = None,
+) -> dict[str, object]:
+    """Summarize how execution will be wired for the current runtime mode."""
+
+    live_summary = describe_live_execution_configuration(settings.polymarket, env or os.environ)
+    adapter_name = "paper"
+    if settings.app.mode == RuntimeMode.LIVE:
+        adapter_name = "polymarket_live" if settings.polymarket.allow_live_orders else "blocked"
+
+    return {
+        "mode": settings.app.mode.value,
+        "adapter": adapter_name,
+        **live_summary,
+    }

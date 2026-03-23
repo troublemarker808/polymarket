@@ -1,0 +1,322 @@
+"""Runtime state used by risk controls and the operator dashboard."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any
+
+from pm_bot.core.types import Category
+
+
+class RuntimeStatus(str, Enum):
+    RUNNING = "running"
+    HALTED = "halted"
+
+
+class HaltReason(str, Enum):
+    NONE = "none"
+    CONSECUTIVE_LOSSES = "consecutive_losses"
+    DAILY_DRAWDOWN = "daily_drawdown"
+    STALE_DATA = "stale_data"
+    DATA_SOURCE_FAILURE = "data_source_failure"
+    MANUAL_REVIEW = "manual_review"
+
+
+@dataclass(slots=True)
+class PositionState:
+    market_id: str
+    token_id: str
+    category: Category
+    strategy_id: str
+    notional: float
+    opened_at: datetime
+    shares: float | None = None
+    average_entry_price: float | None = None
+    mark_price: float | None = None
+    unrealized_pnl: float = 0.0
+
+
+@dataclass(slots=True)
+class PendingOrderState:
+    order_id: str
+    market_id: str
+    token_id: str
+    category: Category
+    strategy_id: str
+    side: str
+    limit_price: float
+    requested_shares: float
+    requested_notional: float
+    matched_shares: float
+    matched_notional: float
+    fees_paid: float
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(slots=True)
+class ClosedTrade:
+    market_id: str
+    token_id: str
+    category: Category
+    strategy_id: str
+    realized_pnl: float
+    fees_paid: float
+    closed_at: datetime
+
+    @property
+    def net_pnl(self) -> float:
+        return self.realized_pnl - self.fees_paid
+
+
+@dataclass(slots=True)
+class DashboardState:
+    total_equity: float
+    today_pnl: float
+    open_positions: tuple[PositionState, ...]
+    pending_orders: tuple[PendingOrderState, ...]
+    status: RuntimeStatus
+    halt_reason: HaltReason
+    halt_message: str | None
+    last_alert: str | None
+    daily_order_count: int
+    daily_order_soft_limit_reached: bool
+
+
+@dataclass(slots=True)
+class RuntimeState:
+    starting_equity: float
+    day_starting_equity: float
+    realized_pnl_today: float = 0.0
+    unrealized_pnl: float = 0.0
+    consecutive_losses: int = 0
+    orders_today: int = 0
+    open_positions: dict[str, PositionState] = field(default_factory=dict)
+    pending_orders: dict[str, PendingOrderState] = field(default_factory=dict)
+    status: RuntimeStatus = RuntimeStatus.RUNNING
+    halt_reason: HaltReason = HaltReason.NONE
+    halt_message: str | None = None
+    last_alert: str | None = None
+    updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+
+    @property
+    def total_equity(self) -> float:
+        return self.day_starting_equity + self.realized_pnl_today + self.unrealized_pnl
+
+    @property
+    def today_pnl(self) -> float:
+        return self.realized_pnl_today + self.unrealized_pnl
+
+    @property
+    def open_position_count(self) -> int:
+        return len(self.open_positions)
+
+    @property
+    def pending_order_count(self) -> int:
+        return len(self.pending_orders)
+
+    @property
+    def active_market_count(self) -> int:
+        return len(
+            set(self.open_positions).union(
+                pending.market_id for pending in self.pending_orders.values()
+            )
+        )
+
+    @property
+    def daily_drawdown_pct(self) -> float:
+        if self.day_starting_equity <= 0:
+            return 0.0
+
+        drawdown = max(0.0, self.day_starting_equity - self.total_equity)
+        return (drawdown / self.day_starting_equity) * 100
+
+    def touch(self) -> None:
+        self.updated_at = datetime.now(tz=timezone.utc)
+
+    def snapshot(self, soft_limit: int) -> DashboardState:
+        return DashboardState(
+            total_equity=self.total_equity,
+            today_pnl=self.today_pnl,
+            open_positions=tuple(self.open_positions.values()),
+            pending_orders=tuple(self.pending_orders.values()),
+            status=self.status,
+            halt_reason=self.halt_reason,
+            halt_message=self.halt_message,
+            last_alert=self.last_alert,
+            daily_order_count=self.orders_today,
+            daily_order_soft_limit_reached=self.orders_today >= soft_limit,
+        )
+
+
+def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
+    return {
+        "starting_equity": state.starting_equity,
+        "day_starting_equity": state.day_starting_equity,
+        "realized_pnl_today": state.realized_pnl_today,
+        "unrealized_pnl": state.unrealized_pnl,
+        "consecutive_losses": state.consecutive_losses,
+        "orders_today": state.orders_today,
+        "open_positions": {
+            market_id: position_state_to_dict(position)
+            for market_id, position in state.open_positions.items()
+        },
+        "pending_orders": {
+            order_id: pending_order_state_to_dict(order)
+            for order_id, order in state.pending_orders.items()
+        },
+        "status": state.status.value,
+        "halt_reason": state.halt_reason.value,
+        "halt_message": state.halt_message,
+        "last_alert": state.last_alert,
+        "updated_at": state.updated_at.isoformat(),
+    }
+
+
+def runtime_state_from_dict(payload: dict[str, Any]) -> RuntimeState:
+    return RuntimeState(
+        starting_equity=float(payload["starting_equity"]),
+        day_starting_equity=float(payload["day_starting_equity"]),
+        realized_pnl_today=float(payload.get("realized_pnl_today", 0.0)),
+        unrealized_pnl=float(payload.get("unrealized_pnl", 0.0)),
+        consecutive_losses=int(payload.get("consecutive_losses", 0)),
+        orders_today=int(payload.get("orders_today", 0)),
+        open_positions={
+            market_id: position_state_from_dict(position_payload)
+            for market_id, position_payload in dict(payload.get("open_positions", {})).items()
+        },
+        pending_orders={
+            order_id: pending_order_state_from_dict(order_payload)
+            for order_id, order_payload in dict(payload.get("pending_orders", {})).items()
+        },
+        status=RuntimeStatus(str(payload.get("status", RuntimeStatus.RUNNING.value))),
+        halt_reason=HaltReason(str(payload.get("halt_reason", HaltReason.NONE.value))),
+        halt_message=payload.get("halt_message"),
+        last_alert=payload.get("last_alert"),
+        updated_at=_parse_datetime(payload.get("updated_at")) or datetime.now(tz=timezone.utc),
+    )
+
+
+def position_state_to_dict(position: PositionState) -> dict[str, Any]:
+    return {
+        "market_id": position.market_id,
+        "token_id": position.token_id,
+        "category": position.category.value,
+        "strategy_id": position.strategy_id,
+        "notional": position.notional,
+        "shares": position.shares,
+        "average_entry_price": position.average_entry_price,
+        "mark_price": position.mark_price,
+        "unrealized_pnl": position.unrealized_pnl,
+        "opened_at": position.opened_at.isoformat(),
+    }
+
+
+def pending_order_state_to_dict(order: PendingOrderState) -> dict[str, Any]:
+    return {
+        "order_id": order.order_id,
+        "market_id": order.market_id,
+        "token_id": order.token_id,
+        "category": order.category.value,
+        "strategy_id": order.strategy_id,
+        "side": order.side,
+        "limit_price": order.limit_price,
+        "requested_shares": order.requested_shares,
+        "requested_notional": order.requested_notional,
+        "matched_shares": order.matched_shares,
+        "matched_notional": order.matched_notional,
+        "fees_paid": order.fees_paid,
+        "status": order.status,
+        "created_at": order.created_at.isoformat(),
+        "updated_at": order.updated_at.isoformat(),
+    }
+
+
+def position_state_from_dict(payload: dict[str, Any]) -> PositionState:
+    return PositionState(
+        market_id=str(payload["market_id"]),
+        token_id=str(payload["token_id"]),
+        category=Category(str(payload["category"])),
+        strategy_id=str(payload["strategy_id"]),
+        notional=float(payload["notional"]),
+        opened_at=_parse_datetime(payload.get("opened_at")) or datetime.now(tz=timezone.utc),
+        shares=_parse_optional_float(payload.get("shares")),
+        average_entry_price=_parse_optional_float(payload.get("average_entry_price")),
+        mark_price=_parse_optional_float(payload.get("mark_price")),
+        unrealized_pnl=float(payload.get("unrealized_pnl", 0.0)),
+    )
+
+
+def pending_order_state_from_dict(payload: dict[str, Any]) -> PendingOrderState:
+    return PendingOrderState(
+        order_id=str(payload["order_id"]),
+        market_id=str(payload["market_id"]),
+        token_id=str(payload["token_id"]),
+        category=Category(str(payload["category"])),
+        strategy_id=str(payload["strategy_id"]),
+        side=str(payload.get("side", "")),
+        limit_price=float(payload["limit_price"]),
+        requested_shares=float(payload["requested_shares"]),
+        requested_notional=float(payload["requested_notional"]),
+        matched_shares=float(payload.get("matched_shares", 0.0)),
+        matched_notional=float(payload.get("matched_notional", 0.0)),
+        fees_paid=float(payload.get("fees_paid", 0.0)),
+        status=str(payload.get("status", "")),
+        created_at=_parse_datetime(payload.get("created_at")) or datetime.now(tz=timezone.utc),
+        updated_at=_parse_datetime(payload.get("updated_at")) or datetime.now(tz=timezone.utc),
+    )
+
+
+def dashboard_state_to_lines(dashboard: DashboardState) -> list[str]:
+    lines = [
+        f"total_equity={dashboard.total_equity:.2f}",
+        f"today_pnl={dashboard.today_pnl:.2f}",
+        f"status={dashboard.status.value}",
+        f"halt_reason={dashboard.halt_reason.value}",
+        f"halt_message={dashboard.halt_message or ''}",
+        f"last_alert={dashboard.last_alert or ''}",
+        f"open_positions={len(dashboard.open_positions)}",
+        f"pending_orders={len(dashboard.pending_orders)}",
+        f"daily_order_count={dashboard.daily_order_count}",
+        f"daily_order_soft_limit_reached={str(dashboard.daily_order_soft_limit_reached).lower()}",
+    ]
+    for position in dashboard.open_positions:
+        lines.append(
+            "position="
+            + f"{position.market_id}:{position.category.value}:notional={position.notional:.2f}:"
+            + f"shares={_format_optional_float(position.shares)}:"
+            + f"avg={_format_optional_float(position.average_entry_price)}:"
+            + f"mark={_format_optional_float(position.mark_price)}:"
+            + f"unrealized={position.unrealized_pnl:.2f}"
+        )
+    for order in dashboard.pending_orders:
+        lines.append(
+            "pending_order="
+            + f"{order.order_id}:{order.market_id}:{order.category.value}:{order.side}:status={order.status}:"
+            + f"limit={order.limit_price:.6f}:"
+            + f"req_shares={order.requested_shares:.6f}:"
+            + f"matched_shares={order.matched_shares:.6f}:"
+            + f"notional={order.requested_notional:.2f}"
+        )
+    return lines
+
+
+def _parse_datetime(value: Any) -> datetime | None:
+    if value is None or value == "":
+        return None
+    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+
+
+def _parse_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return float(value)
+
+
+def _format_optional_float(value: float | None) -> str:
+    if value is None:
+        return ""
+    return f"{value:.6f}"

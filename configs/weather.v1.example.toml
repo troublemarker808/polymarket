@@ -1,0 +1,15 @@
+category = "weather"
+enabled_strategies = ["weather.ensemble", "weather.threshold"]
+
+[markets]
+regions = ["us"]
+market_types = ["temperature", "precipitation"]
+min_liquidity_score = 0.5
+
+[strategy.ensemble]
+min_edge_bps = 400
+model_runs_utc = ["00:00", "06:00", "12:00", "18:00"]
+
+[strategy.threshold]
+min_strip_inconsistency_bps = 300
+use_official_forecast_inside_hours = 48

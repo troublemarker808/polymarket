@@ -1,0 +1,59 @@
+"""Translate approved signals into executable order intents."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from pm_bot.core.types import MarketSnapshot, OrderAction, OrderIntent, SignalSide, StrategySignal
+
+
+def signal_to_order_intent(
+    signal: StrategySignal,
+    snapshot: MarketSnapshot,
+    default_size: float,
+) -> OrderIntent | None:
+    """Map a strategy signal into a normalized order intent.
+
+    Price and size selection remain outside the strategy package so execution logic
+    can change independently of alpha logic.
+    """
+
+    if signal.side == SignalSide.HOLD:
+        return None
+
+    if signal.target_price is not None:
+        price = signal.target_price
+    elif signal.side == SignalSide.BUY_YES:
+        price = snapshot.best_ask_yes or signal.fair_probability
+    elif signal.side == SignalSide.BUY_NO:
+        price = snapshot.best_ask_no or (1 - signal.fair_probability)
+    elif signal.side == SignalSide.SELL_YES:
+        price = snapshot.best_bid_yes or signal.fair_probability
+    else:
+        price = snapshot.best_bid_no or (1 - signal.fair_probability)
+
+    notional = signal.target_size or default_size
+    if price <= 0:
+        return None
+
+    size = round(notional / price, 6)
+    if size <= 0:
+        return None
+
+    token_id = signal.token_id
+    if signal.side in {SignalSide.BUY_NO, SignalSide.SELL_NO}:
+        token_id = snapshot.metadata.get("no_token_id", token_id)
+
+    return OrderIntent(
+        strategy_id=signal.strategy_id,
+        category=signal.category,
+        market_id=signal.market_id,
+        token_id=token_id,
+        action=OrderAction.PLACE,
+        side=signal.side,
+        price=price,
+        size=size,
+        time_in_force=signal.time_in_force,
+        created_at=datetime.now(tz=timezone.utc),
+        notional=notional,
+    )

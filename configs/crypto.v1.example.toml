@@ -1,0 +1,18 @@
+category = "crypto"
+enabled_strategies = ["crypto.surface", "crypto.maker"]
+
+[markets]
+assets = ["BTC", "ETH"]
+expiries = ["15m", "1h", "4h"]
+min_liquidity_score = 0.8
+
+[strategy.surface]
+min_edge_bps = 250
+max_curve_mispricing_bps = 1500
+exit_edge_bps = 75
+stop_loss_bps = 250
+
+[strategy.maker]
+min_spread_bps = 100
+inventory_skew_strength = 0.5
+quote_ttl_seconds = 10
