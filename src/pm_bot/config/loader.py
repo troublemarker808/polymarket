@@ -6,6 +6,7 @@ from pathlib import Path
 import tomllib
 from typing import Any
 
+from pm_bot.config.env import load_local_env
 from pm_bot.core.settings import BotSettings, CategoryRuntimeConfig
 from pm_bot.core.types import Category
 
@@ -59,7 +60,13 @@ def load_settings(
 
 
 def load_settings_from_directory(config_dir: str | Path) -> BotSettings:
+    load_local_env()
     config_root = Path(config_dir)
-    base_config_path = config_root / "base.example.toml"
-    category_config_paths = sorted(config_root.glob("*.v1.example.toml"))
+    base_config_path = config_root / "base.local.toml"
+    if not base_config_path.exists():
+        base_config_path = config_root / "base.example.toml"
+
+    category_config_paths = sorted(config_root.glob("*.v1.toml"))
+    if not category_config_paths:
+        category_config_paths = sorted(config_root.glob("*.v1.example.toml"))
     return load_settings(base_config_path=base_config_path, category_config_paths=category_config_paths)

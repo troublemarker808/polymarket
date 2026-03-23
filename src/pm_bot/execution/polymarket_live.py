@@ -82,7 +82,7 @@ def resolve_polymarket_credentials(
 ) -> ResolvedPolymarketCredentials:
     """Resolve trading credentials from environment variables."""
 
-    env_map = env or os.environ
+    env_map = os.environ if env is None else env
     private_key = env_map.get(settings.private_key_env, "").strip()
     if not private_key:
         raise ValueError(f"Missing required env var: {settings.private_key_env}")
@@ -113,7 +113,7 @@ def describe_live_execution_configuration(
 ) -> dict[str, object]:
     """Summarize whether live execution is configured safely enough to enable."""
 
-    env_map = env or os.environ
+    env_map = os.environ if env is None else env
     dependency_ok = live_dependency_available()
     private_key_present = bool(env_map.get(settings.private_key_env, "").strip())
     api_values = [

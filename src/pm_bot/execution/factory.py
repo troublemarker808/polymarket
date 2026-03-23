@@ -44,7 +44,10 @@ def describe_execution_configuration(
 ) -> dict[str, object]:
     """Summarize how execution will be wired for the current runtime mode."""
 
-    live_summary = describe_live_execution_configuration(settings.polymarket, env or os.environ)
+    live_summary = describe_live_execution_configuration(
+        settings.polymarket,
+        os.environ if env is None else env,
+    )
     adapter_name = "paper"
     if settings.app.mode == RuntimeMode.LIVE:
         adapter_name = "polymarket_live" if settings.polymarket.allow_live_orders else "blocked"

@@ -8,6 +8,8 @@ build/
 *.egg-info/
 .env
 .env.*
+configs/*.local.toml
+configs-live/
 data/*
 !data/research/
 !data/research/sample_snapshots.jsonl
