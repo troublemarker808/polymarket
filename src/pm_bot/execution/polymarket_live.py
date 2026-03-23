@@ -15,7 +15,7 @@ import os
 from typing import Any, Protocol
 
 from pm_bot.core.settings import PolymarketSettings
-from pm_bot.core.types import MarketSnapshot, OrderAction, OrderIntent, SignalSide
+from pm_bot.core.types import Category, MarketSnapshot, OrderAction, OrderIntent, SignalSide
 from pm_bot.execution.order_tracker import OrderLifecycleTracker
 from pm_bot.execution.position_ledger import LivePosition, PositionLedger
 from pm_bot.adapters.polymarket.geoblock_client import GeoblockStatus, fetch_geoblock_status_sync
@@ -55,6 +55,7 @@ class ResolvedPolymarketCredentials:
     api_key: str | None
     api_secret: str | None
     api_passphrase: str | None
+    account_addresses: frozenset[str]
 
     @property
     def has_api_credentials(self) -> bool:
@@ -104,6 +105,10 @@ def resolve_polymarket_credentials(
         api_key=api_key,
         api_secret=api_secret,
         api_passphrase=api_passphrase,
+        account_addresses=_resolve_account_addresses(
+            private_key=private_key,
+            funder=funder,
+        ),
     )
 
 
@@ -163,6 +168,7 @@ class PolymarketLiveExecutionAdapter:
         parse_order_id: Callable[[object], str] = None,
         tracker: OrderLifecycleTracker | None = None,
         position_ledger: PositionLedger | None = None,
+        account_addresses: frozenset[str] = frozenset(),
     ) -> None:
         self.client = client
         self.ttl_seconds = ttl_seconds
@@ -173,6 +179,11 @@ class PolymarketLiveExecutionAdapter:
         self.parse_order_id = parse_order_id or _extract_order_id
         self.tracker = tracker or OrderLifecycleTracker()
         self.position_ledger = position_ledger or PositionLedger()
+        self.account_addresses = frozenset(
+            normalized
+            for value in account_addresses
+            if (normalized := _normalize_address(value))
+        )
 
     @classmethod
     def from_settings(
@@ -272,6 +283,7 @@ class PolymarketLiveExecutionAdapter:
                 build_order_args=build_order_args,
                 resolve_order_type=resolve_order_type,
                 user_channel_auth=user_channel_auth,
+                account_addresses=credentials.account_addresses,
             )
 
         client = client_factory(
@@ -324,6 +336,7 @@ class PolymarketLiveExecutionAdapter:
             build_order_args=build_order_args,
             resolve_order_type=resolve_order_type,
             user_channel_auth=user_channel_auth,
+            account_addresses=credentials.account_addresses,
         )
 
     async def submit(self, intent: OrderIntent) -> str:
@@ -368,11 +381,74 @@ class PolymarketLiveExecutionAdapter:
 
     def apply_user_trade_event(self, event: UserTradeEvent) -> tuple[LivePosition, ...]:
         updated_positions: list[LivePosition] = []
-        for tracked_order in self.tracker.apply_trade_event(event):
+        trader_side = str(event.trader_side or "").strip().upper()
+
+        if trader_side != "MAKER" and event.taker_order_id:
+            existing = self.tracker.get(event.taker_order_id)
+            tracked_order = self.tracker.apply_fill(
+                order_id=event.taker_order_id,
+                market_id=event.market,
+                token_id=event.asset_id,
+                category=existing.category if existing is not None else Category.CRYPTO,
+                strategy_id=existing.strategy_id if existing is not None else "recovered.live",
+                trade_side=event.side,
+                requested_shares=existing.requested_shares if existing is not None else event.size,
+                limit_price=existing.limit_price if existing is not None else event.price,
+                fill_shares=event.size,
+                fill_price=event.price,
+                fee_rate_bps=event.fee_rate_bps,
+                event_time=event.timestamp or event.last_update,
+                last_event="trade:taker",
+            )
             position = self.position_ledger.apply_tracked_order(tracked_order)
             if position is not None:
                 updated_positions.append(position)
+
+        if trader_side == "MAKER":
+            local_maker_orders = self._select_local_maker_orders(event.maker_orders)
+            for maker_order in local_maker_orders:
+                existing = self.tracker.get(maker_order.order_id)
+                tracked_order = self.tracker.apply_fill(
+                    order_id=maker_order.order_id,
+                    market_id=event.market,
+                    token_id=maker_order.asset_id,
+                    category=existing.category if existing is not None else Category.CRYPTO,
+                    strategy_id=existing.strategy_id if existing is not None else "recovered.live",
+                    trade_side=maker_order.side,
+                    requested_shares=(
+                        existing.requested_shares if existing is not None else maker_order.matched_amount
+                    ),
+                    limit_price=existing.limit_price if existing is not None else maker_order.price,
+                    fill_shares=maker_order.matched_amount,
+                    fill_price=maker_order.price,
+                    fee_rate_bps=maker_order.fee_rate_bps,
+                    event_time=event.timestamp or event.last_update,
+                    last_event="trade:maker",
+                )
+                position = self.position_ledger.apply_tracked_order(tracked_order)
+                if position is not None:
+                    updated_positions.append(position)
         return tuple(updated_positions)
+
+    def matches_account_address(self, value: object) -> bool:
+        normalized = _normalize_address(value)
+        return bool(normalized) and normalized in self.account_addresses
+
+    def _select_local_maker_orders(
+        self,
+        maker_orders: tuple["UserMakerOrder", ...],
+    ) -> tuple["UserMakerOrder", ...]:
+        if not maker_orders:
+            return ()
+        if self.account_addresses:
+            return tuple(
+                maker_order
+                for maker_order in maker_orders
+                if self.matches_account_address(maker_order.maker_address)
+            )
+        if len(maker_orders) == 1:
+            return maker_orders
+        return ()
 
     def mark_positions_to_market(
         self,
@@ -445,3 +521,30 @@ def _execution_side_for_signal(side: SignalSide) -> str:
     if side in {SignalSide.SELL_YES, SignalSide.SELL_NO}:
         return "SELL"
     raise ValueError(f"Unsupported live execution side: {side.value}")
+
+
+def _normalize_address(value: object) -> str:
+    return str(value or "").strip().lower()
+
+
+def _resolve_account_addresses(
+    *,
+    private_key: str,
+    funder: str | None,
+) -> frozenset[str]:
+    addresses: set[str] = set()
+
+    normalized_funder = _normalize_address(funder)
+    if normalized_funder:
+        addresses.add(normalized_funder)
+
+    try:
+        from eth_account import Account
+
+        signer_address = _normalize_address(Account.from_key(private_key).address)
+        if signer_address:
+            addresses.add(signer_address)
+    except Exception:
+        pass
+
+    return frozenset(addresses)

@@ -133,3 +133,56 @@ def test_position_ledger_realizes_partial_pnl_and_keeps_remaining_position() -> 
     assert len(closed_trades) == 1
     assert closed_trades[0].realized_pnl == pytest.approx(0.596)
     assert closed_trades[0].net_pnl == pytest.approx(0.586)
+
+
+def test_position_ledger_opens_complement_position_when_selling_without_inventory() -> None:
+    ledger = PositionLedger()
+    ledger.register_snapshots([_snapshot()])
+
+    opened = ledger.apply_tracked_order(
+        _tracked_order(
+            order_id="sell-open-1",
+            matched_shares=10.0,
+            matched_notional=6.2,
+            fees_paid=0.02,
+            trade_side="SELL",
+        )
+    )
+
+    assert opened is not None
+    assert opened.token_id == "no-token"
+    assert opened.shares == pytest.approx(10.0)
+    assert opened.cost_basis == pytest.approx(3.82)
+    assert opened.average_entry_price == pytest.approx(0.382)
+    assert ledger.drain_closed_trades() == ()
+
+
+def test_position_ledger_splits_oversell_between_close_and_complement_open() -> None:
+    ledger = PositionLedger()
+    ledger.register_snapshots([_snapshot()])
+    ledger.apply_tracked_order(
+        _tracked_order(
+            matched_shares=4.0,
+            matched_notional=2.0,
+            fees_paid=0.01,
+        )
+    )
+
+    opened = ledger.apply_tracked_order(
+        _tracked_order(
+            order_id="sell-flip-1",
+            matched_shares=10.0,
+            matched_notional=6.2,
+            fees_paid=0.02,
+            trade_side="SELL",
+        )
+    )
+
+    assert opened is not None
+    assert opened.token_id == "no-token"
+    assert opened.shares == pytest.approx(6.0)
+    assert opened.cost_basis == pytest.approx(2.292)
+    closed_trades = ledger.drain_closed_trades()
+    assert len(closed_trades) == 1
+    assert closed_trades[0].realized_pnl == pytest.approx(0.47)
+    assert closed_trades[0].net_pnl == pytest.approx(0.462)

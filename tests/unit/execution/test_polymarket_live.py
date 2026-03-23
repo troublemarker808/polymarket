@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from pm_bot.adapters.polymarket.user_ws_client import UserTradeEvent
+from pm_bot.adapters.polymarket.user_ws_client import UserMakerOrder, UserTradeEvent
 from pm_bot.core.settings import (
     AppSettings,
     BotSettings,
@@ -366,3 +366,95 @@ def test_live_adapter_drains_closed_trades_after_sell_fill() -> None:
     assert len(closed_trades) == 1
     assert closed_trades[0].realized_pnl == pytest.approx(1.2)
     assert closed_trades[0].net_pnl == pytest.approx(1.2)
+
+
+def test_live_adapter_filters_counterparty_maker_orders_from_user_trade_event() -> None:
+    live_adapter = build_execution_adapter(
+        settings=_live_bot_settings(),
+        env={
+            "POLYMARKET_PRIVATE_KEY": "0xabc",
+            "POLYMARKET_FUNDER": "0xme",
+        },
+        client_factory=FakeLiveClient,
+    )
+    assert isinstance(live_adapter, PolymarketLiveExecutionAdapter)
+
+    live_adapter.apply_user_trade_event(
+        UserTradeEvent(
+            id="trade-buy",
+            type="TRADE",
+            taker_order_id="buy-1",
+            market="m1",
+            asset_id="yes-token",
+            side="BUY",
+            size=10.0,
+            price=0.5,
+            fee_rate_bps=0.0,
+            status="MATCHED",
+            matchtime=datetime.now(tz=timezone.utc),
+            last_update=datetime.now(tz=timezone.utc),
+            outcome="YES",
+            owner="owner-1",
+            trade_owner="owner-1",
+            maker_address="0xme",
+            transaction_hash="",
+            bucket_index=0,
+            maker_orders=(),
+            trader_side="TAKER",
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+    )
+
+    positions = live_adapter.apply_user_trade_event(
+        UserTradeEvent(
+            id="trade-maker-sell",
+            type="TRADE",
+            taker_order_id="counterparty-taker",
+            market="m1",
+            asset_id="no-token",
+            side="BUY",
+            size=10.0,
+            price=0.6,
+            fee_rate_bps=0.0,
+            status="MATCHED",
+            matchtime=datetime.now(tz=timezone.utc),
+            last_update=datetime.now(tz=timezone.utc),
+            outcome="NO",
+            owner="owner-2",
+            trade_owner="owner-2",
+            maker_address="0xother",
+            transaction_hash="",
+            bucket_index=0,
+            maker_orders=(
+                UserMakerOrder(
+                    order_id="sell-ours",
+                    owner="owner-1",
+                    maker_address="0xme",
+                    matched_amount=10.0,
+                    price=0.6,
+                    fee_rate_bps=0.0,
+                    asset_id="yes-token",
+                    outcome="YES",
+                    side="SELL",
+                ),
+                UserMakerOrder(
+                    order_id="sell-other",
+                    owner="owner-2",
+                    maker_address="0xother",
+                    matched_amount=10.0,
+                    price=0.6,
+                    fee_rate_bps=0.0,
+                    asset_id="yes-token",
+                    outcome="YES",
+                    side="SELL",
+                ),
+            ),
+            trader_side="MAKER",
+            timestamp=datetime.now(tz=timezone.utc),
+        )
+    )
+
+    assert positions == ()
+    closed_trades = live_adapter.drain_closed_trades()
+    assert len(closed_trades) == 1
+    assert closed_trades[0].realized_pnl == pytest.approx(1.0)

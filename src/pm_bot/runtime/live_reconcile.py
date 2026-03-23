@@ -28,9 +28,14 @@ async def recover_live_state(
 ) -> LiveRecoveryStats:
     """Rebuild local live state from authenticated CLOB order and trade history."""
 
-    snapshot_index = _SnapshotIndex(tuple(snapshots))
     trades = await execution.fetch_trade_history()
     open_orders = await execution.fetch_open_orders()
+    snapshot_index = _SnapshotIndex(tuple(snapshots))
+    snapshot_index.hydrate_from_history(
+        trades=tuple(trades),
+        open_orders=tuple(open_orders),
+    )
+    execution.position_ledger.register_snapshots(snapshot_index.snapshots())
 
     trades_replayed = 0
     for trade in sorted(trades, key=_trade_sort_key):
@@ -47,7 +52,11 @@ async def recover_live_state(
         execution=execution,
         snapshots=tuple(snapshots),
     )
-    execution.drain_closed_trades()
+    recovery_date = datetime.now(tz=UTC).date()
+    for closed_trade in execution.drain_closed_trades():
+        if closed_trade.closed_at.astimezone(UTC).date() != recovery_date:
+            continue
+        await risk_manager.record_trade_close(closed_trade)
     return LiveRecoveryStats(
         open_orders_recovered=open_orders_recovered,
         trades_replayed=trades_replayed,
@@ -117,7 +126,9 @@ def _replay_trade(
     asset_id = str(trade.get("asset_id") or "")
     price = float(trade.get("price") or 0.0)
     size = float(trade.get("size") or 0.0)
-    if taker_order_id and asset_id and size > 0 and price > 0:
+    trader_side = str(trade.get("trader_side") or "").strip().upper()
+
+    if trader_side != "MAKER" and taker_order_id and asset_id and size > 0 and price > 0:
         snapshot = snapshot_index.resolve(asset_id=asset_id, market_key=market_key)
         category = snapshot.category if snapshot is not None else Category.CRYPTO
         market_id = snapshot.market_id if snapshot is not None else market_key or taker_order_id
@@ -139,7 +150,14 @@ def _replay_trade(
         execution.position_ledger.apply_tracked_order(tracked)
         replayed = True
 
-    for maker_order in trade.get("maker_orders", []) or []:
+    if trader_side != "MAKER":
+        return replayed
+
+    maker_orders = _select_local_maker_orders(
+        maker_orders=trade.get("maker_orders", []) or [],
+        execution=execution,
+    )
+    for maker_order in maker_orders:
         if not isinstance(maker_order, dict):
             continue
         order_id = str(maker_order.get("order_id") or "")
@@ -172,8 +190,28 @@ def _replay_trade(
     return replayed
 
 
+def _select_local_maker_orders(
+    *,
+    maker_orders: list[dict[str, Any]] | tuple[dict[str, Any], ...],
+    execution: PolymarketLiveExecutionAdapter,
+) -> tuple[dict[str, Any], ...]:
+    normalized_orders = tuple(order for order in maker_orders if isinstance(order, dict))
+    if not normalized_orders:
+        return ()
+    if execution.account_addresses:
+        return tuple(
+            order
+            for order in normalized_orders
+            if execution.matches_account_address(order.get("maker_address"))
+        )
+    if len(normalized_orders) == 1:
+        return normalized_orders
+    return ()
+
+
 class _SnapshotIndex:
     def __init__(self, snapshots: tuple[MarketSnapshot, ...]) -> None:
+        self._snapshots_by_market_id: dict[str, MarketSnapshot] = {}
         self.by_condition_id = {
             snapshot.metadata.get("condition_id", ""): snapshot
             for snapshot in snapshots
@@ -181,10 +219,7 @@ class _SnapshotIndex:
         }
         self.by_asset_id = {}
         for snapshot in snapshots:
-            self.by_asset_id[snapshot.token_id] = snapshot
-            no_token_id = snapshot.metadata.get("no_token_id")
-            if no_token_id:
-                self.by_asset_id[no_token_id] = snapshot
+            self._register_snapshot(snapshot)
 
     def resolve(self, *, asset_id: str, market_key: str) -> MarketSnapshot | None:
         if asset_id in self.by_asset_id:
@@ -192,6 +227,73 @@ class _SnapshotIndex:
         if market_key in self.by_condition_id:
             return self.by_condition_id[market_key]
         return None
+
+    def snapshots(self) -> tuple[MarketSnapshot, ...]:
+        return tuple(self._snapshots_by_market_id.values())
+
+    def hydrate_from_history(
+        self,
+        *,
+        trades: tuple[dict[str, Any], ...],
+        open_orders: tuple[dict[str, Any], ...],
+    ) -> None:
+        asset_ids_by_market: dict[str, set[str]] = {}
+
+        for trade in trades:
+            market_key = str(trade.get("market") or "")
+            if market_key:
+                asset_ids_by_market.setdefault(market_key, set())
+                asset_id = str(trade.get("asset_id") or "")
+                if asset_id:
+                    asset_ids_by_market[market_key].add(asset_id)
+                for maker_order in trade.get("maker_orders", []) or []:
+                    if not isinstance(maker_order, dict):
+                        continue
+                    maker_asset_id = str(maker_order.get("asset_id") or "")
+                    if maker_asset_id:
+                        asset_ids_by_market[market_key].add(maker_asset_id)
+
+        for raw_order in open_orders:
+            market_key = str(raw_order.get("market") or raw_order.get("condition_id") or "")
+            asset_id = str(raw_order.get("asset_id") or raw_order.get("assetId") or "")
+            if not market_key or not asset_id:
+                continue
+            asset_ids_by_market.setdefault(market_key, set()).add(asset_id)
+
+        now = datetime.now(tz=UTC)
+        for market_key, asset_ids in asset_ids_by_market.items():
+            if market_key in self.by_condition_id or len(asset_ids) < 2:
+                continue
+            primary_token_id, complement_token_id = sorted(asset_ids)[:2]
+            synthetic_snapshot = MarketSnapshot(
+                market_id=market_key,
+                token_id=primary_token_id,
+                slug=market_key,
+                category=Category.CRYPTO,
+                timestamp=now,
+                resolution_time=None,
+                best_bid_yes=None,
+                best_ask_yes=None,
+                best_bid_no=None,
+                best_ask_no=None,
+                last_traded_price=None,
+                metadata={
+                    "condition_id": market_key,
+                    "no_token_id": complement_token_id,
+                    "synthetic_history_market": "true",
+                },
+            )
+            self._register_snapshot(synthetic_snapshot)
+
+    def _register_snapshot(self, snapshot: MarketSnapshot) -> None:
+        self._snapshots_by_market_id[snapshot.market_id] = snapshot
+        condition_id = snapshot.metadata.get("condition_id", "")
+        if condition_id:
+            self.by_condition_id[condition_id] = snapshot
+        self.by_asset_id[snapshot.token_id] = snapshot
+        no_token_id = snapshot.metadata.get("no_token_id")
+        if no_token_id:
+            self.by_asset_id[no_token_id] = snapshot
 
 
 def _trade_sort_key(trade: dict[str, Any]) -> datetime:

@@ -40,10 +40,13 @@ class PositionLedger:
         self._positions: dict[tuple[str, str], LivePosition] = {}
         self._applied_progress: dict[str, AppliedOrderProgress] = {}
         self._closed_trades: list[ClosedTrade] = []
+        self._canonical_market_by_token: dict[str, str] = {}
+        self._complement_by_token: dict[str, str] = {}
 
     def apply_tracked_order(self, tracked: TrackedOrder) -> LivePosition | None:
         """Apply the incremental fill delta from a tracked order."""
 
+        tracked = self._canonicalize_tracked_order(tracked)
         previous = self._applied_progress.get(
             tracked.order_id,
             AppliedOrderProgress(
@@ -86,11 +89,21 @@ class PositionLedger:
     def mark_to_market(self, snapshots: list[MarketSnapshot] | tuple[MarketSnapshot, ...]) -> tuple[LivePosition, ...]:
         """Update position marks using current market snapshots."""
 
+        self.register_snapshots(snapshots)
         snapshots_by_market = {snapshot.market_id: snapshot for snapshot in snapshots}
+        snapshots_by_token = {
+            token_id: snapshot
+            for snapshot in snapshots
+            for token_id in (
+                snapshot.token_id,
+                snapshot.metadata.get("no_token_id"),
+            )
+            if token_id
+        }
         updated_positions: list[LivePosition] = []
 
         for key, position in list(self._positions.items()):
-            snapshot = snapshots_by_market.get(position.market_id)
+            snapshot = snapshots_by_market.get(position.market_id) or snapshots_by_token.get(position.token_id)
             if snapshot is None:
                 continue
 
@@ -120,6 +133,18 @@ class PositionLedger:
         drained = tuple(self._closed_trades)
         self._closed_trades.clear()
         return drained
+
+    def register_snapshots(
+        self,
+        snapshots: list[MarketSnapshot] | tuple[MarketSnapshot, ...],
+    ) -> None:
+        for snapshot in snapshots:
+            self._canonical_market_by_token[snapshot.token_id] = snapshot.market_id
+            no_token_id = snapshot.metadata.get("no_token_id")
+            if no_token_id:
+                self._canonical_market_by_token[no_token_id] = snapshot.market_id
+                self._complement_by_token[snapshot.token_id] = no_token_id
+                self._complement_by_token[no_token_id] = snapshot.token_id
 
     def _apply_buy_fill(
         self,
@@ -176,42 +201,82 @@ class PositionLedger:
     ) -> LivePosition | None:
         key = (tracked.market_id, tracked.token_id)
         existing = self._positions.get(key)
-        if existing is None:
-            raise ValueError("Cannot apply sell fill without an existing position")
-        if delta_shares - existing.shares > 1e-9:
+        fill_price = (delta_notional / delta_shares) if delta_shares > 0 else tracked.limit_price
+
+        closed_shares = min(existing.shares, delta_shares) if existing is not None else 0.0
+        closed_fees = delta_fees * (closed_shares / delta_shares) if delta_shares > 0 else 0.0
+        updated_existing: LivePosition | None = existing
+
+        if closed_shares > 0 and existing is not None:
+            average_cost = existing.cost_basis / existing.shares if existing.shares > 0 else 0.0
+            relieved_cost_basis = average_cost * closed_shares
+            realized_pnl = (fill_price * closed_shares) - relieved_cost_basis
+            self._closed_trades.append(
+                ClosedTrade(
+                    market_id=tracked.market_id,
+                    token_id=tracked.token_id,
+                    category=tracked.category,
+                    strategy_id=tracked.strategy_id,
+                    realized_pnl=realized_pnl,
+                    fees_paid=closed_fees,
+                    closed_at=tracked.updated_at,
+                )
+            )
+
+            remaining_shares = existing.shares - closed_shares
+            remaining_cost_basis = existing.cost_basis - relieved_cost_basis
+            if remaining_shares <= 1e-9:
+                self._positions.pop(key, None)
+                updated_existing = None
+            else:
+                updated_existing = replace(
+                    existing,
+                    shares=remaining_shares,
+                    cost_basis=max(remaining_cost_basis, 0.0),
+                    average_entry_price=max(remaining_cost_basis, 0.0) / remaining_shares,
+                    total_fees=existing.total_fees + closed_fees,
+                    updated_at=tracked.updated_at,
+                )
+                self._positions[key] = updated_existing
+
+        synthetic_open_shares = delta_shares - closed_shares
+        if synthetic_open_shares <= 1e-9:
+            return updated_existing
+
+        complement_token_id = self._complement_by_token.get(tracked.token_id)
+        if not complement_token_id:
+            if existing is None:
+                raise ValueError("Cannot apply sell fill without an existing position")
             raise ValueError("Sell fill exceeds current position size")
 
-        average_cost = existing.cost_basis / existing.shares if existing.shares > 0 else 0.0
-        relieved_cost_basis = average_cost * delta_shares
-        realized_pnl = delta_notional - relieved_cost_basis
-        self._closed_trades.append(
-            ClosedTrade(
-                market_id=tracked.market_id,
-                token_id=tracked.token_id,
-                category=tracked.category,
-                strategy_id=tracked.strategy_id,
-                realized_pnl=realized_pnl,
-                fees_paid=delta_fees,
-                closed_at=tracked.updated_at,
-            )
+        synthetic_open_fees = delta_fees - closed_fees
+        complement_price = max(0.0, 1.0 - fill_price)
+        synthetic_open_notional = synthetic_open_shares * complement_price
+        synthetic_market_id = self._canonical_market_by_token.get(tracked.token_id, tracked.market_id)
+        synthetic_tracked = replace(
+            tracked,
+            market_id=synthetic_market_id,
+            token_id=complement_token_id,
+            trade_side="BUY",
+            limit_price=complement_price,
+            requested_shares=synthetic_open_shares,
+            requested_notional=synthetic_open_notional,
+            matched_shares=synthetic_open_shares,
+            matched_notional=synthetic_open_notional,
+            fees_paid=synthetic_open_fees,
+        )
+        return self._apply_buy_fill(
+            tracked=synthetic_tracked,
+            delta_shares=synthetic_open_shares,
+            delta_notional=synthetic_open_notional,
+            delta_fees=synthetic_open_fees,
         )
 
-        remaining_shares = existing.shares - delta_shares
-        remaining_cost_basis = existing.cost_basis - relieved_cost_basis
-        if remaining_shares <= 1e-9:
-            self._positions.pop(key, None)
-            return None
-
-        updated = replace(
-            existing,
-            shares=remaining_shares,
-            cost_basis=max(remaining_cost_basis, 0.0),
-            average_entry_price=max(remaining_cost_basis, 0.0) / remaining_shares,
-            total_fees=existing.total_fees + delta_fees,
-            updated_at=tracked.updated_at,
-        )
-        self._positions[key] = updated
-        return updated
+    def _canonicalize_tracked_order(self, tracked: TrackedOrder) -> TrackedOrder:
+        canonical_market_id = self._canonical_market_by_token.get(tracked.token_id)
+        if not canonical_market_id or canonical_market_id == tracked.market_id:
+            return tracked
+        return replace(tracked, market_id=canonical_market_id)
 
 
 def _mark_price_for_token(snapshot: MarketSnapshot, token_id: str) -> float | None:
