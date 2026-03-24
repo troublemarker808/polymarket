@@ -52,9 +52,11 @@ class BasicRiskManager:
             starting_equity=starting_equity,
             day_starting_equity=starting_equity,
         )
+        self.advance_trading_day()
         self._persist_state()
 
     async def review_signal(self, signal: StrategySignal) -> RiskDecision:
+        self.advance_trading_day(signal.generated_at)
         halted = self._reject_if_halted()
         if halted is not None:
             return halted
@@ -62,6 +64,7 @@ class BasicRiskManager:
         return basic_signal_guard(signal=signal, max_edge_floor_bps=self.min_signal_edge_bps)
 
     async def review_order(self, intent: OrderIntent) -> RiskDecision:
+        self.advance_trading_day(intent.created_at)
         halted = self._reject_if_halted()
         if halted is not None:
             return halted
@@ -101,9 +104,10 @@ class BasicRiskManager:
         return RiskDecision(approved=True, reason="approved")
 
     async def record_order_submission(self, intent: OrderIntent, order_id: str) -> None:
+        self.advance_trading_day(intent.created_at)
         order_notional = self._order_notional(intent)
         self.state.orders_today += 1
-        submitted_at = datetime.now(tz=timezone.utc)
+        submitted_at = intent.created_at.astimezone(timezone.utc)
         self.state.pending_orders[order_id] = PendingOrderState(
             order_id=order_id,
             market_id=intent.market_id,
@@ -125,6 +129,7 @@ class BasicRiskManager:
         self._persist_state()
 
     async def record_trade_close(self, trade: ClosedTrade) -> None:
+        self.advance_trading_day(trade.closed_at)
         net_pnl = trade.net_pnl
         self.state.realized_pnl_today += net_pnl
         self.state.consecutive_losses = self.state.consecutive_losses + 1 if net_pnl < 0 else 0
@@ -175,6 +180,7 @@ class BasicRiskManager:
         self._persist_state()
 
     async def manual_resume(self) -> RiskDecision:
+        self.advance_trading_day()
         if not self.settings.manual_resume_required:
             return RiskDecision(approved=False, reason="manual resume is disabled")
 
@@ -189,6 +195,41 @@ class BasicRiskManager:
 
     def dashboard_state(self) -> DashboardState:
         return self.state.snapshot(soft_limit=self.trading_settings.daily_order_soft_limit)
+
+    def advance_trading_day(self, now: datetime | None = None) -> bool:
+        candidate = (now or datetime.now(tz=timezone.utc)).astimezone(timezone.utc)
+        current_day = self.state.day_started_at.astimezone(timezone.utc).date()
+        if current_day >= candidate.date():
+            return False
+
+        self.state.day_starting_equity = self.state.total_equity
+        self.state.day_open_unrealized_pnl = self.state.unrealized_pnl
+        self.state.realized_pnl_today = 0.0
+        self.state.orders_today = 0
+        self.state.day_started_at = candidate
+        self.state.touch()
+        self._persist_state()
+        return True
+
+    def record_data_success(self, timestamp: datetime | None = None) -> None:
+        self.advance_trading_day(timestamp)
+        recorded_at = (timestamp or datetime.now(tz=timezone.utc)).astimezone(timezone.utc)
+        failure_count = self.state.consecutive_data_failures
+        self.state.last_data_success_at = recorded_at
+        self.state.consecutive_data_failures = 0
+        self.state.last_data_error = None
+        if failure_count > 0:
+            self.state.last_alert = "market data recovered"
+        self.state.touch()
+        self._persist_state()
+
+    def record_data_failure(self, *, reason: str, occurred_at: datetime | None = None) -> None:
+        self.advance_trading_day(occurred_at)
+        self.state.consecutive_data_failures += 1
+        self.state.last_data_error = reason
+        self.state.last_alert = reason
+        self.state.touch()
+        self._persist_state()
 
     def halt_for_reason(self, reason: HaltReason, message: str) -> None:
         self._halt(reason=reason, message=message)

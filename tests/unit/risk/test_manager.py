@@ -1,9 +1,16 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from pm_bot.core.settings import RiskSettings, TradingSettings
 from pm_bot.core.types import Category, OrderAction, OrderIntent, SignalSide, StrategySignal
 from pm_bot.risk.manager import BasicRiskManager
-from pm_bot.runtime.state import ClosedTrade, HaltReason, PendingOrderState, PositionState, RuntimeStatus
+from pm_bot.runtime.state import (
+    ClosedTrade,
+    HaltReason,
+    PendingOrderState,
+    PositionState,
+    RuntimeState,
+    RuntimeStatus,
+)
 from pm_bot.storage.runtime_state_store import JsonRuntimeStateStore
 
 
@@ -198,7 +205,9 @@ def test_risk_manager_records_pending_order_submission() -> None:
     import asyncio
 
     manager = build_manager()
+    created_at = datetime(2026, 3, 24, 3, 0, 0, tzinfo=timezone.utc)
     intent = build_order("m1")
+    intent.created_at = created_at
 
     asyncio.run(manager.record_order_submission(intent, "o1"))
 
@@ -208,6 +217,7 @@ def test_risk_manager_records_pending_order_submission() -> None:
     assert dashboard.pending_orders[0].order_id == "o1"
     assert dashboard.pending_orders[0].requested_notional == 2.75
     assert dashboard.pending_orders[0].side == "buy_yes"
+    assert dashboard.pending_orders[0].created_at == created_at
 
 
 def test_risk_manager_rejects_order_when_market_has_pending_order() -> None:
@@ -241,6 +251,61 @@ def test_risk_manager_rejects_order_when_market_has_pending_order() -> None:
     rejected = asyncio.run(manager.review_order(build_order("m1")))
     assert not rejected.approved
     assert rejected.reason == "market already has a pending order"
+
+
+def test_risk_manager_rolls_daily_counters_on_new_utc_day() -> None:
+    yesterday = datetime.now(tz=timezone.utc) - timedelta(days=1)
+    manager = BasicRiskManager(
+        settings=RiskSettings(
+            max_daily_drawdown_pct=5.0,
+            max_consecutive_losses=5,
+            manual_resume_required=True,
+        ),
+        trading_settings=TradingSettings(
+            starting_equity=100.0,
+            default_order_notional=5.0,
+            max_notional_per_market=5.0,
+            max_concurrent_positions=4,
+            daily_order_soft_limit=10,
+            daily_order_hard_limit=15,
+        ),
+        state=RuntimeState(
+            starting_equity=100.0,
+            day_starting_equity=100.0,
+            realized_pnl_today=3.0,
+            unrealized_pnl=2.0,
+            orders_today=4,
+            day_started_at=yesterday,
+            updated_at=yesterday,
+        ),
+    )
+
+    dashboard = manager.dashboard_state()
+
+    assert dashboard.daily_order_count == 0
+    assert dashboard.today_pnl == 0.0
+    assert manager.state.day_starting_equity == 105.0
+    assert manager.state.day_open_unrealized_pnl == 2.0
+
+
+def test_risk_manager_tracks_data_source_failures_and_recovery() -> None:
+    manager = build_manager()
+
+    manager.record_data_failure(reason="ConnectTimeout: timed out")
+    manager.record_data_failure(reason="ConnectTimeout: timed out")
+
+    dashboard = manager.dashboard_state()
+    assert dashboard.consecutive_data_failures == 2
+    assert dashboard.last_data_error == "ConnectTimeout: timed out"
+    assert dashboard.issue_codes == ("data_source_failure",)
+
+    manager.record_data_success(datetime(2026, 3, 24, 4, 0, 0, tzinfo=timezone.utc))
+
+    recovered = manager.dashboard_state()
+    assert recovered.consecutive_data_failures == 0
+    assert recovered.last_data_error is None
+    assert recovered.last_data_success_at == datetime(2026, 3, 24, 4, 0, 0, tzinfo=timezone.utc)
+    assert recovered.issue_codes == ()
 
 
 def test_risk_manager_allows_sell_to_close_existing_position() -> None:

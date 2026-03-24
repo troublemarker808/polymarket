@@ -160,6 +160,7 @@ def main() -> None:
             trading_settings=settings.trading,
             state_store=state_store,
         )
+        risk_manager.advance_trading_day()
         print(render_dashboard(risk_manager.dashboard_state()))
     elif args.command == "manual-resume":
         settings = load_settings_from_directory(args.config_dir)
@@ -169,6 +170,7 @@ def main() -> None:
             trading_settings=settings.trading,
             state_store=state_store,
         )
+        risk_manager.advance_trading_day()
         result = asyncio.run(risk_manager.manual_resume())
         print(f"manual_resume={str(result.approved).lower()}")
         print(f"reason={result.reason}")

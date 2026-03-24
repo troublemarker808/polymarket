@@ -62,10 +62,14 @@ class GammaMarketsClient:
         self,
         base_url: str = GAMMA_BASE_URL,
         timeout_seconds: float = 10.0,
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 0.5,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.max_retries = max(max_retries, 0)
+        self.retry_backoff_seconds = max(retry_backoff_seconds, 0.0)
         self._client = client
         self._owns_client = client is None
 
@@ -97,9 +101,7 @@ class GammaMarketsClient:
         if tag_id is not None:
             params["tag_id"] = tag_id
 
-        response = await client.get("/events", params=params)
-        response.raise_for_status()
-        payload = response.json()
+        payload = await self._get_json("/events", params=params)
         if not isinstance(payload, list):
             raise ValueError("Gamma /events response was not a list")
 
@@ -107,9 +109,7 @@ class GammaMarketsClient:
 
     async def fetch_market_by_slug(self, slug: str) -> list[MarketSnapshot]:
         client = await self._ensure_client()
-        response = await client.get("/markets", params={"slug": slug})
-        response.raise_for_status()
-        payload = response.json()
+        payload = await self._get_json("/markets", params={"slug": slug})
         if not isinstance(payload, list):
             raise ValueError("Gamma /markets response was not a list")
 
@@ -162,6 +162,41 @@ class GammaMarketsClient:
             self._client = httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout_seconds)
             self._owns_client = True
         return self._client
+
+    async def _get_json(
+        self,
+        path: str,
+        *,
+        params: dict[str, object],
+    ) -> Any:
+        client = await self._ensure_client()
+        attempts = self.max_retries + 1
+        last_error: Exception | None = None
+
+        for attempt in range(attempts):
+            try:
+                response = await client.get(path, params=params)
+                if response.status_code == 429 or 500 <= response.status_code < 600:
+                    response.raise_for_status()
+                response.raise_for_status()
+                return response.json()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+                if not _is_retryable_status(exc.response.status_code) or attempt == attempts - 1:
+                    raise
+            except httpx.TimeoutException as exc:
+                last_error = exc
+                if attempt == attempts - 1:
+                    raise
+            except httpx.RequestError as exc:
+                last_error = exc
+                if attempt == attempts - 1:
+                    raise
+
+            await asyncio.sleep(self.retry_backoff_seconds * (attempt + 1))
+
+        assert last_error is not None
+        raise last_error
 
 
 class GammaMarketDataAdapter:
@@ -370,3 +405,7 @@ def _infer_complement_ask(best_bid_yes: float | None) -> float | None:
     if best_bid_yes is None:
         return None
     return round(1.0 - best_bid_yes, 6)
+
+
+def _is_retryable_status(status_code: int) -> bool:
+    return status_code == 429 or 500 <= status_code < 600

@@ -105,3 +105,55 @@ def test_gamma_market_data_adapter_streams_one_shot_snapshots() -> None:
     market_ids = asyncio.run(collect())
 
     assert market_ids == ["824952"]
+
+
+def test_gamma_client_retries_timeout_then_succeeds() -> None:
+    attempts = {"count": 0}
+    payload = [_crypto_event_payload()]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise httpx.ReadTimeout("timed out", request=request)
+        return httpx.Response(status_code=200, json=payload, request=request)
+
+    transport = httpx.MockTransport(handler)
+    client = GammaMarketsClient(
+        client=httpx.AsyncClient(
+            base_url="https://gamma-api.polymarket.com",
+            transport=transport,
+        ),
+        max_retries=1,
+        retry_backoff_seconds=0.0,
+    )
+
+    events = asyncio.run(client.fetch_events())
+
+    assert len(events) == 1
+    assert attempts["count"] == 2
+
+
+def test_gamma_client_retries_retryable_status_then_succeeds() -> None:
+    attempts = {"count": 0}
+    payload = [_crypto_event_payload()]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            return httpx.Response(status_code=503, json={"error": "temporary"}, request=request)
+        return httpx.Response(status_code=200, json=payload, request=request)
+
+    transport = httpx.MockTransport(handler)
+    client = GammaMarketsClient(
+        client=httpx.AsyncClient(
+            base_url="https://gamma-api.polymarket.com",
+            transport=transport,
+        ),
+        max_retries=1,
+        retry_backoff_seconds=0.0,
+    )
+
+    events = asyncio.run(client.fetch_events())
+
+    assert len(events) == 1
+    assert attempts["count"] == 2

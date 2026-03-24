@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from pm_bot.adapters.polymarket import (
     ClobPublicClient,
     ClobSnapshotEnricher,
@@ -11,11 +9,14 @@ from pm_bot.adapters.polymarket import (
     PolymarketLiveMarketDataAdapter,
 )
 from pm_bot.config.loader import load_settings_from_directory
+from pm_bot.core.types import MarketSnapshot
 from pm_bot.execution.factory import build_execution_adapter
+from pm_bot.execution.paper_adapter import PaperExecutionAdapter
 from pm_bot.orchestrator.event_router import EventRouter
 from pm_bot.registry import build_default_registry
 from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.dashboard import render_dashboard
+from pm_bot.runtime.paper_sync import sync_paper_execution_state
 from pm_bot.runtime.state import DashboardState
 from pm_bot.storage.recorder import InMemoryRecorder
 from pm_bot.storage.runtime_state_store import JsonRuntimeStateStore
@@ -41,6 +42,8 @@ async def run_crypto_paper_session_once(
         state_store=state_store,
     )
     execution = build_execution_adapter(settings=settings)
+    if not isinstance(execution, PaperExecutionAdapter):
+        raise TypeError("Paper session runner requires PaperExecutionAdapter")
     recorder = InMemoryRecorder()
 
     async with GammaMarketsClient() as gamma_client, ClobPublicClient() as clob_client:
@@ -60,11 +63,34 @@ async def run_crypto_paper_session_once(
         )
 
         processed = 0
-        async for snapshot in market_data.stream_snapshots():
-            await router.run_once(snapshot=snapshot)
-            processed += 1
-            if processed >= limit:
-                break
+        try:
+            async for snapshot in market_data.stream_snapshots():
+                risk_manager.record_data_success(snapshot.timestamp)
+                await sync_paper_execution_state(
+                    risk_manager=risk_manager,
+                    execution=execution,
+                    snapshot=snapshot,
+                    ttl_seconds=settings.trading.default_quote_ttl_seconds,
+                    recorder=recorder,
+                )
+                await router.run_once(snapshot=snapshot)
+                await sync_paper_execution_state(
+                    risk_manager=risk_manager,
+                    execution=execution,
+                    snapshot=snapshot,
+                    ttl_seconds=settings.trading.default_quote_ttl_seconds,
+                    recorder=recorder,
+                )
+                processed += 1
+                if processed >= limit:
+                    break
+        except Exception as exc:
+            risk_manager.record_data_failure(reason=f"{type(exc).__name__}: {exc}")
+            await recorder.record(
+                event_type="market_data.failure",
+                payload={"error": f"{type(exc).__name__}: {exc}"},
+            )
+            raise
 
     dashboard = risk_manager.dashboard_state()
     return {

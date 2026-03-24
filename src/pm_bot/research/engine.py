@@ -19,6 +19,7 @@ from pm_bot.registry import build_default_registry
 from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.dashboard import render_dashboard
 from pm_bot.runtime.state import DashboardState, RuntimeState
+from pm_bot.runtime.paper_sync import sync_paper_execution_state
 from pm_bot.storage.recorder import JsonlRecorder
 
 
@@ -143,9 +144,11 @@ async def _run_research(
         state=RuntimeState(
             starting_equity=settings.trading.starting_equity,
             day_starting_equity=settings.trading.starting_equity,
+            day_started_at=(snapshots[0].timestamp if snapshots else datetime.now(tz=timezone.utc)),
+            updated_at=(snapshots[0].timestamp if snapshots else datetime.now(tz=timezone.utc)),
         ),
     )
-    execution = PaperExecutionAdapter()
+    execution = PaperExecutionAdapter(ttl_seconds=settings.trading.default_quote_ttl_seconds)
     recorder = ResearchRecorder(recorder_path)
     router = EventRouter(
         market_data=InMemoryMarketDataAdapter(snapshots),
@@ -158,7 +161,22 @@ async def _run_research(
 
     processed = 0
     for snapshot in snapshots:
+        risk_manager.record_data_success(snapshot.timestamp)
+        await sync_paper_execution_state(
+            risk_manager=risk_manager,
+            execution=execution,
+            snapshot=snapshot,
+            ttl_seconds=settings.trading.default_quote_ttl_seconds,
+            recorder=recorder,
+        )
         await router.run_once(snapshot=snapshot)
+        await sync_paper_execution_state(
+            risk_manager=risk_manager,
+            execution=execution,
+            snapshot=snapshot,
+            ttl_seconds=settings.trading.default_quote_ttl_seconds,
+            recorder=recorder,
+        )
         processed += 1
 
     generated_by_strategy = _count_by_strategy(recorder.events, "signal.generated")

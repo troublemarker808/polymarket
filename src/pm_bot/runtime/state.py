@@ -84,12 +84,17 @@ class DashboardState:
     last_alert: str | None
     daily_order_count: int
     daily_order_soft_limit_reached: bool
+    last_data_success_at: datetime | None = None
+    last_data_error: str | None = None
+    consecutive_data_failures: int = 0
+    issue_codes: tuple[str, ...] = ()
 
 
 @dataclass(slots=True)
 class RuntimeState:
     starting_equity: float
     day_starting_equity: float
+    day_open_unrealized_pnl: float = 0.0
     realized_pnl_today: float = 0.0
     unrealized_pnl: float = 0.0
     consecutive_losses: int = 0
@@ -100,15 +105,23 @@ class RuntimeState:
     halt_reason: HaltReason = HaltReason.NONE
     halt_message: str | None = None
     last_alert: str | None = None
+    last_data_success_at: datetime | None = None
+    last_data_error: str | None = None
+    consecutive_data_failures: int = 0
+    day_started_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
     @property
     def total_equity(self) -> float:
-        return self.day_starting_equity + self.realized_pnl_today + self.unrealized_pnl
+        return (
+            self.day_starting_equity
+            + self.realized_pnl_today
+            + (self.unrealized_pnl - self.day_open_unrealized_pnl)
+        )
 
     @property
     def today_pnl(self) -> float:
-        return self.realized_pnl_today + self.unrealized_pnl
+        return self.realized_pnl_today + (self.unrealized_pnl - self.day_open_unrealized_pnl)
 
     @property
     def open_position_count(self) -> int:
@@ -138,6 +151,13 @@ class RuntimeState:
         self.updated_at = datetime.now(tz=timezone.utc)
 
     def snapshot(self, soft_limit: int) -> DashboardState:
+        issue_codes: list[str] = []
+        if self.consecutive_data_failures > 0:
+            issue_codes.append("data_source_failure")
+        if self.halt_reason == HaltReason.STALE_DATA:
+            issue_codes.append("stale_data")
+        if self.halt_reason == HaltReason.DATA_SOURCE_FAILURE:
+            issue_codes.append("runtime_halted_data_source")
         return DashboardState(
             total_equity=self.total_equity,
             today_pnl=self.today_pnl,
@@ -149,6 +169,10 @@ class RuntimeState:
             last_alert=self.last_alert,
             daily_order_count=self.orders_today,
             daily_order_soft_limit_reached=self.orders_today >= soft_limit,
+            last_data_success_at=self.last_data_success_at,
+            last_data_error=self.last_data_error,
+            consecutive_data_failures=self.consecutive_data_failures,
+            issue_codes=tuple(issue_codes),
         )
 
 
@@ -156,6 +180,7 @@ def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
     return {
         "starting_equity": state.starting_equity,
         "day_starting_equity": state.day_starting_equity,
+        "day_open_unrealized_pnl": state.day_open_unrealized_pnl,
         "realized_pnl_today": state.realized_pnl_today,
         "unrealized_pnl": state.unrealized_pnl,
         "consecutive_losses": state.consecutive_losses,
@@ -172,6 +197,12 @@ def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
         "halt_reason": state.halt_reason.value,
         "halt_message": state.halt_message,
         "last_alert": state.last_alert,
+        "last_data_success_at": (
+            state.last_data_success_at.isoformat() if state.last_data_success_at is not None else None
+        ),
+        "last_data_error": state.last_data_error,
+        "consecutive_data_failures": state.consecutive_data_failures,
+        "day_started_at": state.day_started_at.isoformat(),
         "updated_at": state.updated_at.isoformat(),
     }
 
@@ -180,6 +211,7 @@ def runtime_state_from_dict(payload: dict[str, Any]) -> RuntimeState:
     return RuntimeState(
         starting_equity=float(payload["starting_equity"]),
         day_starting_equity=float(payload["day_starting_equity"]),
+        day_open_unrealized_pnl=float(payload.get("day_open_unrealized_pnl", 0.0)),
         realized_pnl_today=float(payload.get("realized_pnl_today", 0.0)),
         unrealized_pnl=float(payload.get("unrealized_pnl", 0.0)),
         consecutive_losses=int(payload.get("consecutive_losses", 0)),
@@ -196,6 +228,14 @@ def runtime_state_from_dict(payload: dict[str, Any]) -> RuntimeState:
         halt_reason=HaltReason(str(payload.get("halt_reason", HaltReason.NONE.value))),
         halt_message=payload.get("halt_message"),
         last_alert=payload.get("last_alert"),
+        last_data_success_at=_parse_datetime(payload.get("last_data_success_at")),
+        last_data_error=payload.get("last_data_error"),
+        consecutive_data_failures=int(payload.get("consecutive_data_failures", 0)),
+        day_started_at=(
+            _parse_datetime(payload.get("day_started_at"))
+            or _parse_datetime(payload.get("updated_at"))
+            or datetime.now(tz=timezone.utc)
+        ),
         updated_at=_parse_datetime(payload.get("updated_at")) or datetime.now(tz=timezone.utc),
     )
 
@@ -278,6 +318,10 @@ def dashboard_state_to_lines(dashboard: DashboardState) -> list[str]:
         f"halt_reason={dashboard.halt_reason.value}",
         f"halt_message={dashboard.halt_message or ''}",
         f"last_alert={dashboard.last_alert or ''}",
+        f"last_data_success_at={dashboard.last_data_success_at.isoformat() if dashboard.last_data_success_at is not None else ''}",
+        f"last_data_error={dashboard.last_data_error or ''}",
+        f"consecutive_data_failures={dashboard.consecutive_data_failures}",
+        f"issue_codes={','.join(dashboard.issue_codes)}",
         f"open_positions={len(dashboard.open_positions)}",
         f"pending_orders={len(dashboard.pending_orders)}",
         f"daily_order_count={dashboard.daily_order_count}",

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 from pm_bot.core.types import MarketSnapshot, OrderAction, OrderIntent, SignalSide, StrategySignal
 
 
@@ -54,6 +52,6 @@ def signal_to_order_intent(
         price=price,
         size=size,
         time_in_force=signal.time_in_force,
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=signal.generated_at,
         notional=notional,
     )

@@ -1,8 +1,14 @@
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 
-from pm_bot.core.types import Category
+from pm_bot.core.settings import RiskSettings, TradingSettings
+from pm_bot.core.types import Category, MarketSnapshot, OrderAction, OrderIntent, SignalSide
+from pm_bot.execution.paper_adapter import PaperExecutionAdapter
+from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.paper_session import format_dashboard_summary
+from pm_bot.runtime.paper_sync import sync_paper_execution_state
 from pm_bot.runtime.state import DashboardState, HaltReason, PositionState, RuntimeStatus
+from pm_bot.storage.recorder import InMemoryRecorder
 
 
 def test_format_dashboard_summary_includes_operator_fields() -> None:
@@ -41,3 +47,139 @@ def test_format_dashboard_summary_includes_operator_fields() -> None:
     assert "total_equity=101.50" in summary
     assert "status=running" in summary
     assert "open_positions=1" in summary
+
+
+def _build_manager() -> BasicRiskManager:
+    return BasicRiskManager(
+        settings=RiskSettings(
+            max_daily_drawdown_pct=5.0,
+            max_consecutive_losses=5,
+            manual_resume_required=True,
+        ),
+        trading_settings=TradingSettings(
+            starting_equity=100.0,
+            default_order_notional=5.0,
+            max_notional_per_market=5.0,
+            max_concurrent_positions=4,
+            daily_order_soft_limit=10,
+            daily_order_hard_limit=15,
+        ),
+    )
+
+
+def test_sync_paper_execution_state_records_fill_and_day_rollover() -> None:
+    manager = BasicRiskManager(
+        settings=RiskSettings(
+            max_daily_drawdown_pct=5.0,
+            max_consecutive_losses=5,
+            manual_resume_required=True,
+        ),
+        trading_settings=TradingSettings(
+            starting_equity=100.0,
+            default_order_notional=5.0,
+            max_notional_per_market=5.0,
+            max_concurrent_positions=4,
+            daily_order_soft_limit=10,
+            daily_order_hard_limit=15,
+        ),
+        state=None,
+    )
+    manager.state.day_started_at = datetime(2026, 3, 23, 0, 0, 0, tzinfo=UTC)
+    execution = PaperExecutionAdapter(ttl_seconds=15)
+    recorder = InMemoryRecorder()
+    snapshot_time = datetime(2026, 3, 24, 2, 36, 30, tzinfo=UTC)
+    intent = OrderIntent(
+        strategy_id="crypto.maker",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.41,
+        size=10.0,
+        time_in_force="GTC",
+        created_at=snapshot_time,
+        notional=4.1,
+    )
+    asyncio.run(execution.submit(intent))
+
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="m1",
+        category=Category.CRYPTO,
+        timestamp=snapshot_time,
+        resolution_time=None,
+        best_bid_yes=0.39,
+        best_ask_yes=0.40,
+        best_bid_no=0.60,
+        best_ask_no=0.61,
+        metadata={"no_token_id": "no-token"},
+    )
+
+    asyncio.run(
+        sync_paper_execution_state(
+            risk_manager=manager,
+            execution=execution,
+            snapshot=snapshot,
+            ttl_seconds=15,
+            recorder=recorder,
+        )
+    )
+
+    dashboard = manager.dashboard_state()
+    assert len(dashboard.pending_orders) == 0
+    assert len(dashboard.open_positions) == 1
+    assert dashboard.open_positions[0].average_entry_price == 0.40
+    assert dashboard.open_positions[0].mark_price == 0.39
+    assert any(event["event_type"] == "runtime.day_rollover" for event in recorder.events)
+    assert any(event["event_type"] == "order.filled" for event in recorder.events)
+
+
+def test_sync_paper_execution_state_expires_stale_orders() -> None:
+    now = datetime(2026, 3, 24, 2, 37, 0, tzinfo=UTC)
+    manager = _build_manager()
+    execution = PaperExecutionAdapter(ttl_seconds=15)
+    recorder = InMemoryRecorder()
+    intent = OrderIntent(
+        strategy_id="crypto.maker",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.30,
+        size=10.0,
+        time_in_force="GTC",
+        created_at=now - timedelta(seconds=30),
+        notional=3.0,
+    )
+    asyncio.run(execution.submit(intent))
+
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="m1",
+        category=Category.CRYPTO,
+        timestamp=now,
+        resolution_time=None,
+        best_bid_yes=0.45,
+        best_ask_yes=0.46,
+        best_bid_no=0.54,
+        best_ask_no=0.55,
+        metadata={"no_token_id": "no-token"},
+    )
+
+    asyncio.run(
+        sync_paper_execution_state(
+            risk_manager=manager,
+            execution=execution,
+            snapshot=snapshot,
+            ttl_seconds=15,
+            recorder=recorder,
+        )
+    )
+
+    dashboard = manager.dashboard_state()
+    assert len(dashboard.pending_orders) == 0
+    assert any(event["event_type"] == "order.expired" for event in recorder.events)

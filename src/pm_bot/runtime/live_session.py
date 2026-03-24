@@ -202,6 +202,7 @@ class LiveSessionRunner:
 
     async def _handle_market_snapshot(self, snapshot: MarketSnapshot) -> None:
         self.snapshots_by_market_id[snapshot.market_id] = snapshot
+        _record_data_success(self.risk_manager, snapshot.timestamp)
         submitted = await self.router.run_once(snapshot=snapshot)
         cancelled = await self.execution.cancel_stale()
         await sync_live_execution_state(
@@ -302,6 +303,8 @@ async def supervise_live_session(
     max_reconnects: int | None = None,
 ) -> LiveSessionStats:
     current_snapshots = list(initial_snapshots or await market_data.bootstrap_snapshots())
+    if current_snapshots:
+        _record_data_success(risk_manager, max(snapshot.timestamp for snapshot in current_snapshots))
     aggregate = LiveSessionStats()
     include_initial = True
 
@@ -379,6 +382,8 @@ async def supervise_live_session(
             await _refresh_snapshots(
                 market_data=market_data,
                 fallback_snapshots=current_snapshots,
+                risk_manager=risk_manager,
+                recorder=recorder,
             )
         )
         include_initial = False
@@ -398,13 +403,24 @@ async def _refresh_snapshots(
     *,
     market_data: LiveMarketDataSource,
     fallback_snapshots: Sequence[MarketSnapshot],
+    risk_manager: RiskManager,
+    recorder: EventRecorder | None,
 ) -> tuple[MarketSnapshot, ...]:
     try:
         refreshed = await market_data.bootstrap_snapshots()
-    except Exception:
+    except Exception as exc:
+        _record_data_failure(risk_manager, reason=f"{type(exc).__name__}: {exc}")
+        await _record_supervisor_event(
+            recorder=recorder,
+            event_type="market_data.failure",
+            payload={"error": f"{type(exc).__name__}: {exc}"},
+        )
         if not fallback_snapshots:
             raise
         return tuple(fallback_snapshots)
+
+    if refreshed:
+        _record_data_success(risk_manager, max(snapshot.timestamp for snapshot in refreshed))
 
     return _merge_snapshots(primary=refreshed, fallback=fallback_snapshots)
 
@@ -418,6 +434,18 @@ async def _record_supervisor_event(
     if recorder is None:
         return
     await recorder.record(event_type=event_type, payload=payload)
+
+
+def _record_data_success(risk_manager: RiskManager, timestamp) -> None:
+    callback = getattr(risk_manager, "record_data_success", None)
+    if callable(callback):
+        callback(timestamp)
+
+
+def _record_data_failure(risk_manager: RiskManager, *, reason: str) -> None:
+    callback = getattr(risk_manager, "record_data_failure", None)
+    if callable(callback):
+        callback(reason=reason)
 
 
 def _remaining_limit(limit: int | None, processed: int) -> int | None:
@@ -501,7 +529,17 @@ async def run_crypto_live_session(
             max_pages=max_pages,
             tag_id=gamma_tag_id,
         )
-        seed_snapshots = await market_data.bootstrap_snapshots()
+        try:
+            seed_snapshots = await market_data.bootstrap_snapshots()
+        except Exception as exc:
+            _record_data_failure(risk_manager, reason=f"{type(exc).__name__}: {exc}")
+            await recorder.record(
+                event_type="market_data.failure",
+                payload={"error": f"{type(exc).__name__}: {exc}"},
+            )
+            raise
+        if seed_snapshots:
+            _record_data_success(risk_manager, max(snapshot.timestamp for snapshot in seed_snapshots))
         router = EventRouter(
             market_data=market_data,
             strategies=strategies,
