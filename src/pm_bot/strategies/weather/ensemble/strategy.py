@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 from typing import Any
 
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
@@ -89,7 +88,7 @@ class WeatherEnsembleStrategy:
                         side=SignalSide.BUY_YES,
                         confidence=min(confidence, 0.8),
                         edge_bps=buy_yes_edge_bps,
-                        generated_at=datetime.now(tz=timezone.utc),
+                        generated_at=snapshot.timestamp,
                         rationale_tags=("weather_ensemble", f"models_{model_count}"),
                     )
                 ]
@@ -107,7 +106,7 @@ class WeatherEnsembleStrategy:
                         side=SignalSide.BUY_NO,
                         confidence=min(confidence, 0.8),
                         edge_bps=buy_no_edge_bps,
-                        generated_at=datetime.now(tz=timezone.utc),
+                        generated_at=snapshot.timestamp,
                         rationale_tags=("weather_ensemble", f"models_{model_count}"),
                     )
                 ]
@@ -155,7 +154,7 @@ class WeatherEnsembleStrategy:
             side=side,
             confidence=0.65,
             edge_bps=max(0.0, edge_remaining_bps),
-            generated_at=datetime.now(tz=timezone.utc),
+            generated_at=snapshot.timestamp,
             target_price=exit_price,
             target_size=target_notional,
             rationale_tags=("weather_ensemble_exit", "edge_normalized"),

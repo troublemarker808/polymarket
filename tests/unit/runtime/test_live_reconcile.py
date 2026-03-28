@@ -128,6 +128,62 @@ class MixedMakerTradeClient(FakeLiveClient):
         ]
 
 
+class SessionScopedRecoveryClient(FakeLiveClient):
+    def get_orders(self, params=None, next_cursor="MA=="):
+        return [
+            {
+                "id": "historical-open-1",
+                "market": "0xmarket",
+                "asset_id": "yes-token",
+                "price": "0.52",
+                "original_size": "10",
+                "size_matched": "4",
+                "status": "LIVE",
+                "created_at": _now_timestamp(-30),
+                "timestamp": _now_timestamp(-5),
+            },
+            {
+                "id": "session-open-1",
+                "market": "0xmarket",
+                "asset_id": "yes-token",
+                "price": "0.54",
+                "original_size": "5",
+                "size_matched": "0",
+                "status": "LIVE",
+                "created_at": _now_timestamp(-2),
+                "timestamp": _now_timestamp(-1),
+            },
+        ]
+
+    def get_trades(self, params=None, next_cursor="MA=="):
+        return [
+            {
+                "id": "historical-trade-1",
+                "taker_order_id": "historical-filled-1",
+                "market": "0xmarket",
+                "asset_id": "yes-token",
+                "side": "BUY",
+                "size": "10",
+                "price": "0.40",
+                "fee_rate_bps": "0",
+                "timestamp": _now_timestamp(-30),
+                "maker_orders": [],
+            },
+            {
+                "id": "session-trade-1",
+                "taker_order_id": "session-filled-1",
+                "market": "0xmarket",
+                "asset_id": "yes-token",
+                "side": "BUY",
+                "size": "5",
+                "price": "0.50",
+                "fee_rate_bps": "0",
+                "timestamp": _now_timestamp(-5),
+                "maker_orders": [],
+            },
+        ]
+
+
 class SyntheticHistoryMarketClient(FakeLiveClient):
     def get_orders(self, params=None, next_cursor="MA=="):
         return []
@@ -328,9 +384,7 @@ def test_recover_live_state_infers_missing_market_pairs_from_history() -> None:
     assert stats.trades_replayed == 2
     assert stats.positions_rebuilt == 0
     dashboard = manager.dashboard_state()
-    assert len(dashboard.open_positions) == 1
-    assert dashboard.open_positions[0].token_id == "no-token"
-    assert dashboard.open_positions[0].shares == 5.0
+    assert len(dashboard.open_positions) == 0
     assert dashboard.today_pnl == 2.0
 
 
@@ -423,3 +477,137 @@ def test_recover_live_state_does_not_count_historical_closed_trades_as_today_pnl
     dashboard = manager.dashboard_state()
     assert len(dashboard.open_positions) == 0
     assert dashboard.today_pnl == 0.0
+
+
+def test_recover_live_state_can_scope_recovery_to_current_session() -> None:
+    execution = PolymarketLiveExecutionAdapter.from_settings(
+        settings=PolymarketSettings(
+            allow_live_orders=True,
+            derive_api_creds_if_missing=True,
+            live_recovery_scope="session",
+        ),
+        ttl_seconds=15,
+        env={
+            "POLYMARKET_PRIVATE_KEY": "0xabc",
+            "POLYMARKET_FUNDER": "0xme",
+        },
+        geoblock_status=__import__("pm_bot.adapters.polymarket.geoblock_client", fromlist=["GeoblockStatus"]).GeoblockStatus(
+            blocked=False,
+            country="HK",
+            region="",
+            ip="141.11.22.34",
+        ),
+        client_factory=SessionScopedRecoveryClient,
+    )
+    manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    snapshots = (
+        MarketSnapshot(
+            market_id="m1",
+            token_id="yes-token",
+            slug="btc-above",
+            category=Category.CRYPTO,
+            timestamp=datetime.now(tz=UTC),
+            resolution_time=None,
+            best_bid_yes=0.6,
+            best_ask_yes=0.61,
+            best_bid_no=0.39,
+            best_ask_no=0.4,
+            last_traded_price=0.6,
+            metadata={"no_token_id": "no-token", "condition_id": "0xmarket"},
+        ),
+    )
+
+    stats = asyncio.run(
+        recover_live_state(
+            risk_manager=manager,
+            execution=execution,
+            snapshots=snapshots,
+            recovery_scope="session",
+            session_started_at=datetime.now(tz=UTC) - timedelta(seconds=10),
+        )
+    )
+
+    assert stats.open_orders_recovered == 1
+    assert stats.trades_replayed == 1
+    assert stats.positions_rebuilt == 1
+    assert stats.historical_open_orders_skipped == 1
+    assert stats.historical_trades_skipped == 1
+    assert execution.tracker.get("historical-open-1") is None
+    assert execution.tracker.get("session-open-1") is not None
+    dashboard = manager.dashboard_state()
+    assert len(dashboard.open_positions) == 1
+    assert dashboard.open_positions[0].shares == 5.0
+    assert dashboard.today_pnl == 0.5
+
+
+def test_recover_live_state_is_idempotent_across_reconnect_replays() -> None:
+    execution = PolymarketLiveExecutionAdapter.from_settings(
+        settings=PolymarketSettings(
+            allow_live_orders=True,
+            derive_api_creds_if_missing=True,
+            live_recovery_scope="session",
+        ),
+        ttl_seconds=15,
+        env={
+            "POLYMARKET_PRIVATE_KEY": "0xabc",
+            "POLYMARKET_FUNDER": "0xme",
+        },
+        geoblock_status=__import__("pm_bot.adapters.polymarket.geoblock_client", fromlist=["GeoblockStatus"]).GeoblockStatus(
+            blocked=False,
+            country="HK",
+            region="",
+            ip="141.11.22.34",
+        ),
+        client_factory=SessionScopedRecoveryClient,
+    )
+    manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    session_started_at = datetime.now(tz=UTC) - timedelta(seconds=10)
+    snapshots = (
+        MarketSnapshot(
+            market_id="m1",
+            token_id="yes-token",
+            slug="btc-above",
+            category=Category.CRYPTO,
+            timestamp=datetime.now(tz=UTC),
+            resolution_time=None,
+            best_bid_yes=0.6,
+            best_ask_yes=0.61,
+            best_bid_no=0.39,
+            best_ask_no=0.4,
+            last_traded_price=0.6,
+            metadata={"no_token_id": "no-token", "condition_id": "0xmarket"},
+        ),
+    )
+
+    first_stats = asyncio.run(
+        recover_live_state(
+            risk_manager=manager,
+            execution=execution,
+            snapshots=snapshots,
+            recovery_scope="session",
+            session_started_at=session_started_at,
+        )
+    )
+    second_stats = asyncio.run(
+        recover_live_state(
+            risk_manager=manager,
+            execution=execution,
+            snapshots=snapshots,
+            recovery_scope="session",
+            session_started_at=session_started_at,
+        )
+    )
+
+    assert first_stats.trades_replayed == 1
+    assert first_stats.open_orders_recovered == 1
+    assert second_stats.trades_replayed == 0
+    assert second_stats.open_orders_recovered == 0
+    dashboard = manager.dashboard_state()
+    assert len(dashboard.open_positions) == 1
+    assert dashboard.open_positions[0].shares == 5.0

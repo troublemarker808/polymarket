@@ -14,10 +14,10 @@ from typing import Any, Protocol
 
 import websockets
 
-from pm_bot.adapters.polymarket.clob_client import OrderBookLevel
-from pm_bot.core.types import MarketSnapshot
+from pm_bot.core.types import MarketSnapshot, OrderBookLevel
 
 MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+_PRICE_EPSILON = 1e-9
 
 
 @dataclass(slots=True, frozen=True)
@@ -203,14 +203,20 @@ class MarketChannelSnapshotFeed:
         metadata = dict(snapshot.metadata)
         metadata["ws_event"] = "best_bid_ask"
         metadata["ws_market"] = event.market
+        depth_fields = _depth_fields_for_top_of_book(
+            snapshot=snapshot,
+            best_bid=event.best_bid,
+            best_ask=event.best_ask,
+        )
 
         return replace(
             snapshot,
-            timestamp=event.timestamp or snapshot.timestamp,
+            timestamp=_coalesce_event_timestamp(snapshot=snapshot, event_timestamp=event.timestamp),
             best_bid_yes=event.best_bid,
             best_ask_yes=event.best_ask,
             best_bid_no=_infer_complement_bid(event.best_ask),
             best_ask_no=_infer_complement_ask(event.best_bid),
+            **depth_fields,
             metadata=metadata,
         )
 
@@ -219,15 +225,19 @@ class MarketChannelSnapshotFeed:
         if snapshot is None:
             return None
 
+        event_timestamp = _coalesce_event_timestamp(snapshot=snapshot, event_timestamp=event.timestamp)
         metadata = dict(snapshot.metadata)
         metadata["ws_event"] = "last_trade_price"
         metadata["last_trade_side"] = event.side
         metadata["last_trade_size"] = str(event.size)
+        metadata["last_trade_event_at"] = event_timestamp.isoformat()
 
         return replace(
             snapshot,
-            timestamp=event.timestamp or snapshot.timestamp,
+            timestamp=event_timestamp,
             last_traded_price=event.price,
+            last_trade_side=event.side,
+            last_trade_size=event.size,
             metadata=metadata,
         )
 
@@ -241,14 +251,26 @@ class MarketChannelSnapshotFeed:
         metadata = dict(snapshot.metadata)
         metadata["ws_event"] = "book"
         metadata["ws_book_hash"] = event.hash
+        yes_bid_levels = tuple(sorted(event.bids, key=lambda level: level.price, reverse=True))
+        yes_ask_levels = tuple(sorted(event.asks, key=lambda level: level.price))
+        no_bid_levels = _complement_bid_levels(yes_ask_levels)
+        no_ask_levels = _complement_ask_levels(yes_bid_levels)
 
         return replace(
             snapshot,
-            timestamp=event.timestamp or snapshot.timestamp,
+            timestamp=_coalesce_event_timestamp(snapshot=snapshot, event_timestamp=event.timestamp),
             best_bid_yes=best_bid,
             best_ask_yes=best_ask,
             best_bid_no=_infer_complement_bid(best_ask),
             best_ask_no=_infer_complement_ask(best_bid),
+            best_bid_yes_size=_best_level_size(yes_bid_levels),
+            best_ask_yes_size=_best_level_size(yes_ask_levels),
+            best_bid_no_size=_best_level_size(no_bid_levels),
+            best_ask_no_size=_best_level_size(no_ask_levels),
+            yes_bid_levels=yes_bid_levels,
+            yes_ask_levels=yes_ask_levels,
+            no_bid_levels=no_bid_levels,
+            no_ask_levels=no_ask_levels,
             metadata=metadata,
         )
 
@@ -263,14 +285,20 @@ class MarketChannelSnapshotFeed:
             metadata["ws_event"] = "price_change"
             metadata["ws_price_change_side"] = change.side
             metadata["ws_price_change_hash"] = change.hash
+            depth_fields = _depth_fields_for_top_of_book(
+                snapshot=snapshot,
+                best_bid=change.best_bid,
+                best_ask=change.best_ask,
+            )
 
             updated_snapshot = replace(
                 snapshot,
-                timestamp=event.timestamp or snapshot.timestamp,
+                timestamp=_coalesce_event_timestamp(snapshot=snapshot, event_timestamp=event.timestamp),
                 best_bid_yes=change.best_bid,
                 best_ask_yes=change.best_ask,
                 best_bid_no=_infer_complement_bid(change.best_ask),
                 best_ask_no=_infer_complement_ask(change.best_bid),
+                **depth_fields,
                 metadata=metadata,
             )
             self.snapshots_by_token[change.asset_id] = updated_snapshot
@@ -289,7 +317,7 @@ class MarketChannelSnapshotFeed:
 
         return replace(
             snapshot,
-            timestamp=event.timestamp or snapshot.timestamp,
+            timestamp=_coalesce_event_timestamp(snapshot=snapshot, event_timestamp=event.timestamp),
             metadata=metadata,
         )
 
@@ -306,7 +334,7 @@ class MarketChannelSnapshotFeed:
 
         return replace(
             snapshot,
-            timestamp=event.timestamp or snapshot.timestamp,
+            timestamp=_coalesce_event_timestamp(snapshot=snapshot, event_timestamp=event.timestamp),
             metadata=metadata,
         )
 
@@ -463,6 +491,16 @@ def _parse_ws_timestamp(value: Any) -> datetime | None:
     return datetime.fromisoformat(normalized)
 
 
+def _coalesce_event_timestamp(
+    *,
+    snapshot: MarketSnapshot,
+    event_timestamp: datetime | None,
+) -> datetime:
+    if event_timestamp is None or event_timestamp < snapshot.timestamp:
+        return snapshot.timestamp
+    return event_timestamp
+
+
 def _infer_complement_bid(best_ask_yes: float | None) -> float | None:
     if best_ask_yes is None:
         return None
@@ -473,3 +511,90 @@ def _infer_complement_ask(best_bid_yes: float | None) -> float | None:
     if best_bid_yes is None:
         return None
     return round(1.0 - best_bid_yes, 6)
+
+
+def _depth_fields_for_top_of_book(
+    *,
+    snapshot: MarketSnapshot,
+    best_bid: float | None,
+    best_ask: float | None,
+) -> dict[str, object]:
+    if _book_depth_matches_top_of_book(snapshot=snapshot, best_bid=best_bid, best_ask=best_ask):
+        return {
+            "best_bid_yes_size": snapshot.best_bid_yes_size,
+            "best_ask_yes_size": snapshot.best_ask_yes_size,
+            "best_bid_no_size": snapshot.best_bid_no_size,
+            "best_ask_no_size": snapshot.best_ask_no_size,
+            "yes_bid_levels": snapshot.yes_bid_levels,
+            "yes_ask_levels": snapshot.yes_ask_levels,
+            "no_bid_levels": snapshot.no_bid_levels,
+            "no_ask_levels": snapshot.no_ask_levels,
+        }
+    return {
+        "best_bid_yes_size": None,
+        "best_ask_yes_size": None,
+        "best_bid_no_size": None,
+        "best_ask_no_size": None,
+        "yes_bid_levels": (),
+        "yes_ask_levels": (),
+        "no_bid_levels": (),
+        "no_ask_levels": (),
+    }
+
+
+def _book_depth_matches_top_of_book(
+    *,
+    snapshot: MarketSnapshot,
+    best_bid: float | None,
+    best_ask: float | None,
+) -> bool:
+    return _levels_match_summary(
+        levels=snapshot.yes_bid_levels,
+        summary_price=best_bid,
+    ) and _levels_match_summary(
+        levels=snapshot.yes_ask_levels,
+        summary_price=best_ask,
+    )
+
+
+def _levels_match_summary(
+    *,
+    levels: tuple[OrderBookLevel, ...],
+    summary_price: float | None,
+) -> bool:
+    if not levels:
+        return True
+    if summary_price is None:
+        return False
+    return abs(levels[0].price - summary_price) <= _PRICE_EPSILON
+
+
+def _best_level_size(levels: tuple[OrderBookLevel, ...]) -> float | None:
+    if not levels:
+        return None
+    return levels[0].size
+
+
+def _complement_bid_levels(levels: tuple[OrderBookLevel, ...]) -> tuple[OrderBookLevel, ...]:
+    return tuple(
+        sorted(
+            (
+                OrderBookLevel(price=round(1.0 - level.price, 6), size=level.size)
+                for level in levels
+            ),
+            key=lambda level: level.price,
+            reverse=True,
+        )
+    )
+
+
+def _complement_ask_levels(levels: tuple[OrderBookLevel, ...]) -> tuple[OrderBookLevel, ...]:
+    return tuple(
+        sorted(
+            (
+                OrderBookLevel(price=round(1.0 - level.price, 6), size=level.size)
+                for level in levels
+            ),
+            key=lambda level: level.price,
+        )
+    )

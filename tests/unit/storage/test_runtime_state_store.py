@@ -41,6 +41,7 @@ def test_runtime_state_store_round_trips_state(tmp_path) -> None:
                 status="pending",
                 created_at=datetime(2026, 3, 23, 10, 1, 0, tzinfo=UTC),
                 updated_at=datetime(2026, 3, 23, 10, 1, 0, tzinfo=UTC),
+                signal_edge_bps=175.0,
             )
         },
         status=RuntimeStatus.HALTED,
@@ -60,3 +61,4 @@ def test_runtime_state_store_round_trips_state(tmp_path) -> None:
     assert loaded.open_positions["m1"].category == Category.CRYPTO
     assert loaded.pending_orders["o1"].status == "pending"
     assert loaded.pending_orders["o1"].side == "buy_no"
+    assert loaded.pending_orders["o1"].signal_edge_bps == 175.0

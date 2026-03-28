@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 
 from pm_bot.core.types import MarketSnapshot
 from pm_bot.execution.paper_adapter import PaperExecutionAdapter, PaperReconcileUpdate
+from pm_bot.execution.paper_matching import PaperMatchEvent
+from pm_bot.runtime.execution_artifacts import tracked_order_payload
 
 if TYPE_CHECKING:
     from pm_bot.core.interfaces import EventRecorder, RiskManager
@@ -35,17 +37,11 @@ async def sync_paper_execution_state(
                 event_type="runtime.day_rollover",
                 payload={"effective_at": snapshot.timestamp.isoformat()},
             )
-        for order in update.filled_orders:
+        for event in update.events:
             await _record(
                 recorder=recorder,
-                event_type="order.filled",
-                payload=_order_payload(order),
-            )
-        for order in update.expired_orders:
-            await _record(
-                recorder=recorder,
-                event_type="order.expired",
-                payload=_order_payload(order),
+                event_type=event.event_type,
+                payload=order_payload_from_match_event(order=event.order, snapshot=snapshot, match_event=event),
             )
         for trade in closed_trades:
             await _record(
@@ -54,9 +50,12 @@ async def sync_paper_execution_state(
                 payload={
                     "market_id": trade.market_id,
                     "token_id": trade.token_id,
+                    "strategy_id": trade.strategy_id,
+                    "intent_id": trade.intent_id,
                     "realized_pnl": trade.realized_pnl,
                     "fees_paid": trade.fees_paid,
                     "net_pnl": trade.net_pnl,
+                    "closed_at": trade.closed_at.isoformat(),
                 },
             )
 
@@ -79,17 +78,17 @@ async def _record(
     await recorder.record(event_type=event_type, payload=dict(payload))
 
 
-def _order_payload(order) -> dict[str, object]:
-    average_fill_price = 0.0
-    if order.matched_shares > 0:
-        average_fill_price = order.matched_notional / order.matched_shares
-    return {
-        "order_id": order.order_id,
-        "market_id": order.market_id,
-        "token_id": order.token_id,
-        "strategy_id": order.strategy_id,
-        "status": order.status.value,
-        "matched_shares": order.matched_shares,
-        "matched_notional": order.matched_notional,
-        "average_fill_price": average_fill_price,
-    }
+def order_payload_from_match_event(
+    *,
+    order,
+    snapshot: MarketSnapshot,
+    match_event: PaperMatchEvent,
+) -> dict[str, object]:
+    return tracked_order_payload(
+        order=order,
+        snapshot=snapshot,
+        fill_shares_delta=match_event.fill_shares,
+        fill_notional_delta=match_event.fill_notional,
+        fees_paid_delta=match_event.fee_paid,
+        fill_source=match_event.fill_source,
+    )

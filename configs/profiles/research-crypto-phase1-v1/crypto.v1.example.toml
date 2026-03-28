@@ -1,0 +1,24 @@
+category = "crypto"
+enabled_strategies = ["crypto.surface", "crypto.maker"]
+
+[markets]
+assets = ["BTC", "ETH"]
+expiries = ["1y"]
+min_liquidity_score = 0.5
+
+[strategy.surface]
+min_edge_bps = 250
+max_curve_mispricing_bps = 1500
+exit_edge_bps = 75
+stop_loss_bps = 250
+stop_loss_cooldown_seconds = 180
+
+[strategy.maker]
+min_spread_bps = 100
+inventory_skew_strength = 0.5
+quote_ttl_seconds = 15
+global_cooldown_seconds = 0
+market_cooldown_seconds = 20
+failure_cooldown_seconds = 30
+min_requote_edge_improvement_bps = 50
+failure_reentry_edge_improvement_bps = 75

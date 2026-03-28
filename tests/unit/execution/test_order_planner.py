@@ -24,6 +24,7 @@ def test_signal_to_order_intent_maps_fields() -> None:
         confidence=0.7,
         edge_bps=320,
         generated_at=datetime.now(tz=timezone.utc),
+        quote_ttl_seconds=12,
     )
 
     intent = signal_to_order_intent(signal=signal, snapshot=snapshot, default_size=25.0)
@@ -35,6 +36,8 @@ def test_signal_to_order_intent_maps_fields() -> None:
     assert intent.price == 0.58
     assert intent.notional == 25.0
     assert intent.size == round(25.0 / 0.58, 6)
+    assert intent.quote_ttl_seconds == 12
+    assert intent.signal_edge_bps == 320
 
 
 def test_signal_to_order_intent_returns_none_for_hold() -> None:

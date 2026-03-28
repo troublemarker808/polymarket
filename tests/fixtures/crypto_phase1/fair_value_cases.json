@@ -1,0 +1,12 @@
+{
+  "eth_down_ladder": {
+    "spot_price": 1850.0,
+    "realized_volatility": 0.62,
+    "implied_volatility": 0.71,
+    "observed_probabilities": {
+      "eth-dip-1500": 0.71,
+      "eth-dip-1000": 0.255,
+      "eth-dip-800": 0.195
+    }
+  }
+}

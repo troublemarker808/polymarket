@@ -12,8 +12,10 @@ from typing import Any
 
 from pm_bot.adapters.in_memory import InMemoryMarketDataAdapter
 from pm_bot.config.loader import load_settings_from_directory
-from pm_bot.core.types import Category, MarketSnapshot
+from pm_bot.core.settings import BotSettings
+from pm_bot.core.types import Category, MarketSnapshot, OrderBookLevel
 from pm_bot.execution.paper_adapter import PaperExecutionAdapter
+from pm_bot.execution.paper_metrics import PaperExecutionMetrics
 from pm_bot.orchestrator.event_router import EventRouter
 from pm_bot.registry import build_default_registry
 from pm_bot.risk.manager import BasicRiskManager
@@ -40,15 +42,38 @@ class ResearchRunResult:
 class ResearchRecorder:
     """Capture research events in memory and optionally mirror them to JSONL."""
 
-    def __init__(self, path: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        path: str | Path | None = None,
+        metrics_path: str | Path | None = None,
+    ) -> None:
         self.events: list[dict[str, Any]] = []
-        self._jsonl = JsonlRecorder(path) if path is not None else None
+        if path is not None:
+            event_path = Path(path)
+            event_path.parent.mkdir(parents=True, exist_ok=True)
+            event_path.touch(exist_ok=True)
+            self._jsonl = JsonlRecorder(event_path)
+        else:
+            self._jsonl = None
+        self.metrics = PaperExecutionMetrics()
+        self._metrics_path = Path(metrics_path) if metrics_path is not None else None
 
     async def record(self, event_type: str, payload: Mapping[str, object]) -> None:
         event = {"event_type": event_type, "payload": dict(payload)}
         self.events.append(event)
+        self.metrics.record_event(event_type=event_type, payload=dict(payload))
         if self._jsonl is not None:
             await self._jsonl.record(event_type=event_type, payload=dict(payload))
+        self._persist_metrics()
+
+    def note_snapshot(self, timestamp: datetime) -> None:
+        self.metrics.note_snapshot(timestamp)
+        self._persist_metrics()
+
+    def _persist_metrics(self) -> None:
+        if self._metrics_path is None:
+            return
+        self.metrics.write(self._metrics_path)
 
 
 def load_market_snapshots(path: str | Path) -> list[MarketSnapshot]:
@@ -56,11 +81,11 @@ def load_market_snapshots(path: str | Path) -> list[MarketSnapshot]:
     if snapshot_path.suffix == ".jsonl":
         raw_records = [
             json.loads(line)
-            for line in snapshot_path.read_text(encoding="utf-8").splitlines()
+            for line in snapshot_path.read_text(encoding="utf-8-sig").splitlines()
             if line.strip()
         ]
     elif snapshot_path.suffix == ".json":
-        with snapshot_path.open("r", encoding="utf-8") as handle:
+        with snapshot_path.open("r", encoding="utf-8-sig") as handle:
             decoded = json.load(handle)
         if isinstance(decoded, list):
             raw_records = decoded
@@ -80,13 +105,18 @@ async def run_replay(
     config_dir: str = "configs",
     limit: int | None = None,
     recorder_path: str | Path | None = None,
+    metrics_path: str | Path | None = None,
 ) -> ResearchRunResult:
-    return await _run_research(
+    settings = load_settings_from_directory(config_dir)
+    snapshots = load_market_snapshots(snapshot_path)
+    if limit is not None:
+        snapshots = snapshots[: max(limit, 0)]
+    return await run_replay_snapshots(
         mode="replay",
-        snapshot_path=snapshot_path,
-        config_dir=config_dir,
-        limit=limit,
+        snapshots=snapshots,
+        settings=settings,
         recorder_path=recorder_path,
+        metrics_path=metrics_path,
     )
 
 
@@ -96,13 +126,18 @@ async def run_backtest(
     config_dir: str = "configs",
     limit: int | None = None,
     recorder_path: str | Path | None = None,
+    metrics_path: str | Path | None = None,
 ) -> ResearchRunResult:
-    return await _run_research(
+    settings = load_settings_from_directory(config_dir)
+    snapshots = load_market_snapshots(snapshot_path)
+    if limit is not None:
+        snapshots = snapshots[: max(limit, 0)]
+    return await run_replay_snapshots(
         mode="backtest",
-        snapshot_path=snapshot_path,
-        config_dir=config_dir,
-        limit=limit,
+        snapshots=snapshots,
+        settings=settings,
         recorder_path=recorder_path,
+        metrics_path=metrics_path,
     )
 
 
@@ -123,19 +158,14 @@ def format_research_summary(result: ResearchRunResult) -> str:
     )
 
 
-async def _run_research(
+async def run_replay_snapshots(
     *,
     mode: str,
-    snapshot_path: str | Path,
-    config_dir: str,
-    limit: int | None,
+    snapshots: Sequence[MarketSnapshot],
+    settings: BotSettings,
     recorder_path: str | Path | None,
+    metrics_path: str | Path | None = None,
 ) -> ResearchRunResult:
-    settings = load_settings_from_directory(config_dir)
-    snapshots = load_market_snapshots(snapshot_path)
-    if limit is not None:
-        snapshots = snapshots[: max(limit, 0)]
-
     registry = build_default_registry()
     strategies = registry.build_enabled(settings=settings)
     risk_manager = BasicRiskManager(
@@ -148,8 +178,14 @@ async def _run_research(
             updated_at=(snapshots[0].timestamp if snapshots else datetime.now(tz=timezone.utc)),
         ),
     )
-    execution = PaperExecutionAdapter(ttl_seconds=settings.trading.default_quote_ttl_seconds)
-    recorder = ResearchRecorder(recorder_path)
+    execution = PaperExecutionAdapter(
+        ttl_seconds=settings.trading.default_quote_ttl_seconds,
+        place_latency_ms=settings.trading.paper_place_latency_ms,
+        cancel_latency_ms=settings.trading.paper_cancel_latency_ms,
+        fee_bps=settings.trading.paper_fee_bps,
+        taker_slippage_bps=settings.trading.paper_taker_slippage_bps,
+    )
+    recorder = ResearchRecorder(path=recorder_path, metrics_path=metrics_path)
     router = EventRouter(
         market_data=InMemoryMarketDataAdapter(snapshots),
         strategies=strategies,
@@ -162,6 +198,7 @@ async def _run_research(
     processed = 0
     for snapshot in snapshots:
         risk_manager.record_data_success(snapshot.timestamp)
+        recorder.note_snapshot(snapshot.timestamp)
         await sync_paper_execution_state(
             risk_manager=risk_manager,
             execution=execution,
@@ -243,7 +280,19 @@ def _market_snapshot_from_record(record: Any) -> MarketSnapshot:
         best_ask_yes=_parse_optional_float(payload.get("best_ask_yes")),
         best_bid_no=_parse_optional_float(payload.get("best_bid_no")),
         best_ask_no=_parse_optional_float(payload.get("best_ask_no")),
+        best_bid_yes_size=_parse_optional_float(payload.get("best_bid_yes_size")),
+        best_ask_yes_size=_parse_optional_float(payload.get("best_ask_yes_size")),
+        best_bid_no_size=_parse_optional_float(payload.get("best_bid_no_size")),
+        best_ask_no_size=_parse_optional_float(payload.get("best_ask_no_size")),
+        tick_size=_parse_optional_float(payload.get("tick_size")),
+        min_order_size=_parse_optional_float(payload.get("min_order_size")),
         last_traded_price=_parse_optional_float(payload.get("last_traded_price")),
+        last_trade_side=_parse_optional_str(payload.get("last_trade_side")),
+        last_trade_size=_parse_optional_float(payload.get("last_trade_size")),
+        yes_bid_levels=_parse_levels(payload.get("yes_bid_levels")),
+        yes_ask_levels=_parse_levels(payload.get("yes_ask_levels")),
+        no_bid_levels=_parse_levels(payload.get("no_bid_levels")),
+        no_ask_levels=_parse_levels(payload.get("no_ask_levels")),
         liquidity_score=float(payload.get("liquidity_score", 0.0)),
         metadata=metadata,
     )
@@ -262,3 +311,26 @@ def _parse_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _parse_optional_str(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    return str(value)
+
+
+def _parse_levels(raw_levels: Any) -> tuple[OrderBookLevel, ...]:
+    if raw_levels is None:
+        return ()
+    if not isinstance(raw_levels, Sequence) or isinstance(raw_levels, (str, bytes)):
+        return ()
+    levels: list[OrderBookLevel] = []
+    for level in raw_levels:
+        if not isinstance(level, Mapping):
+            continue
+        price = _parse_optional_float(level.get("price"))
+        size = _parse_optional_float(level.get("size"))
+        if price is None or size is None:
+            continue
+        levels.append(OrderBookLevel(price=price, size=size))
+    return tuple(levels)

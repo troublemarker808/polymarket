@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
@@ -13,10 +14,28 @@ from pm_bot.strategies.common import (
     dashboard_state,
     has_pending_order,
     implied_yes_probability,
+    parse_float,
+    parse_datetime,
     parse_probability,
+    recent_runtime_events,
 )
 
 _INSIDE_TICK = 0.01
+
+
+@dataclass(slots=True)
+class _EntryQuoteState:
+    generated_at: datetime
+    side: SignalSide
+    edge_bps: float
+
+
+@dataclass(slots=True)
+class _RecentFailureState:
+    occurred_at: datetime
+    edge_bps: float | None
+    event_type: str
+    reason: str | None
 
 
 class CryptoMakerConfig:
@@ -24,6 +43,18 @@ class CryptoMakerConfig:
         self.min_spread_bps = float(config.get("min_spread_bps", 100))
         self.inventory_skew_strength = float(config.get("inventory_skew_strength", 0.5))
         self.quote_ttl_seconds = int(config.get("quote_ttl_seconds", 10))
+        self.global_cooldown_seconds = int(config.get("global_cooldown_seconds", 0))
+        self.market_cooldown_seconds = int(config.get("market_cooldown_seconds", 20))
+        self.failure_cooldown_seconds = int(config.get("failure_cooldown_seconds", 0))
+        self.min_requote_edge_improvement_bps = float(
+            config.get("min_requote_edge_improvement_bps", 50)
+        )
+        self.failure_reentry_edge_improvement_bps = float(
+            config.get(
+                "failure_reentry_edge_improvement_bps",
+                self.min_requote_edge_improvement_bps,
+            )
+        )
 
 
 class CryptoMakerStrategy:
@@ -31,6 +62,8 @@ class CryptoMakerStrategy:
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = CryptoMakerConfig(config)
+        self._last_entry_by_market: dict[str, _EntryQuoteState] = {}
+        self._last_global_entry: tuple[str, datetime] | None = None
 
     async def evaluate(
         self,
@@ -93,6 +126,9 @@ class CryptoMakerStrategy:
                 signal.side == SignalSide.BUY_YES,
             ),
         )
+        if not self._should_emit_entry(signal=best_signal, context=context):
+            return []
+        self._remember_entry(signal=best_signal)
         return [best_signal]
 
     def _entry_candidate(
@@ -126,8 +162,9 @@ class CryptoMakerStrategy:
             side=side,
             confidence=0.62,
             edge_bps=edge_bps,
-            generated_at=datetime.now(tz=timezone.utc),
+            generated_at=snapshot.timestamp,
             target_price=quote_price,
+            quote_ttl_seconds=self.config.quote_ttl_seconds,
             rationale_tags=("crypto_maker", "inside_spread"),
         )
 
@@ -179,11 +216,102 @@ class CryptoMakerStrategy:
             side=side,
             confidence=0.6,
             edge_bps=max(0.0, edge_remaining_bps),
-            generated_at=datetime.now(tz=timezone.utc),
+            generated_at=snapshot.timestamp,
             target_price=exit_price,
             target_size=target_notional,
+            quote_ttl_seconds=self.config.quote_ttl_seconds,
             rationale_tags=("crypto_maker_exit", rationale),
         )
+
+    def _should_emit_entry(
+        self,
+        *,
+        signal: StrategySignal,
+        context: Mapping[str, object],
+    ) -> bool:
+        if not self._passes_failure_cooldown(signal=signal, context=context):
+            return False
+        previous = self._last_entry_by_market.get(signal.market_id)
+        if previous is None:
+            return self._passes_global_cooldown(signal=signal)
+        if signal.side != previous.side:
+            return self._passes_global_cooldown(signal=signal)
+        if signal.generated_at <= previous.generated_at:
+            return False
+        if self.config.market_cooldown_seconds > 0:
+            elapsed_seconds = (signal.generated_at - previous.generated_at).total_seconds()
+            if elapsed_seconds < self.config.market_cooldown_seconds:
+                edge_improvement_bps = signal.edge_bps - previous.edge_bps
+                if edge_improvement_bps < self.config.min_requote_edge_improvement_bps:
+                    return False
+        return self._passes_global_cooldown(signal=signal)
+
+    def _remember_entry(self, *, signal: StrategySignal) -> None:
+        self._last_entry_by_market[signal.market_id] = _EntryQuoteState(
+            generated_at=signal.generated_at,
+            side=signal.side,
+            edge_bps=signal.edge_bps,
+        )
+        self._last_global_entry = (signal.market_id, signal.generated_at)
+
+    def _passes_global_cooldown(self, *, signal: StrategySignal) -> bool:
+        if self.config.global_cooldown_seconds <= 0:
+            return True
+        previous = self._last_global_entry
+        if previous is None:
+            return True
+        previous_market_id, previous_generated_at = previous
+        if previous_market_id == signal.market_id:
+            return True
+        elapsed_seconds = (signal.generated_at - previous_generated_at).total_seconds()
+        return elapsed_seconds >= self.config.global_cooldown_seconds
+
+    def _passes_failure_cooldown(
+        self,
+        *,
+        signal: StrategySignal,
+        context: Mapping[str, object],
+    ) -> bool:
+        if self.config.failure_cooldown_seconds <= 0:
+            return True
+        failure = self._recent_failure(signal=signal, context=context)
+        if failure is None:
+            return True
+        elapsed_seconds = (signal.generated_at - failure.occurred_at).total_seconds()
+        if elapsed_seconds >= self.config.failure_cooldown_seconds:
+            return True
+        if failure.edge_bps is None:
+            return False
+        edge_improvement_bps = signal.edge_bps - failure.edge_bps
+        return edge_improvement_bps >= self.config.failure_reentry_edge_improvement_bps
+
+    def _recent_failure(
+        self,
+        *,
+        signal: StrategySignal,
+        context: Mapping[str, object],
+    ) -> _RecentFailureState | None:
+        for event in reversed(recent_runtime_events(context)):
+            event_type = str(event.get("event_type", "")).strip()
+            payload = event.get("payload")
+            if not isinstance(payload, Mapping):
+                continue
+            if str(payload.get("market_id", "")).strip() != signal.market_id:
+                continue
+            if str(payload.get("strategy_id", "")).strip() not in {"", self.strategy_id}:
+                continue
+            if not _is_failure_event(event_type=event_type, payload=payload):
+                continue
+            occurred_at = parse_datetime(payload, "updated_at", "created_at", "generated_at")
+            if occurred_at is None or occurred_at > signal.generated_at:
+                continue
+            return _RecentFailureState(
+                occurred_at=occurred_at,
+                edge_bps=parse_float(payload, "signal_edge_bps", "edge_bps"),
+                event_type=event_type,
+                reason=str(payload.get("reason", "")).strip() or None,
+            )
+        return None
 
 
 def _maker_buy_price(
@@ -207,3 +335,18 @@ def _spread_bps(best_bid: float | None, best_ask: float | None) -> float:
     if best_bid is None or best_ask is None:
         return 0.0
     return max(0.0, (best_ask - best_bid) * 10000)
+
+
+def _is_failure_event(*, event_type: str, payload: Mapping[str, Any]) -> bool:
+    if event_type == "order.expired":
+        return True
+    if event_type == "order.canceled":
+        return str(payload.get("reason", "")).strip() == "open_order_replaced"
+    if event_type == "order.rejected":
+        reason = str(payload.get("reason", "")).strip()
+        return reason not in {
+            "",
+            "daily order hard limit reached",
+            "daily order soft limit reached",
+        }
+    return False

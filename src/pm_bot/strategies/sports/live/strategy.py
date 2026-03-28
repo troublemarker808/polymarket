@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
 from typing import Any
 
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
@@ -112,7 +111,7 @@ class SportsLiveStrategy:
                         side=SignalSide.BUY_YES,
                         confidence=0.75,
                         edge_bps=buy_yes_edge_bps,
-                        generated_at=datetime.now(tz=timezone.utc),
+                        generated_at=snapshot.timestamp,
                         target_price=buy_yes_price,
                         rationale_tags=("sports_live", "fresh_state"),
                     )
@@ -139,7 +138,7 @@ class SportsLiveStrategy:
                         side=SignalSide.BUY_NO,
                         confidence=0.75,
                         edge_bps=buy_no_edge_bps,
-                        generated_at=datetime.now(tz=timezone.utc),
+                        generated_at=snapshot.timestamp,
                         target_price=buy_no_price,
                         rationale_tags=("sports_live", "fresh_state"),
                     )
@@ -190,7 +189,7 @@ class SportsLiveStrategy:
             side=side,
             confidence=0.7,
             edge_bps=max(0.0, edge_remaining_bps),
-            generated_at=datetime.now(tz=timezone.utc),
+            generated_at=snapshot.timestamp,
             target_price=exit_price,
             target_size=target_notional,
             rationale_tags=("sports_live_exit", rationale),

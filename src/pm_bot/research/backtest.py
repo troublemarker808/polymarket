@@ -13,6 +13,7 @@ async def run_backtest(
     config_dir: str = "configs",
     limit: int | None = None,
     recorder_path: str | Path | None = None,
+    metrics_path: str | Path | None = None,
 ) -> ResearchRunResult:
     """Run a file-backed backtest over normalized snapshot inputs."""
 
@@ -21,4 +22,5 @@ async def run_backtest(
         config_dir=config_dir,
         limit=limit,
         recorder_path=recorder_path,
+        metrics_path=metrics_path,
     )

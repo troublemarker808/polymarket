@@ -1,0 +1,9 @@
+{
+  "daily_high_temperature_threshold": {
+    "event_slug": "nyc-high-temp",
+    "question_prefix": "Will NYC high temperature be above",
+    "location": "NYC",
+    "settlement_source": "nws_noaa_daily_climate",
+    "station_id": "KNYC"
+  }
+}

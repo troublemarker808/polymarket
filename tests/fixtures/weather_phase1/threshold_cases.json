@@ -1,0 +1,14 @@
+{
+  "series": [
+    {
+      "market_id": "w70",
+      "threshold": 70.0,
+      "observed_probability": 0.79
+    },
+    {
+      "market_id": "w75",
+      "threshold": 75.0,
+      "observed_probability": 0.73
+    }
+  ]
+}

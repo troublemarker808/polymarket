@@ -1,0 +1,18 @@
+[
+  {
+    "underlying": "ETH",
+    "as_of": "2026-03-27T15:14:00Z",
+    "spot_price": 1850.0,
+    "daily_return": -0.032,
+    "realized_volatility": 0.62,
+    "implied_volatility": 0.71
+  },
+  {
+    "underlying": "BTC",
+    "as_of": "2026-03-27T15:15:00Z",
+    "spot_price": 79000.0,
+    "daily_return": -0.028,
+    "realized_volatility": 0.58,
+    "implied_volatility": 0.66
+  }
+]

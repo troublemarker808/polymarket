@@ -34,6 +34,17 @@ def dashboard_state(context: Mapping[str, object]) -> DashboardState | None:
     return None
 
 
+def recent_runtime_events(context: Mapping[str, object]) -> tuple[Mapping[str, Any], ...]:
+    raw_events = context.get("recent_events")
+    if not isinstance(raw_events, Sequence) or isinstance(raw_events, (str, bytes, bytearray)):
+        return ()
+    events: list[Mapping[str, Any]] = []
+    for event in raw_events:
+        if isinstance(event, Mapping):
+            events.append(event)
+    return tuple(events)
+
+
 def current_position(
     *,
     snapshot: MarketSnapshot,

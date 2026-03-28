@@ -18,6 +18,8 @@ class LiveRecoveryStats:
     open_orders_recovered: int = 0
     trades_replayed: int = 0
     positions_rebuilt: int = 0
+    historical_open_orders_skipped: int = 0
+    historical_trades_skipped: int = 0
 
 
 async def recover_live_state(
@@ -25,25 +27,45 @@ async def recover_live_state(
     risk_manager: RiskManager,
     execution: PolymarketLiveExecutionAdapter,
     snapshots: tuple[MarketSnapshot, ...] | list[MarketSnapshot],
+    recovery_scope: str = "full",
+    session_started_at: datetime | None = None,
 ) -> LiveRecoveryStats:
     """Rebuild local live state from authenticated CLOB order and trade history."""
 
     trades = await execution.fetch_trade_history()
     open_orders = await execution.fetch_open_orders()
+    if recovery_scope not in {"full", "session"}:
+        raise ValueError(f"Unsupported live recovery scope: {recovery_scope}")
+    if recovery_scope == "session":
+        if session_started_at is None:
+            raise ValueError("session_started_at is required when recovery_scope='session'")
+        replayable_trades = [
+            trade
+            for trade in trades
+            if _trade_within_session(trade=trade, session_started_at=session_started_at)
+        ]
+        replayable_open_orders = [
+            raw_order
+            for raw_order in open_orders
+            if _open_order_within_session(raw_order=raw_order, session_started_at=session_started_at)
+        ]
+    else:
+        replayable_trades = list(trades)
+        replayable_open_orders = list(open_orders)
     snapshot_index = _SnapshotIndex(tuple(snapshots))
     snapshot_index.hydrate_from_history(
-        trades=tuple(trades),
-        open_orders=tuple(open_orders),
+        trades=tuple(replayable_trades),
+        open_orders=tuple(replayable_open_orders),
     )
     execution.position_ledger.register_snapshots(snapshot_index.snapshots())
 
     trades_replayed = 0
-    for trade in sorted(trades, key=_trade_sort_key):
+    for trade in sorted(replayable_trades, key=_trade_sort_key):
         if _replay_trade(trade=trade, execution=execution, snapshot_index=snapshot_index):
             trades_replayed += 1
 
     open_orders_recovered = 0
-    for raw_order in open_orders:
+    for raw_order in replayable_open_orders:
         if _restore_open_order(raw_order=raw_order, execution=execution, snapshot_index=snapshot_index):
             open_orders_recovered += 1
 
@@ -61,6 +83,8 @@ async def recover_live_state(
         open_orders_recovered=open_orders_recovered,
         trades_replayed=trades_replayed,
         positions_rebuilt=len(marked_positions),
+        historical_open_orders_skipped=len(open_orders) - len(replayable_open_orders),
+        historical_trades_skipped=len(trades) - len(replayable_trades),
     )
 
 
@@ -75,6 +99,8 @@ def _restore_open_order(
     market_key = str(raw_order.get("market") or raw_order.get("condition_id") or "")
     if not order_id or not asset_id:
         return False
+    if execution.tracker.get(order_id) is not None:
+        return False
 
     snapshot = snapshot_index.resolve(asset_id=asset_id, market_key=market_key)
     category = snapshot.category if snapshot is not None else Category.CRYPTO
@@ -88,6 +114,7 @@ def _restore_open_order(
 
     execution.tracker.restore_order(
         order_id=order_id,
+        intent_id=None,
         market_id=market_id,
         token_id=asset_id,
         category=category,
@@ -96,6 +123,7 @@ def _restore_open_order(
         limit_price=price,
         requested_shares=original_size,
         requested_notional=original_size * price,
+        quote_ttl_seconds=None,
         matched_shares=size_matched,
         matched_notional=size_matched * price,
         fees_paid=0.0,
@@ -113,6 +141,10 @@ def _replay_trade(
     execution: PolymarketLiveExecutionAdapter,
     snapshot_index: "_SnapshotIndex",
 ) -> bool:
+    trade_id = _trade_identifier(trade)
+    if trade_id and execution.has_processed_trade_id(trade_id):
+        return False
+
     market_key = str(trade.get("market") or "")
     trade_time = (
         _parse_timestamp(trade.get("timestamp"))
@@ -151,6 +183,8 @@ def _replay_trade(
         replayed = True
 
     if trader_side != "MAKER":
+        if replayed and trade_id:
+            execution.mark_processed_trade_id(trade_id)
         return replayed
 
     maker_orders = _select_local_maker_orders(
@@ -187,6 +221,8 @@ def _replay_trade(
         execution.position_ledger.apply_tracked_order(tracked)
         replayed = True
 
+    if replayed and trade_id:
+        execution.mark_processed_trade_id(trade_id)
     return replayed
 
 
@@ -313,6 +349,43 @@ def _parse_timestamp(value: Any) -> datetime | None:
         scale = 1000 if len(raw) > 10 else 1
         return datetime.fromtimestamp(int(raw) / scale, tz=UTC)
     return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+
+
+def _trade_identifier(trade: dict[str, Any]) -> str:
+    explicit_id = str(trade.get("id") or "").strip()
+    if explicit_id:
+        return explicit_id
+    return "|".join(
+        [
+            str(trade.get("taker_order_id") or ""),
+            str(trade.get("market") or ""),
+            str(trade.get("asset_id") or ""),
+            str(trade.get("price") or ""),
+            str(trade.get("size") or ""),
+            str(trade.get("timestamp") or trade.get("last_update") or trade.get("matchtime") or ""),
+        ]
+    )
+
+
+def _trade_within_session(
+    *,
+    trade: dict[str, Any],
+    session_started_at: datetime,
+) -> bool:
+    return _trade_sort_key(trade) >= session_started_at.astimezone(UTC)
+
+
+def _open_order_within_session(
+    *,
+    raw_order: dict[str, Any],
+    session_started_at: datetime,
+) -> bool:
+    created_at = _parse_timestamp(raw_order.get("created_at"))
+    if created_at is None:
+        created_at = _parse_timestamp(raw_order.get("timestamp"))
+    if created_at is None:
+        return False
+    return created_at >= session_started_at.astimezone(UTC)
 
 
 def _parse_optional_float(value: Any) -> float | None:

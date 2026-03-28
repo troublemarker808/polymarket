@@ -1,0 +1,28 @@
+{
+  "skills": [
+    {
+      "model_name": "gfs",
+      "station_id": "KNYC",
+      "horizon_bucket_hours": 24,
+      "mean_bias_f": 1.5,
+      "mae_f": 2.8,
+      "skill_score": 0.62
+    },
+    {
+      "model_name": "ecmwf",
+      "station_id": "KNYC",
+      "horizon_bucket_hours": 18,
+      "mean_bias_f": -0.5,
+      "mae_f": 1.9,
+      "skill_score": 0.78
+    },
+    {
+      "model_name": "gfs",
+      "station_id": "KBOS",
+      "horizon_bucket_hours": 24,
+      "mean_bias_f": 0.8,
+      "mae_f": 2.6,
+      "skill_score": 0.55
+    }
+  ]
+}

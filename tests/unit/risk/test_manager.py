@@ -51,7 +51,13 @@ async def _approve_signal(manager: BasicRiskManager) -> None:
     assert decision.approved
 
 
-def build_order(market_id: str) -> OrderIntent:
+def build_order(
+    market_id: str,
+    *,
+    created_at: datetime | None = None,
+    quote_ttl_seconds: int | None = None,
+    signal_edge_bps: float | None = 150.0,
+) -> OrderIntent:
     return OrderIntent(
         strategy_id="crypto.surface",
         category=Category.CRYPTO,
@@ -62,7 +68,9 @@ def build_order(market_id: str) -> OrderIntent:
         price=0.55,
         size=5.0,
         time_in_force="GTC",
-        created_at=datetime.now(tz=timezone.utc),
+        created_at=created_at or datetime.now(tz=timezone.utc),
+        quote_ttl_seconds=quote_ttl_seconds,
+        signal_edge_bps=signal_edge_bps,
     )
 
 
@@ -124,6 +132,7 @@ def test_risk_manager_rejects_fifth_open_position() -> None:
     import asyncio
 
     manager = build_manager()
+    manager.settings.max_open_orders = 10
 
     for idx in range(4):
         intent = build_order(f"m{idx}")
@@ -134,6 +143,163 @@ def test_risk_manager_rejects_fifth_open_position() -> None:
     rejected = asyncio.run(manager.review_order(build_order("m5")))
     assert not rejected.approved
     assert rejected.reason == "max concurrent positions reached"
+
+
+def test_risk_manager_rejects_order_when_max_open_orders_reached() -> None:
+    import asyncio
+
+    manager = build_manager()
+    manager.settings.max_open_orders = 2
+
+    for idx in range(2):
+        intent = build_order(f"m{idx}")
+        asyncio.run(manager.record_order_submission(intent, f"o{idx}"))
+
+    rejected = asyncio.run(manager.review_order(build_order("m2")))
+
+    assert not rejected.approved
+    assert rejected.reason == "max open orders reached"
+
+
+def test_risk_manager_approves_replacement_when_new_order_has_better_edge() -> None:
+    import asyncio
+
+    manager = build_manager()
+    manager.settings.max_open_orders = 1
+    manager.settings.open_order_replacement_min_edge_improvement_bps = 50.0
+    created_at = datetime(2026, 3, 24, 3, 0, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        manager.record_order_submission(
+            build_order(
+                "m1",
+                created_at=created_at,
+                quote_ttl_seconds=10,
+                signal_edge_bps=100.0,
+            ),
+            "o1",
+        )
+    )
+
+    decision = asyncio.run(
+        manager.review_order(
+            build_order(
+                "m2",
+                created_at=created_at + timedelta(seconds=6),
+                quote_ttl_seconds=10,
+                signal_edge_bps=180.0,
+            )
+        )
+    )
+
+    assert decision.approved
+    assert decision.replacement_order_id == "o1"
+    assert decision.reason == "approved_with_replacement"
+
+
+def test_risk_manager_rejects_edge_replacement_when_existing_order_is_too_fresh() -> None:
+    import asyncio
+
+    manager = build_manager()
+    manager.settings.max_open_orders = 1
+    manager.settings.open_order_replacement_min_edge_improvement_bps = 50.0
+    created_at = datetime(2026, 3, 24, 3, 0, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        manager.record_order_submission(
+            build_order(
+                "m1",
+                created_at=created_at,
+                quote_ttl_seconds=10,
+                signal_edge_bps=100.0,
+            ),
+            "o1",
+        )
+    )
+
+    decision = asyncio.run(
+        manager.review_order(
+            build_order(
+                "m2",
+                created_at=created_at + timedelta(seconds=2),
+                quote_ttl_seconds=10,
+                signal_edge_bps=180.0,
+            )
+        )
+    )
+
+    assert not decision.approved
+    assert decision.reason == "max open orders reached"
+
+
+def test_risk_manager_approves_replacement_when_existing_order_is_stale_at_frontier() -> None:
+    import asyncio
+
+    manager = build_manager()
+    manager.settings.max_open_orders = 1
+    created_at = datetime(2026, 3, 24, 3, 0, 0, tzinfo=timezone.utc)
+    asyncio.run(
+        manager.record_order_submission(
+            build_order(
+                "m1",
+                created_at=created_at,
+                quote_ttl_seconds=10,
+                signal_edge_bps=100.0,
+            ),
+            "o1",
+        )
+    )
+    manager.record_data_success(datetime(2026, 3, 24, 3, 0, 15, tzinfo=timezone.utc))
+
+    decision = asyncio.run(
+        manager.review_order(
+            build_order(
+                "m2",
+                created_at=datetime(2026, 3, 24, 3, 0, 5, tzinfo=timezone.utc),
+                quote_ttl_seconds=10,
+                signal_edge_bps=100.0,
+            )
+        )
+    )
+
+    assert decision.approved
+    assert decision.replacement_order_id == "o1"
+
+
+def test_risk_manager_disables_proactive_replacement_after_daily_soft_limit() -> None:
+    import asyncio
+
+    manager = build_manager()
+    manager.settings.max_open_orders = 1
+    manager.settings.open_order_replacement_min_edge_improvement_bps = 50.0
+    manager.trading_settings.daily_order_soft_limit = 1
+    created_at = datetime(2026, 3, 24, 3, 0, 0, tzinfo=timezone.utc)
+
+    asyncio.run(
+        manager.record_order_submission(
+            build_order(
+                "m1",
+                created_at=created_at,
+                quote_ttl_seconds=10,
+                signal_edge_bps=100.0,
+            ),
+            "o1",
+        )
+    )
+
+    decision = asyncio.run(
+        manager.review_order(
+            build_order(
+                "m2",
+                created_at=created_at + timedelta(seconds=6),
+                quote_ttl_seconds=10,
+                signal_edge_bps=180.0,
+            )
+        )
+    )
+
+    assert not decision.approved
+    assert decision.reason == "max open orders reached"
 
 
 def test_risk_manager_manual_resume_clears_halt() -> None:
@@ -218,6 +384,18 @@ def test_risk_manager_records_pending_order_submission() -> None:
     assert dashboard.pending_orders[0].requested_notional == 2.75
     assert dashboard.pending_orders[0].side == "buy_yes"
     assert dashboard.pending_orders[0].created_at == created_at
+    assert dashboard.pending_orders[0].signal_edge_bps == 150.0
+
+
+def test_risk_manager_records_pending_order_cancellation() -> None:
+    import asyncio
+
+    manager = build_manager()
+    asyncio.run(manager.record_order_submission(build_order("m1"), "o1"))
+
+    asyncio.run(manager.record_order_cancellation("o1"))
+
+    assert manager.dashboard_state().pending_orders == ()
 
 
 def test_risk_manager_rejects_order_when_market_has_pending_order() -> None:
@@ -306,6 +484,16 @@ def test_risk_manager_tracks_data_source_failures_and_recovery() -> None:
     assert recovered.last_data_error is None
     assert recovered.last_data_success_at == datetime(2026, 3, 24, 4, 0, 0, tzinfo=timezone.utc)
     assert recovered.issue_codes == ()
+
+
+def test_risk_manager_keeps_last_data_success_at_monotonic() -> None:
+    manager = build_manager()
+
+    manager.record_data_success(datetime(2026, 3, 24, 5, 0, 0, tzinfo=timezone.utc))
+    manager.record_data_success(datetime(2026, 3, 24, 4, 0, 0, tzinfo=timezone.utc))
+
+    dashboard = manager.dashboard_state()
+    assert dashboard.last_data_success_at == datetime(2026, 3, 24, 5, 0, 0, tzinfo=timezone.utc)
 
 
 def test_risk_manager_allows_sell_to_close_existing_position() -> None:

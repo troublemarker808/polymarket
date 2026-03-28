@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
+from datetime import datetime
 from typing import Protocol
 
 from pm_bot.core.types import MarketSnapshot, OrderIntent, RiskDecision, StrategySignal
@@ -45,6 +46,9 @@ class RiskManager(Protocol):
     async def record_order_submission(self, intent: OrderIntent, order_id: str) -> None:
         ...
 
+    async def record_order_cancellation(self, order_id: str) -> None:
+        ...
+
     async def record_trade_close(self, trade: ClosedTrade) -> None:
         ...
 
@@ -68,6 +72,9 @@ class ExecutionAdapter(Protocol):
     """Boundary for order placement and order lifecycle management."""
 
     async def submit(self, intent: OrderIntent) -> str:
+        ...
+
+    async def cancel_order(self, order_id: str, *, now: datetime | None = None) -> object | None:
         ...
 
     async def cancel_stale(self) -> int:

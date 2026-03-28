@@ -54,6 +54,23 @@ def _snapshot() -> MarketSnapshot:
     )
 
 
+def _snapshot_yes_only() -> MarketSnapshot:
+    return MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="btc-above",
+        category=Category.CRYPTO,
+        timestamp=datetime(2026, 3, 23, 12, 1, tzinfo=UTC),
+        resolution_time=None,
+        best_bid_yes=0.61,
+        best_ask_yes=0.62,
+        best_bid_no=None,
+        best_ask_no=None,
+        last_traded_price=0.63,
+        metadata={"no_token_id": "no-token"},
+    )
+
+
 def test_position_ledger_applies_incremental_fill_once() -> None:
     ledger = PositionLedger()
 
@@ -87,6 +104,17 @@ def test_position_ledger_marks_no_token_to_market() -> None:
     assert len(marked) == 1
     assert marked[0].mark_price == 0.35
     assert marked[0].unrealized_pnl == pytest.approx(-0.1)
+
+
+def test_position_ledger_marks_no_token_from_yes_quotes_when_no_quotes_are_missing() -> None:
+    ledger = PositionLedger()
+    ledger.apply_tracked_order(_tracked_order(token_id="no-token", matched_notional=3.8, fees_paid=0.0))
+
+    marked = ledger.mark_to_market([_snapshot_yes_only()])
+
+    assert len(marked) == 1
+    assert marked[0].mark_price == 0.38
+    assert marked[0].unrealized_pnl == pytest.approx(0.0)
 
 
 def test_position_ledger_realizes_pnl_when_position_is_fully_sold() -> None:
@@ -133,6 +161,36 @@ def test_position_ledger_realizes_partial_pnl_and_keeps_remaining_position() -> 
     assert len(closed_trades) == 1
     assert closed_trades[0].realized_pnl == pytest.approx(0.596)
     assert closed_trades[0].net_pnl == pytest.approx(0.586)
+
+
+def test_position_ledger_realizes_pnl_when_no_position_is_sold() -> None:
+    ledger = PositionLedger()
+    ledger.apply_tracked_order(
+        _tracked_order(
+            token_id="no-token",
+            matched_shares=10.0,
+            matched_notional=3.6,
+            fees_paid=0.0,
+        )
+    )
+
+    remaining = ledger.apply_tracked_order(
+        _tracked_order(
+            order_id="sell-no-1",
+            token_id="no-token",
+            matched_shares=10.0,
+            matched_notional=4.1,
+            fees_paid=0.02,
+            trade_side="SELL",
+        )
+    )
+
+    assert remaining is None
+    assert ledger.snapshot() == ()
+    closed_trades = ledger.drain_closed_trades()
+    assert len(closed_trades) == 1
+    assert closed_trades[0].realized_pnl == pytest.approx(0.5)
+    assert closed_trades[0].net_pnl == pytest.approx(0.48)
 
 
 def test_position_ledger_opens_complement_position_when_selling_without_inventory() -> None:
@@ -186,3 +244,44 @@ def test_position_ledger_splits_oversell_between_close_and_complement_open() -> 
     assert len(closed_trades) == 1
     assert closed_trades[0].realized_pnl == pytest.approx(0.47)
     assert closed_trades[0].net_pnl == pytest.approx(0.462)
+
+
+def test_position_ledger_can_disable_synthetic_complement_opens() -> None:
+    ledger = PositionLedger(allow_synthetic_complement_on_sell=False)
+    ledger.register_snapshots([_snapshot()])
+    ledger.apply_tracked_order(
+        _tracked_order(
+            token_id="no-token",
+            matched_shares=0.01,
+            matched_notional=0.0054,
+            fees_paid=0.0,
+        )
+    )
+
+    first_close = ledger.apply_tracked_order(
+        _tracked_order(
+            order_id="sell-no-1",
+            token_id="no-token",
+            matched_shares=0.01,
+            matched_notional=0.0046,
+            fees_paid=0.0,
+            trade_side="SELL",
+        )
+    )
+    second_close = ledger.apply_tracked_order(
+        _tracked_order(
+            order_id="sell-no-2",
+            token_id="no-token",
+            matched_shares=0.01,
+            matched_notional=0.0046,
+            fees_paid=0.0,
+            trade_side="SELL",
+        )
+    )
+
+    assert first_close is None
+    assert second_close is None
+    assert ledger.snapshot() == ()
+    closed_trades = ledger.drain_closed_trades()
+    assert len(closed_trades) == 1
+    assert closed_trades[0].token_id == "no-token"

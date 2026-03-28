@@ -38,6 +38,10 @@ class TrackedOrder:
     updated_at: datetime
     status: OrderLifecycleStatus
     last_event: str
+    intent_id: str | None = None
+    quote_ttl_seconds: int | None = None
+    signal_edge_bps: float | None = None
+    time_in_force: str = "GTC"
 
 
 class OrderLifecycleTracker:
@@ -52,6 +56,7 @@ class OrderLifecycleTracker:
 
         tracked = TrackedOrder(
             order_id=order_id,
+            intent_id=intent.intent_id,
             market_id=intent.market_id,
             token_id=intent.token_id,
             category=intent.category,
@@ -60,6 +65,9 @@ class OrderLifecycleTracker:
             limit_price=float(intent.price),
             requested_shares=float(intent.size),
             requested_notional=float(intent.notional or (intent.price * intent.size)),
+            quote_ttl_seconds=int(intent.quote_ttl_seconds) if intent.quote_ttl_seconds is not None else None,
+            signal_edge_bps=float(intent.signal_edge_bps) if intent.signal_edge_bps is not None else None,
+            time_in_force=str(intent.time_in_force or "GTC"),
             matched_shares=0.0,
             matched_notional=0.0,
             fees_paid=0.0,
@@ -135,6 +143,7 @@ class OrderLifecycleTracker:
         self,
         *,
         order_id: str,
+        intent_id: str | None,
         market_id: str,
         token_id: str,
         category: Category,
@@ -143,6 +152,9 @@ class OrderLifecycleTracker:
         limit_price: float,
         requested_shares: float,
         requested_notional: float,
+        quote_ttl_seconds: int | None,
+        signal_edge_bps: float | None = None,
+        time_in_force: str = "GTC",
         matched_shares: float,
         matched_notional: float,
         fees_paid: float,
@@ -156,6 +168,7 @@ class OrderLifecycleTracker:
         if existing is None:
             tracked = TrackedOrder(
                 order_id=order_id,
+                intent_id=intent_id,
                 market_id=market_id,
                 token_id=token_id,
                 category=category,
@@ -164,6 +177,9 @@ class OrderLifecycleTracker:
                 limit_price=limit_price,
                 requested_shares=requested_shares,
                 requested_notional=requested_notional,
+                quote_ttl_seconds=quote_ttl_seconds,
+                signal_edge_bps=signal_edge_bps,
+                time_in_force=time_in_force,
                 matched_shares=matched_shares,
                 matched_notional=matched_notional,
                 fees_paid=fees_paid,
@@ -178,6 +194,7 @@ class OrderLifecycleTracker:
         updated = replace(
             existing,
             market_id=market_id,
+            intent_id=intent_id if intent_id is not None else existing.intent_id,
             token_id=token_id,
             category=category,
             strategy_id=strategy_id or existing.strategy_id,
@@ -185,6 +202,9 @@ class OrderLifecycleTracker:
             limit_price=limit_price or existing.limit_price,
             requested_shares=max(existing.requested_shares, requested_shares),
             requested_notional=max(existing.requested_notional, requested_notional),
+            quote_ttl_seconds=quote_ttl_seconds if quote_ttl_seconds is not None else existing.quote_ttl_seconds,
+            signal_edge_bps=signal_edge_bps if signal_edge_bps is not None else existing.signal_edge_bps,
+            time_in_force=str(time_in_force or existing.time_in_force),
             matched_shares=max(existing.matched_shares, matched_shares),
             matched_notional=max(existing.matched_notional, matched_notional),
             fees_paid=max(existing.fees_paid, fees_paid),
@@ -200,10 +220,21 @@ class OrderLifecycleTracker:
         tracked = self._orders.get(order_id)
         if tracked is None:
             return None
+        if tracked.status in {
+            OrderLifecycleStatus.CANCELED,
+                OrderLifecycleStatus.FILLED,
+                OrderLifecycleStatus.REJECTED,
+        }:
+            return None
+        effective_at = at or datetime.now(tz=timezone.utc)
+        if effective_at < tracked.created_at:
+            effective_at = tracked.created_at
+        if effective_at < tracked.updated_at:
+            effective_at = tracked.updated_at
         updated = replace(
             tracked,
             status=OrderLifecycleStatus.CANCELED,
-            updated_at=at or datetime.now(tz=timezone.utc),
+            updated_at=effective_at,
             last_event="cancel",
         )
         self._orders[order_id] = updated
@@ -218,7 +249,8 @@ class OrderLifecycleTracker:
                 OrderLifecycleStatus.REJECTED,
             }:
                 continue
-            if (now - tracked.created_at).total_seconds() >= ttl_seconds:
+            effective_ttl = tracked.quote_ttl_seconds if tracked.quote_ttl_seconds is not None else ttl_seconds
+            if (now - tracked.created_at).total_seconds() >= effective_ttl:
                 stale.append(tracked.order_id)
         return tuple(stale)
 
@@ -251,6 +283,7 @@ class OrderLifecycleTracker:
             created_at = event_time or datetime.now(tz=timezone.utc)
             tracked = TrackedOrder(
                 order_id=order_id,
+                intent_id=None,
                 market_id=market_id,
                 token_id=token_id,
                 category=category,
@@ -259,6 +292,9 @@ class OrderLifecycleTracker:
                 limit_price=limit_price,
                 requested_shares=max(requested_shares, fill_shares),
                 requested_notional=max(requested_shares, fill_shares) * limit_price,
+                quote_ttl_seconds=None,
+                signal_edge_bps=None,
+                time_in_force="GTC",
                 matched_shares=0.0,
                 matched_notional=0.0,
                 fees_paid=0.0,

@@ -77,8 +77,6 @@ class BasicRiskManager:
             return RiskDecision(approved=False, reason="non-positive order size")
         if order_notional <= 0:
             return RiskDecision(approved=False, reason="non-positive order notional")
-        if any(order.market_id == intent.market_id for order in self.state.pending_orders.values()):
-            return RiskDecision(approved=False, reason="market already has a pending order")
 
         if is_exit:
             current_position = self.state.open_positions.get(intent.market_id)
@@ -88,20 +86,53 @@ class BasicRiskManager:
                 return RiskDecision(approved=False, reason="close order token does not match open position")
             if current_position.shares is not None and intent.size - current_position.shares > 1e-6:
                 return RiskDecision(approved=False, reason="close order exceeds current position size")
+            existing_exit_order = next(
+                (
+                    order
+                    for order in self.state.pending_orders.values()
+                    if order.market_id == intent.market_id
+                    and order.token_id == intent.token_id
+                    and order.side == intent.side.value
+                ),
+                None,
+            )
+            if existing_exit_order is not None:
+                return RiskDecision(
+                    approved=True,
+                    reason="approved_exit_reprice",
+                    replacement_order_id=existing_exit_order.order_id,
+                )
             if self.state.orders_today >= self.trading_settings.daily_order_hard_limit:
                 return RiskDecision(approved=False, reason="daily order hard limit reached")
             return RiskDecision(approved=True, reason="approved")
+
+        if any(order.market_id == intent.market_id for order in self.state.pending_orders.values()):
+            return RiskDecision(approved=False, reason="market already has a pending order")
 
         if order_notional > self.trading_settings.default_order_notional:
             return RiskDecision(approved=False, reason="order exceeds per-trade notional cap")
         if self.state.orders_today >= self.trading_settings.daily_order_hard_limit:
             return RiskDecision(approved=False, reason="daily order hard limit reached")
-        if self.state.active_market_count >= self.trading_settings.max_concurrent_positions:
-            return RiskDecision(approved=False, reason="max concurrent positions reached")
         if intent.market_id in self.state.open_positions:
             return RiskDecision(approved=False, reason="market already has an open position")
+        replacement_order_id: str | None = None
+        if len(self.state.pending_orders) >= self.settings.max_open_orders:
+            replacement = self._replacement_candidate(intent)
+            if replacement is None:
+                return RiskDecision(approved=False, reason="max open orders reached")
+            replacement_order_id = replacement.order_id
+        if self.state.active_market_count >= self.trading_settings.max_concurrent_positions:
+            if replacement_order_id is None:
+                return RiskDecision(approved=False, reason="max concurrent positions reached")
+            replacement = self.state.pending_orders.get(replacement_order_id)
+            if replacement is None or replacement.market_id in self.state.open_positions:
+                return RiskDecision(approved=False, reason="max concurrent positions reached")
 
-        return RiskDecision(approved=True, reason="approved")
+        return RiskDecision(
+            approved=True,
+            reason="approved_with_replacement" if replacement_order_id is not None else "approved",
+            replacement_order_id=replacement_order_id,
+        )
 
     async def record_order_submission(self, intent: OrderIntent, order_id: str) -> None:
         self.advance_trading_day(intent.created_at)
@@ -110,6 +141,7 @@ class BasicRiskManager:
         submitted_at = intent.created_at.astimezone(timezone.utc)
         self.state.pending_orders[order_id] = PendingOrderState(
             order_id=order_id,
+            intent_id=intent.intent_id,
             market_id=intent.market_id,
             token_id=intent.token_id,
             category=intent.category,
@@ -118,13 +150,22 @@ class BasicRiskManager:
             limit_price=float(intent.price or 0.0),
             requested_shares=float(intent.size),
             requested_notional=order_notional,
+            quote_ttl_seconds=intent.quote_ttl_seconds,
             matched_shares=0.0,
             matched_notional=0.0,
             fees_paid=0.0,
             status="pending",
             created_at=submitted_at,
             updated_at=submitted_at,
+            signal_edge_bps=intent.signal_edge_bps,
         )
+        self.state.touch()
+        self._persist_state()
+
+    async def record_order_cancellation(self, order_id: str) -> None:
+        removed = self.state.pending_orders.pop(order_id, None)
+        if removed is None:
+            return
         self.state.touch()
         self._persist_state()
 
@@ -215,7 +256,8 @@ class BasicRiskManager:
         self.advance_trading_day(timestamp)
         recorded_at = (timestamp or datetime.now(tz=timezone.utc)).astimezone(timezone.utc)
         failure_count = self.state.consecutive_data_failures
-        self.state.last_data_success_at = recorded_at
+        if self.state.last_data_success_at is None or recorded_at >= self.state.last_data_success_at:
+            self.state.last_data_success_at = recorded_at
         self.state.consecutive_data_failures = 0
         self.state.last_data_error = None
         if failure_count > 0:
@@ -251,6 +293,62 @@ class BasicRiskManager:
         if self.state_store is None:
             return
         self.state_store.save(self.state)
+
+    def _replacement_candidate(self, intent: OrderIntent) -> PendingOrderState | None:
+        frontier = self._replacement_frontier(intent.created_at)
+        new_edge = intent.signal_edge_bps if intent.signal_edge_bps is not None else 0.0
+        improvement_floor = self.settings.open_order_replacement_min_edge_improvement_bps
+        soft_limit_available = self.state.orders_today < self.trading_settings.daily_order_soft_limit
+        candidates: list[tuple[int, float, datetime, PendingOrderState]] = []
+        for order in self.state.pending_orders.values():
+            existing_edge = order.signal_edge_bps if order.signal_edge_bps is not None else 0.0
+            is_stale = self._pending_order_is_stale(order=order, frontier=frontier)
+            edge_improved = (
+                soft_limit_available
+                and self._pending_order_is_mature_for_replacement(order=order, frontier=frontier)
+                and new_edge >= (existing_edge + improvement_floor)
+            )
+            if not is_stale and not edge_improved:
+                continue
+            candidates.append((0 if is_stale else 1, existing_edge, order.created_at, order))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: (item[0], item[1], item[2]))
+        return candidates[0][3]
+
+    def _replacement_frontier(self, created_at: datetime) -> datetime:
+        frontier = created_at.astimezone(timezone.utc)
+        if self.state.last_data_success_at is not None and self.state.last_data_success_at > frontier:
+            return self.state.last_data_success_at
+        return frontier
+
+    def _pending_order_is_stale(self, *, order: PendingOrderState, frontier: datetime) -> bool:
+        effective_ttl = (
+            order.quote_ttl_seconds
+            if order.quote_ttl_seconds is not None
+            else self.trading_settings.default_quote_ttl_seconds
+        )
+        return self._pending_order_age_seconds(order=order, frontier=frontier) >= effective_ttl
+
+    def _pending_order_is_mature_for_replacement(
+        self,
+        *,
+        order: PendingOrderState,
+        frontier: datetime,
+    ) -> bool:
+        effective_ttl = (
+            order.quote_ttl_seconds
+            if order.quote_ttl_seconds is not None
+            else self.trading_settings.default_quote_ttl_seconds
+        )
+        return self._pending_order_age_seconds(order=order, frontier=frontier) >= max(1.0, effective_ttl * 0.5)
+
+    @staticmethod
+    def _pending_order_age_seconds(*, order: PendingOrderState, frontier: datetime) -> float:
+        return max(
+            0.0,
+            (frontier - order.created_at.astimezone(timezone.utc)).total_seconds(),
+        )
 
     @staticmethod
     def _order_notional(intent: OrderIntent) -> float:

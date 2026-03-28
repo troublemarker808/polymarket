@@ -1,0 +1,67 @@
+{
+  "generated_at": "2026-03-27T21:08:26.871507+00:00",
+  "baseline_candidate": "baseline",
+  "dataset_split": {
+    "train": "tests\\fixtures\\crypto_phase2\\eth_runtime_ladder_window.jsonl",
+    "validation": "tests\\fixtures\\crypto_phase2\\btc_runtime_ladder_window.jsonl",
+    "holdout": "tests\\fixtures\\crypto_phase2\\compare_snapshots.jsonl"
+  },
+  "results": [
+    {
+      "candidate_name": "r2-s175-b45-s55",
+      "train_score": -37.00969695816293,
+      "validation_score": -74.7789564246111,
+      "holdout_score": 10.094191894322954,
+      "aggregate_score": -38.9196970276002,
+      "accepted": true
+    },
+    {
+      "candidate_name": "r2-s180-b45-s55",
+      "train_score": -38.24095321194011,
+      "validation_score": -76.175791776399,
+      "holdout_score": 9.240412328352008,
+      "aggregate_score": -40.12513167321935,
+      "accepted": true
+    },
+    {
+      "candidate_name": "r2-s175-b50-s50",
+      "train_score": -41.72744106462548,
+      "validation_score": -83.47106269401236,
+      "holdout_score": 7.162065067766232,
+      "aggregate_score": -44.47262632696321,
+      "accepted": false
+    },
+    {
+      "candidate_name": "r2-s180-b50-s50",
+      "train_score": -43.09550356882235,
+      "validation_score": -85.02310197377668,
+      "holdout_score": 6.213421105576288,
+      "aggregate_score": -45.811998155428924,
+      "accepted": false
+    },
+    {
+      "candidate_name": "r2-s185-b50-s50",
+      "train_score": -44.4243796775352,
+      "validation_score": -86.52698185128632,
+      "holdout_score": 5.290963497948482,
+      "aggregate_score": -47.1120916945638,
+      "accepted": false
+    },
+    {
+      "candidate_name": "r2-s180-b55-s45",
+      "train_score": -47.950053925704594,
+      "validation_score": -93.87041217115433,
+      "holdout_score": 3.1864298828005957,
+      "aggregate_score": -51.498864637638476,
+      "accepted": false
+    },
+    {
+      "candidate_name": "baseline",
+      "train_score": -75.33845188916865,
+      "validation_score": -131.20820927622248,
+      "holdout_score": -15.24191313479239,
+      "aggregate_score": -80.08007135440954,
+      "accepted": false
+    }
+  ]
+}

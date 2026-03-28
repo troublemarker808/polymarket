@@ -12,16 +12,9 @@ from typing import Any
 
 import httpx
 
-from pm_bot.core.types import MarketSnapshot
+from pm_bot.core.types import MarketSnapshot, OrderBookLevel
 
 CLOB_BASE_URL = "https://clob.polymarket.com"
-
-
-@dataclass(slots=True, frozen=True)
-class OrderBookLevel:
-    price: float
-    size: float
-
 
 @dataclass(slots=True, frozen=True)
 class ClobOrderBook:
@@ -186,7 +179,17 @@ def enrich_snapshot_with_order_book(
         best_ask_yes=book.best_ask,
         best_bid_no=_infer_complement_bid(book.best_ask),
         best_ask_no=_infer_complement_ask(book.best_bid),
+        best_bid_yes_size=_best_level_size(book.bids),
+        best_ask_yes_size=_best_level_size(book.asks),
+        best_bid_no_size=_best_level_size(_complement_bid_levels(book.asks)),
+        best_ask_no_size=_best_level_size(_complement_ask_levels(book.bids)),
+        tick_size=book.tick_size,
+        min_order_size=book.min_order_size,
         last_traded_price=book.last_trade_price,
+        yes_bid_levels=book.bids,
+        yes_ask_levels=book.asks,
+        no_bid_levels=_complement_bid_levels(book.asks),
+        no_ask_levels=_complement_ask_levels(book.bids),
         metadata=metadata,
     )
 
@@ -197,6 +200,37 @@ def _parse_level(raw_level: Any) -> OrderBookLevel:
     return OrderBookLevel(
         price=float(raw_level["price"]),
         size=float(raw_level["size"]),
+    )
+
+
+def _best_level_size(levels: tuple[OrderBookLevel, ...]) -> float | None:
+    if not levels:
+        return None
+    return levels[0].size
+
+
+def _complement_bid_levels(levels: tuple[OrderBookLevel, ...]) -> tuple[OrderBookLevel, ...]:
+    return tuple(
+        sorted(
+            (
+                OrderBookLevel(price=round(1.0 - level.price, 6), size=level.size)
+                for level in levels
+            ),
+            key=lambda level: level.price,
+            reverse=True,
+        )
+    )
+
+
+def _complement_ask_levels(levels: tuple[OrderBookLevel, ...]) -> tuple[OrderBookLevel, ...]:
+    return tuple(
+        sorted(
+            (
+                OrderBookLevel(price=round(1.0 - level.price, 6), size=level.size)
+                for level in levels
+            ),
+            key=lambda level: level.price,
+        )
     )
 
 

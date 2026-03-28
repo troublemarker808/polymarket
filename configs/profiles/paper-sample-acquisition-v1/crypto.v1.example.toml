@@ -1,0 +1,22 @@
+category = "crypto"
+enabled_strategies = ["crypto.execution_sample"]
+
+[markets]
+assets = ["BTC", "ETH"]
+expiries = ["15m", "1h"]
+min_liquidity_score = 0.9
+max_active_markets = 6
+max_markets_per_event = 2
+min_markets_per_event = 1
+
+[strategy.execution_sample]
+min_spread_bps = 125
+min_recent_updates = 3
+recent_update_window_seconds = 90
+hold_seconds = 30
+market_cooldown_seconds = 30
+entry_cross_bps = 20
+exit_cross_bps = 20
+min_price = 0.25
+max_price = 0.75
+quote_ttl_seconds = 20

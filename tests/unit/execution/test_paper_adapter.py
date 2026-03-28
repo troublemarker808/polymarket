@@ -98,6 +98,142 @@ def test_paper_adapter_expires_stale_orders() -> None:
     assert len(adapter.pending_order_states()) == 0
 
 
+def test_paper_adapter_cancels_unfilled_ioc_order_on_first_eligible_snapshot() -> None:
+    adapter = PaperExecutionAdapter(ttl_seconds=15)
+    created_at = datetime(2026, 3, 24, 2, 37, 0, tzinfo=UTC)
+    intent = OrderIntent(
+        strategy_id="crypto.phase2",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.39,
+        size=10.0,
+        time_in_force="IOC",
+        created_at=created_at,
+        notional=3.9,
+        quote_ttl_seconds=30,
+    )
+
+    asyncio.run(adapter.submit(intent))
+    update = adapter.reconcile_snapshot(
+        _build_snapshot(
+            timestamp=created_at + timedelta(seconds=1),
+            best_bid_yes=0.38,
+            best_ask_yes=0.40,
+            best_bid_no=0.60,
+            best_ask_no=0.62,
+        ),
+    )
+
+    assert len(update.canceled_orders) == 1
+    assert len(update.filled_orders) == 0
+    assert len(adapter.pending_order_states()) == 0
+
+
+def test_paper_adapter_cancel_stale_orders_uses_expiry_path() -> None:
+    adapter = PaperExecutionAdapter(ttl_seconds=15)
+    created_at = datetime(2026, 3, 24, 2, 36, 0, tzinfo=UTC)
+    intent = OrderIntent(
+        strategy_id="crypto.maker",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.30,
+        size=10.0,
+        time_in_force="GTC",
+        created_at=created_at,
+        notional=3.0,
+    )
+
+    asyncio.run(adapter.submit(intent))
+    expired = asyncio.run(adapter.cancel_stale_orders(now=created_at + timedelta(seconds=16)))
+
+    assert len(expired) == 1
+    assert expired[0].status.value == "canceled"
+    assert len(adapter.pending_order_states()) == 0
+
+
+def test_paper_adapter_does_not_repeat_stale_cancel_for_same_order() -> None:
+    adapter = PaperExecutionAdapter(ttl_seconds=15)
+    created_at = datetime(2026, 3, 24, 2, 36, 0, tzinfo=UTC)
+    intent = OrderIntent(
+        strategy_id="crypto.maker",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.30,
+        size=10.0,
+        time_in_force="GTC",
+        created_at=created_at,
+        notional=3.0,
+    )
+
+    asyncio.run(adapter.submit(intent))
+    first = asyncio.run(adapter.cancel_stale_orders(now=created_at + timedelta(seconds=16)))
+    second = asyncio.run(adapter.cancel_stale_orders(now=created_at + timedelta(seconds=17)))
+
+    assert len(first) == 1
+    assert second == ()
+
+
+def test_paper_adapter_cancel_order_removes_pending_order_immediately() -> None:
+    adapter = PaperExecutionAdapter(ttl_seconds=15)
+    created_at = datetime(2026, 3, 24, 2, 36, 0, tzinfo=UTC)
+    intent = OrderIntent(
+        strategy_id="crypto.maker",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.30,
+        size=10.0,
+        time_in_force="GTC",
+        created_at=created_at,
+        notional=3.0,
+        signal_edge_bps=100.0,
+    )
+
+    order_id = asyncio.run(adapter.submit(intent))
+    canceled = asyncio.run(adapter.cancel_order(order_id, now=created_at + timedelta(seconds=1)))
+
+    assert canceled is not None
+    assert canceled.order_id == order_id
+    assert canceled.status.value == "canceled"
+    assert adapter.pending_order_states() == ()
+
+
+def test_paper_adapter_cancel_order_keeps_updated_at_monotonic() -> None:
+    adapter = PaperExecutionAdapter(ttl_seconds=15)
+    created_at = datetime(2026, 3, 24, 2, 36, 0, tzinfo=UTC)
+    intent = OrderIntent(
+        strategy_id="crypto.maker",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.30,
+        size=10.0,
+        time_in_force="GTC",
+        created_at=created_at,
+        notional=3.0,
+        signal_edge_bps=100.0,
+    )
+
+    order_id = asyncio.run(adapter.submit(intent))
+    canceled = asyncio.run(adapter.cancel_order(order_id, now=created_at - timedelta(seconds=5)))
+
+    assert canceled is not None
+    assert canceled.updated_at == created_at
+
+
 def test_paper_adapter_closes_position_on_marketable_sell() -> None:
     adapter = PaperExecutionAdapter(ttl_seconds=15)
     entry_time = datetime(2026, 3, 24, 2, 36, 30, tzinfo=UTC)

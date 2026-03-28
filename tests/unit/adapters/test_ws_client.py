@@ -10,10 +10,14 @@ from pm_bot.adapters.polymarket.ws_client import (
     MarketResolvedEvent,
     parse_market_channel_payload,
 )
-from pm_bot.core.types import Category, MarketSnapshot
+from pm_bot.core.types import Category, MarketSnapshot, OrderBookLevel
 
 
-def _snapshot() -> MarketSnapshot:
+def _snapshot(
+    *,
+    yes_bid_levels: tuple[OrderBookLevel, ...] = (),
+    yes_ask_levels: tuple[OrderBookLevel, ...] = (),
+) -> MarketSnapshot:
     return MarketSnapshot(
         market_id="824952",
         token_id="111128191581505463501777127559667396812474366956707382672202929745167742497287",
@@ -23,6 +27,12 @@ def _snapshot() -> MarketSnapshot:
         resolution_time=datetime(2026, 7, 1, 4, 0, tzinfo=UTC),
         best_bid_yes=0.11,
         best_ask_yes=0.15,
+        best_bid_yes_size=yes_bid_levels[0].size if yes_bid_levels else None,
+        best_ask_yes_size=yes_ask_levels[0].size if yes_ask_levels else None,
+        yes_bid_levels=yes_bid_levels,
+        yes_ask_levels=yes_ask_levels,
+        no_bid_levels=tuple(OrderBookLevel(price=round(1 - level.price, 6), size=level.size) for level in yes_ask_levels),
+        no_ask_levels=tuple(OrderBookLevel(price=round(1 - level.price, 6), size=level.size) for level in yes_bid_levels),
         last_traded_price=0.11,
         metadata={"condition_id": "0x8213d395e079614d6c4d7f4cbb9be9337ab51648a21cc2a334ae8f1966d164b4"},
     )
@@ -101,6 +111,77 @@ def test_market_channel_snapshot_feed_applies_best_bid_ask_and_last_trade() -> N
     assert snapshots[0].best_ask_no == 0.88
     assert snapshots[1].last_traded_price == 0.17
     assert snapshots[1].metadata["last_trade_side"] == "BUY"
+    assert snapshots[1].last_trade_side == "BUY"
+    assert snapshots[1].last_trade_size == 25.0
+    assert snapshots[1].metadata["last_trade_event_at"] == "2026-03-23T10:00:01+00:00"
+
+
+def test_market_channel_snapshot_feed_invalidates_stale_depth_after_top_of_book_update() -> None:
+    seed = _snapshot(
+        yes_bid_levels=(OrderBookLevel(price=0.11, size=8.0),),
+        yes_ask_levels=(OrderBookLevel(price=0.15, size=9.0),),
+    )
+    feed = MarketChannelSnapshotFeed(
+        seed_snapshots=[seed],
+        event_stream=FakeEventStream(
+            [
+                BestBidAskEvent(
+                    asset_id=seed.token_id,
+                    market="0xmarket",
+                    best_bid=0.12,
+                    best_ask=0.18,
+                    spread=0.06,
+                    timestamp=datetime(2026, 3, 23, 10, 0, 0, tzinfo=UTC),
+                ),
+            ]
+        ),
+    )
+
+    async def collect():
+        async for snapshot in feed.stream_snapshots(include_initial=False):
+            return snapshot
+        return None
+
+    snapshot = asyncio.run(collect())
+
+    assert snapshot is not None
+    assert snapshot.best_bid_yes == 0.12
+    assert snapshot.best_ask_yes == 0.18
+    assert snapshot.best_bid_yes_size is None
+    assert snapshot.best_ask_yes_size is None
+    assert snapshot.yes_bid_levels == ()
+    assert snapshot.yes_ask_levels == ()
+    assert snapshot.no_bid_levels == ()
+    assert snapshot.no_ask_levels == ()
+
+
+def test_market_channel_snapshot_feed_keeps_timestamp_monotonic() -> None:
+    seed = _snapshot()
+    feed = MarketChannelSnapshotFeed(
+        seed_snapshots=[seed],
+        event_stream=FakeEventStream(
+            [
+                BestBidAskEvent(
+                    asset_id=seed.token_id,
+                    market="0xmarket",
+                    best_bid=0.12,
+                    best_ask=0.18,
+                    spread=0.06,
+                    timestamp=seed.timestamp.replace(minute=seed.timestamp.minute - 1),
+                ),
+            ]
+        ),
+    )
+
+    async def collect():
+        async for snapshot in feed.stream_snapshots(include_initial=False):
+            return snapshot
+        return None
+
+    snapshot = asyncio.run(collect())
+
+    assert snapshot is not None
+    assert snapshot.timestamp == seed.timestamp
 
 
 def test_market_channel_snapshot_feed_marks_market_resolved() -> None:

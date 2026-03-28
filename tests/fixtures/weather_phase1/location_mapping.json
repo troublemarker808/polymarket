@@ -1,0 +1,9 @@
+{
+  "nyc": {
+    "city": "New York City",
+    "region": "NY",
+    "country": "US",
+    "station_id": "KNYC",
+    "settlement_source": "nws_noaa_daily_climate"
+  }
+}

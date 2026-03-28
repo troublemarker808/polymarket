@@ -1,0 +1,29 @@
+{
+  "repricing_yes": {
+    "market_id": "eth-dip-1000",
+    "fair_probability": 0.19,
+    "observed_probability": 0.11,
+    "confidence": 0.74,
+    "half_life_seconds": 3600,
+    "net_edge_bps": 685.0,
+    "gross_edge_bps": 800.0
+  },
+  "resolution_no": {
+    "market_id": "eth-dip-800",
+    "fair_probability": 0.16,
+    "observed_probability": 0.24,
+    "confidence": 0.78,
+    "half_life_seconds": 86400,
+    "net_edge_bps": 420.0,
+    "gross_edge_bps": 800.0
+  },
+  "skip_low_edge": {
+    "market_id": "eth-dip-1500",
+    "fair_probability": 0.35,
+    "observed_probability": 0.34,
+    "confidence": 0.66,
+    "half_life_seconds": 14400,
+    "net_edge_bps": 40.0,
+    "gross_edge_bps": 100.0
+  }
+}

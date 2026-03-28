@@ -7,7 +7,9 @@ from typing import Any
 
 from pm_bot.core.interfaces import Strategy
 from pm_bot.core.settings import BotSettings
+from pm_bot.strategies.crypto.execution_sample.strategy import CryptoExecutionSampleStrategy
 from pm_bot.strategies.crypto.maker.strategy import CryptoMakerStrategy
+from pm_bot.strategies.crypto.phase2.strategy import CryptoPhase2Strategy
 from pm_bot.strategies.crypto.surface.strategy import CryptoSurfaceStrategy
 from pm_bot.strategies.sports.anchor.strategy import SportsAnchorStrategy
 from pm_bot.strategies.sports.live.strategy import SportsLiveStrategy
@@ -44,9 +46,10 @@ def build_default_registry() -> StrategyRegistry:
     registry = StrategyRegistry()
     registry.register("sports.anchor", lambda config: SportsAnchorStrategy(config=config))
     registry.register("sports.live", lambda config: SportsLiveStrategy(config=config))
+    registry.register("crypto.execution_sample", lambda config: CryptoExecutionSampleStrategy(config=config))
+    registry.register("crypto.phase2", lambda config: CryptoPhase2Strategy(config=config))
     registry.register("crypto.surface", lambda config: CryptoSurfaceStrategy(config=config))
     registry.register("crypto.maker", lambda config: CryptoMakerStrategy(config=config))
     registry.register("weather.ensemble", lambda config: WeatherEnsembleStrategy(config=config))
     registry.register("weather.threshold", lambda config: WeatherThresholdStrategy(config=config))
     return registry
-

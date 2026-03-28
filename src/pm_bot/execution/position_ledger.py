@@ -36,12 +36,13 @@ class AppliedOrderProgress:
 class PositionLedger:
     """Keep local positions in sync with cumulative tracked-order fills."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, allow_synthetic_complement_on_sell: bool = True) -> None:
         self._positions: dict[tuple[str, str], LivePosition] = {}
         self._applied_progress: dict[str, AppliedOrderProgress] = {}
         self._closed_trades: list[ClosedTrade] = []
         self._canonical_market_by_token: dict[str, str] = {}
         self._complement_by_token: dict[str, str] = {}
+        self._allow_synthetic_complement_on_sell = allow_synthetic_complement_on_sell
 
     def apply_tracked_order(self, tracked: TrackedOrder) -> LivePosition | None:
         """Apply the incremental fill delta from a tracked order."""
@@ -217,6 +218,7 @@ class PositionLedger:
                     token_id=tracked.token_id,
                     category=tracked.category,
                     strategy_id=tracked.strategy_id,
+                    intent_id=tracked.intent_id,
                     realized_pnl=realized_pnl,
                     fees_paid=closed_fees,
                     closed_at=tracked.updated_at,
@@ -241,6 +243,8 @@ class PositionLedger:
 
         synthetic_open_shares = delta_shares - closed_shares
         if synthetic_open_shares <= 1e-9:
+            return updated_existing
+        if not self._allow_synthetic_complement_on_sell:
             return updated_existing
 
         complement_token_id = self._complement_by_token.get(tracked.token_id)
@@ -293,14 +297,36 @@ def _mark_price_for_token(snapshot: MarketSnapshot, token_id: str) -> float | No
 def _yes_mark_price(snapshot: MarketSnapshot) -> float | None:
     if snapshot.best_bid_yes is not None:
         return snapshot.best_bid_yes
+    if snapshot.best_bid_yes is None and snapshot.best_ask_no is not None:
+        return _infer_complement_bid(snapshot.best_ask_no)
     if snapshot.best_bid_yes is None and snapshot.best_ask_yes is not None:
         return snapshot.best_ask_yes
+    if snapshot.best_bid_yes is None and snapshot.best_ask_yes is None and snapshot.best_bid_no is not None:
+        return _infer_complement_ask(snapshot.best_bid_no)
     return snapshot.last_traded_price
 
 
 def _no_mark_price(snapshot: MarketSnapshot) -> float | None:
     if snapshot.best_bid_no is not None:
         return snapshot.best_bid_no
+    if snapshot.best_bid_no is None and snapshot.best_ask_yes is not None:
+        return _infer_complement_bid(snapshot.best_ask_yes)
     if snapshot.best_bid_no is None and snapshot.best_ask_no is not None:
         return snapshot.best_ask_no
+    if snapshot.best_bid_no is None and snapshot.best_ask_no is None and snapshot.best_bid_yes is not None:
+        return _infer_complement_ask(snapshot.best_bid_yes)
+    if snapshot.last_traded_price is not None:
+        return max(0.0, 1.0 - snapshot.last_traded_price)
     return None
+
+
+def _infer_complement_bid(best_ask: float | None) -> float | None:
+    if best_ask is None:
+        return None
+    return round(1.0 - best_ask, 6)
+
+
+def _infer_complement_ask(best_bid: float | None) -> float | None:
+    if best_bid is None:
+        return None
+    return round(1.0 - best_bid, 6)

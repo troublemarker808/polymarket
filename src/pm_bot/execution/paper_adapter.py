@@ -1,4 +1,4 @@
-"""Paper execution adapter with a minimal in-memory order lifecycle."""
+"""Paper execution adapter with queue-aware matching and runtime state sync."""
 
 from __future__ import annotations
 
@@ -11,41 +11,92 @@ from pm_bot.execution.order_tracker import (
     OrderLifecycleTracker,
     TrackedOrder,
 )
+from pm_bot.execution.paper_matching import PaperMatchEvent, PaperMatchingEngine
 from pm_bot.execution.position_ledger import LivePosition, PositionLedger
 from pm_bot.runtime.state import ClosedTrade, PendingOrderState, PositionState
 
 
 @dataclass(slots=True, frozen=True)
 class PaperReconcileUpdate:
+    events: tuple[PaperMatchEvent, ...]
     filled_orders: tuple[TrackedOrder, ...]
+    partial_fill_orders: tuple[TrackedOrder, ...]
     expired_orders: tuple[TrackedOrder, ...]
+    canceled_orders: tuple[TrackedOrder, ...]
     marked_positions: tuple[LivePosition, ...]
 
 
 class PaperExecutionAdapter:
-    """In-memory execution adapter for research, paper, and tests."""
+    """In-memory paper execution adapter with queue-aware matching."""
 
-    def __init__(self, *, ttl_seconds: int = 30) -> None:
+    def __init__(
+        self,
+        *,
+        ttl_seconds: int = 30,
+        place_latency_ms: int = 0,
+        cancel_latency_ms: int = 0,
+        fee_bps: float = 0.0,
+        taker_slippage_bps: float = 0.0,
+    ) -> None:
         self.ttl_seconds = ttl_seconds
         self.submitted_orders: list[OrderIntent] = []
         self.tracker = OrderLifecycleTracker()
         self.position_ledger = PositionLedger()
+        self.matcher = PaperMatchingEngine(
+            place_latency_ms=place_latency_ms,
+            cancel_latency_ms=cancel_latency_ms,
+            fee_bps=fee_bps,
+            taker_slippage_bps=taker_slippage_bps,
+        )
         self._signal_sides: dict[str, SignalSide] = {}
+        self._latest_snapshots: dict[str, MarketSnapshot] = {}
 
     async def submit(self, intent: OrderIntent) -> str:
         order_id = f"paper-{len(self.submitted_orders) + 1}"
         self.submitted_orders.append(intent)
         self.tracker.register_submission(order_id, intent)
+        self.matcher.register_submission(
+            order_id=order_id,
+            intent=intent,
+            snapshot=self._latest_snapshots.get(intent.market_id),
+        )
         self._signal_sides[order_id] = intent.side
         return order_id
 
+    async def cancel_order(
+        self,
+        order_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> TrackedOrder | None:
+        effective_now = now or datetime.now(tz=timezone.utc)
+        canceled = self.matcher.cancel_order(
+            tracker=self.tracker,
+            order_id=order_id,
+            now=effective_now,
+        )
+        if canceled is not None:
+            self._signal_sides.pop(order_id, None)
+        return canceled
+
     async def cancel_stale(self) -> int:
-        now = datetime.now(tz=timezone.utc)
-        cancelled = 0
-        for order_id in self.tracker.stale_order_ids(now=now, ttl_seconds=self.ttl_seconds):
-            if self.tracker.mark_canceled(order_id, at=now) is not None:
-                cancelled += 1
-        return cancelled
+        return len(await self.cancel_stale_orders())
+
+    async def cancel_stale_orders(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> tuple[TrackedOrder, ...]:
+        effective_now = now or datetime.now(tz=timezone.utc)
+        self.matcher.request_cancel_stale(
+            tracker=self.tracker,
+            now=effective_now,
+            ttl_seconds=self.ttl_seconds,
+        )
+        return self.matcher.apply_immediate_cancellations(
+            tracker=self.tracker,
+            now=effective_now,
+        )
 
     def reconcile_snapshot(
         self,
@@ -53,61 +104,42 @@ class PaperExecutionAdapter:
         *,
         ttl_seconds: int | None = None,
     ) -> PaperReconcileUpdate:
-        """Apply fills, expiries, and fresh marks for one market snapshot."""
-
         effective_ttl = ttl_seconds if ttl_seconds is not None else self.ttl_seconds
-        snapshot_time = snapshot.timestamp.astimezone(timezone.utc)
+        self._latest_snapshots[snapshot.market_id] = snapshot
         self.position_ledger.register_snapshots((snapshot,))
+
+        events: list[PaperMatchEvent] = []
         filled_orders: list[TrackedOrder] = []
+        partial_fill_orders: list[TrackedOrder] = []
         expired_orders: list[TrackedOrder] = []
+        canceled_orders: list[TrackedOrder] = []
 
-        for tracked in self.tracker.snapshot():
-            if tracked.status in {
-                OrderLifecycleStatus.CANCELED,
-                OrderLifecycleStatus.FILLED,
-                OrderLifecycleStatus.REJECTED,
-            }:
-                continue
+        for event in self.matcher.reconcile_snapshot(
+            tracker=self.tracker,
+            snapshot=snapshot,
+            ttl_seconds=effective_ttl,
+        ):
+            events.append(event)
+            if event.event_type in {"order.filled", "order.partially_filled"}:
+                self.position_ledger.apply_tracked_order(event.order)
 
-            fill_price = _paper_fill_price(tracked=tracked, snapshot=snapshot)
-            if fill_price is not None:
-                remaining_shares = max(tracked.requested_shares - tracked.matched_shares, 0.0)
-                if remaining_shares > 0:
-                    updated = self.tracker.apply_fill(
-                        order_id=tracked.order_id,
-                        market_id=tracked.market_id,
-                        token_id=tracked.token_id,
-                        category=tracked.category,
-                        strategy_id=tracked.strategy_id,
-                        trade_side=tracked.trade_side,
-                        requested_shares=tracked.requested_shares,
-                        limit_price=tracked.limit_price,
-                        fill_shares=remaining_shares,
-                        fill_price=fill_price,
-                        fee_rate_bps=0.0,
-                        event_time=snapshot_time,
-                        last_event="paper:fill",
-                    )
-                    self.position_ledger.apply_tracked_order(updated)
-                    filled_orders.append(updated)
-                continue
-
-            if tracked.market_id != snapshot.market_id:
-                continue
-
-            age_seconds = (snapshot_time - tracked.created_at.astimezone(timezone.utc)).total_seconds()
-            if age_seconds < effective_ttl:
-                continue
-
-            expired = self.tracker.mark_canceled(tracked.order_id, at=snapshot_time)
-            if expired is not None:
-                expired_orders.append(expired)
+            if event.event_type == "order.filled":
+                filled_orders.append(event.order)
+            elif event.event_type == "order.partially_filled":
+                partial_fill_orders.append(event.order)
+            elif event.event_type == "order.expired":
+                expired_orders.append(event.order)
+            elif event.event_type == "order.canceled":
+                canceled_orders.append(event.order)
 
         marked_positions = self.position_ledger.mark_to_market((snapshot,))
         return PaperReconcileUpdate(
+            events=tuple(events),
             filled_orders=tuple(filled_orders),
+            partial_fill_orders=tuple(partial_fill_orders),
             expired_orders=tuple(expired_orders),
-            marked_positions=marked_positions,
+            canceled_orders=tuple(canceled_orders),
+            marked_positions=tuple(marked_positions),
         )
 
     def pending_order_states(self) -> tuple[PendingOrderState, ...]:
@@ -132,36 +164,6 @@ class PaperExecutionAdapter:
         return self.position_ledger.drain_closed_trades()
 
 
-def _paper_fill_price(*, tracked: TrackedOrder, snapshot: MarketSnapshot) -> float | None:
-    if tracked.market_id != snapshot.market_id:
-        return None
-
-    no_token_id = snapshot.metadata.get("no_token_id")
-    if tracked.token_id == snapshot.token_id:
-        if tracked.trade_side == "BUY":
-            return _marketable_buy_price(limit_price=tracked.limit_price, best_ask=snapshot.best_ask_yes)
-        return _marketable_sell_price(limit_price=tracked.limit_price, best_bid=snapshot.best_bid_yes)
-
-    if no_token_id and tracked.token_id == no_token_id:
-        if tracked.trade_side == "BUY":
-            return _marketable_buy_price(limit_price=tracked.limit_price, best_ask=snapshot.best_ask_no)
-        return _marketable_sell_price(limit_price=tracked.limit_price, best_bid=snapshot.best_bid_no)
-
-    return None
-
-
-def _marketable_buy_price(*, limit_price: float, best_ask: float | None) -> float | None:
-    if best_ask is None or limit_price + 1e-9 < best_ask:
-        return None
-    return best_ask
-
-
-def _marketable_sell_price(*, limit_price: float, best_bid: float | None) -> float | None:
-    if best_bid is None or limit_price - 1e-9 > best_bid:
-        return None
-    return best_bid
-
-
 def _position_state_from_live_position(position: LivePosition) -> PositionState:
     return PositionState(
         market_id=position.market_id,
@@ -184,6 +186,8 @@ def _pending_order_state_from_tracked_order(
 ) -> PendingOrderState:
     return PendingOrderState(
         order_id=order.order_id,
+        intent_id=order.intent_id,
+        time_in_force=order.time_in_force,
         market_id=order.market_id,
         token_id=order.token_id,
         category=order.category,
@@ -198,4 +202,6 @@ def _pending_order_state_from_tracked_order(
         status=order.status.value,
         created_at=order.created_at,
         updated_at=order.updated_at,
+        quote_ttl_seconds=order.quote_ttl_seconds,
+        signal_edge_bps=order.signal_edge_bps,
     )

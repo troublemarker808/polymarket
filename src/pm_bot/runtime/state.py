@@ -55,6 +55,10 @@ class PendingOrderState:
     status: str
     created_at: datetime
     updated_at: datetime
+    intent_id: str | None = None
+    time_in_force: str = "GTC"
+    quote_ttl_seconds: int | None = None
+    signal_edge_bps: float | None = None
 
 
 @dataclass(slots=True)
@@ -66,6 +70,7 @@ class ClosedTrade:
     realized_pnl: float
     fees_paid: float
     closed_at: datetime
+    intent_id: str | None = None
 
     @property
     def net_pnl(self) -> float:
@@ -258,6 +263,8 @@ def position_state_to_dict(position: PositionState) -> dict[str, Any]:
 def pending_order_state_to_dict(order: PendingOrderState) -> dict[str, Any]:
     return {
         "order_id": order.order_id,
+        "intent_id": order.intent_id,
+        "time_in_force": order.time_in_force,
         "market_id": order.market_id,
         "token_id": order.token_id,
         "category": order.category.value,
@@ -266,6 +273,8 @@ def pending_order_state_to_dict(order: PendingOrderState) -> dict[str, Any]:
         "limit_price": order.limit_price,
         "requested_shares": order.requested_shares,
         "requested_notional": order.requested_notional,
+        "quote_ttl_seconds": order.quote_ttl_seconds,
+        "signal_edge_bps": order.signal_edge_bps,
         "matched_shares": order.matched_shares,
         "matched_notional": order.matched_notional,
         "fees_paid": order.fees_paid,
@@ -293,6 +302,8 @@ def position_state_from_dict(payload: dict[str, Any]) -> PositionState:
 def pending_order_state_from_dict(payload: dict[str, Any]) -> PendingOrderState:
     return PendingOrderState(
         order_id=str(payload["order_id"]),
+        intent_id=(str(payload["intent_id"]) if payload.get("intent_id") not in (None, "") else None),
+        time_in_force=str(payload.get("time_in_force", "GTC")),
         market_id=str(payload["market_id"]),
         token_id=str(payload["token_id"]),
         category=Category(str(payload["category"])),
@@ -301,6 +312,12 @@ def pending_order_state_from_dict(payload: dict[str, Any]) -> PendingOrderState:
         limit_price=float(payload["limit_price"]),
         requested_shares=float(payload["requested_shares"]),
         requested_notional=float(payload["requested_notional"]),
+        quote_ttl_seconds=(
+            int(payload["quote_ttl_seconds"])
+            if payload.get("quote_ttl_seconds") not in (None, "")
+            else None
+        ),
+        signal_edge_bps=_parse_optional_float(payload.get("signal_edge_bps")),
         matched_shares=float(payload.get("matched_shares", 0.0)),
         matched_notional=float(payload.get("matched_notional", 0.0)),
         fees_paid=float(payload.get("fees_paid", 0.0)),
@@ -337,13 +354,25 @@ def dashboard_state_to_lines(dashboard: DashboardState) -> list[str]:
             + f"unrealized={position.unrealized_pnl:.2f}"
         )
     for order in dashboard.pending_orders:
+        ttl_segment = (
+            f":ttl={order.quote_ttl_seconds}"
+            if order.quote_ttl_seconds is not None
+            else ""
+        )
+        tif_segment = (
+            f":tif={order.time_in_force}"
+            if order.time_in_force
+            else ""
+        )
         lines.append(
             "pending_order="
             + f"{order.order_id}:{order.market_id}:{order.category.value}:{order.side}:status={order.status}:"
             + f"limit={order.limit_price:.6f}:"
             + f"req_shares={order.requested_shares:.6f}:"
-            + f"matched_shares={order.matched_shares:.6f}:"
-            + f"notional={order.requested_notional:.2f}"
+            + f"matched_shares={order.matched_shares:.6f}"
+            + tif_segment
+            + ttl_segment
+            + f":notional={order.requested_notional:.2f}"
         )
     return lines
 

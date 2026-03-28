@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -20,15 +21,19 @@ from pm_bot.adapters.polymarket import (
     UserTradeEvent,
 )
 from pm_bot.config.loader import load_settings_from_directory
-from pm_bot.core.types import MarketSnapshot, RuntimeMode
+from pm_bot.core.types import Category, MarketSnapshot, RuntimeMode
+from pm_bot.execution.order_tracker import OrderLifecycleStatus, TrackedOrder
 from pm_bot.execution.factory import build_execution_adapter
 from pm_bot.execution.polymarket_live import PolymarketLiveExecutionAdapter
 from pm_bot.orchestrator.event_router import EventRouter
 from pm_bot.registry import build_default_registry
+from pm_bot.runtime.dashboard import render_dashboard
+from pm_bot.runtime.execution_artifacts import tracked_order_payload
 from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.live_reconcile import LiveRecoveryStats, recover_live_state
+from pm_bot.runtime.market_universe import build_snapshot_selector
 from pm_bot.runtime.live_sync import sync_live_execution_state
-from pm_bot.storage.recorder import JsonlRecorder
+from pm_bot.storage.recorder import LiveRuntimeRecorder
 from pm_bot.storage.runtime_state_store import JsonRuntimeStateStore
 
 if TYPE_CHECKING:
@@ -96,6 +101,42 @@ def format_live_session_stats(stats: LiveSessionStats) -> str:
     )
 
 
+def format_live_session_summary(result: dict[str, object]) -> str:
+    metrics = result.get("metrics")
+    metrics_map = metrics if isinstance(metrics, Mapping) else {}
+    dashboard = result.get("dashboard")
+    lines = [
+        f"processed_snapshots={result['processed_snapshots']}",
+        f"user_events_processed={result['user_events_processed']}",
+        f"submitted_orders={result['submitted_orders']}",
+        f"stale_orders_cancelled={result['stale_orders_cancelled']}",
+        f"recovered_open_orders={result['recovered_open_orders']}",
+        f"replayed_trades={result['replayed_trades']}",
+        f"rebuilt_positions={result['rebuilt_positions']}",
+        f"reconnects={result['reconnects']}",
+        f"signals_generated={metrics_map.get('signals_generated', 0)}",
+        f"signals_rejected={metrics_map.get('signals_rejected', 0)}",
+        f"orders_rejected={metrics_map.get('orders_rejected', 0)}",
+        f"orders_filled={metrics_map.get('orders_filled', 0)}",
+        f"orders_partially_filled={metrics_map.get('orders_partially_filled', 0)}",
+        f"orders_expired={metrics_map.get('orders_expired', 0)}",
+        f"orders_canceled={metrics_map.get('orders_canceled', 0)}",
+        f"trades_closed={metrics_map.get('trades_closed', 0)}",
+        f"fill_rate={float(metrics_map.get('fill_rate', 0.0)):.4f}",
+        f"cancel_rate={float(metrics_map.get('cancel_rate', 0.0)):.4f}",
+        f"avg_time_to_fill_ms={float(metrics_map.get('avg_time_to_fill_ms', 0.0)):.2f}",
+        f"avg_fill_price_vs_mid_bps={float(metrics_map.get('avg_fill_price_vs_mid_bps', 0.0)):.2f}",
+        f"maker_fill_share={float(metrics_map.get('maker_fill_share', 0.0)):.4f}",
+        f"taker_fill_share={float(metrics_map.get('taker_fill_share', 0.0)):.4f}",
+        f"market_data_failures={metrics_map.get('market_data_failures', 0)}",
+        f"market_data_recoveries={metrics_map.get('market_data_recoveries', 0)}",
+        f"events_recorded={result['events_recorded']}",
+    ]
+    if dashboard is not None:
+        lines.append(render_dashboard(dashboard))
+    return "\n".join(lines)
+
+
 class LiveSessionRunner:
     """Run market updates and user updates through one live runtime loop."""
 
@@ -109,6 +150,9 @@ class LiveSessionRunner:
         market_snapshots: Sequence[MarketSnapshot],
         market_snapshot_stream: AsyncIterator[MarketSnapshot],
         user_event_stream: AsyncIterator[UserChannelEvent],
+        summary_every_snapshots: int | None = None,
+        session_started_at: datetime | None = None,
+        shadow_coordinator: object | None = None,
     ) -> None:
         self.router = router
         self.execution = execution
@@ -117,6 +161,9 @@ class LiveSessionRunner:
         self.market_snapshot_stream = market_snapshot_stream
         self.user_event_stream = user_event_stream
         self.snapshots_by_market_id = {snapshot.market_id: snapshot for snapshot in market_snapshots}
+        self.summary_every_snapshots = summary_every_snapshots
+        self.session_started_at = session_started_at
+        self.shadow_coordinator = shadow_coordinator
         self.stats = LiveSessionStats()
 
     def current_snapshots(self) -> tuple[MarketSnapshot, ...]:
@@ -203,36 +250,125 @@ class LiveSessionRunner:
     async def _handle_market_snapshot(self, snapshot: MarketSnapshot) -> None:
         self.snapshots_by_market_id[snapshot.market_id] = snapshot
         _record_data_success(self.risk_manager, snapshot.timestamp)
+        _note_snapshot(recorder=self.recorder, timestamp=snapshot.timestamp)
+        await _shadow_before_market_snapshot(
+            shadow_coordinator=self.shadow_coordinator,
+            snapshot=snapshot,
+        )
         submitted = await self.router.run_once(snapshot=snapshot)
-        cancelled = await self.execution.cancel_stale()
+        cancelled_orders = await self.execution.cancel_stale_orders()
+        await _shadow_after_market_snapshot(
+            shadow_coordinator=self.shadow_coordinator,
+            snapshot=snapshot,
+        )
         await sync_live_execution_state(
             risk_manager=self.risk_manager,
             execution=self.execution,
             snapshots=tuple(self.snapshots_by_market_id.values()),
         )
 
-        self.stats = LiveSessionStats(
+        next_stats = LiveSessionStats(
             market_snapshots_processed=self.stats.market_snapshots_processed + 1,
             user_events_processed=self.stats.user_events_processed,
             submitted_orders=self.stats.submitted_orders + len(submitted),
-            stale_orders_cancelled=self.stats.stale_orders_cancelled + cancelled,
+            stale_orders_cancelled=self.stats.stale_orders_cancelled + len(cancelled_orders),
             recovered_open_orders=self.stats.recovered_open_orders,
             replayed_trades=self.stats.replayed_trades,
             rebuilt_positions=self.stats.rebuilt_positions,
             reconnects=self.stats.reconnects,
         )
+        for order in cancelled_orders:
+            assert isinstance(order, TrackedOrder)
+            await self._record(
+                "order.canceled",
+                {
+                    **tracked_order_payload(
+                        order=order,
+                        snapshot=_snapshot_for_order(
+                            order=order,
+                            snapshots=self.snapshots_by_market_id,
+                        ),
+                    ),
+                    "reason": "stale_ttl_cancel",
+                },
+            )
         await self._record(
             "market.snapshot_processed",
             {
                 "market_id": snapshot.market_id,
+                "processed_snapshots": next_stats.market_snapshots_processed,
                 "submitted_orders": len(submitted),
-                "stale_orders_cancelled": cancelled,
+                "stale_orders_cancelled": len(cancelled_orders),
+                "updated_at": snapshot.timestamp.isoformat(),
             },
         )
+        self.stats = next_stats
+        if (
+            self.summary_every_snapshots is not None
+            and self.summary_every_snapshots > 0
+            and self.stats.market_snapshots_processed % self.summary_every_snapshots == 0
+        ):
+            print(
+                format_live_session_summary(
+                    {
+                        "processed_snapshots": self.stats.market_snapshots_processed,
+                        "user_events_processed": self.stats.user_events_processed,
+                        "submitted_orders": self.stats.submitted_orders,
+                        "stale_orders_cancelled": self.stats.stale_orders_cancelled,
+                        "recovered_open_orders": self.stats.recovered_open_orders,
+                        "replayed_trades": self.stats.replayed_trades,
+                        "rebuilt_positions": self.stats.rebuilt_positions,
+                        "reconnects": self.stats.reconnects,
+                        "events_recorded": len(getattr(self.recorder, "events", [])),
+                        "metrics": getattr(getattr(self.recorder, "metrics", None), "to_dict", lambda: {})(),
+                        "dashboard": self.risk_manager.dashboard_state(),
+                    }
+                )
+            )
 
     async def _handle_user_event(self, event: UserChannelEvent) -> None:
+        if _should_ignore_historical_user_event(
+            event=event,
+            session_started_at=self.session_started_at,
+            execution=self.execution,
+        ):
+            await self._record(
+                "user.event_ignored",
+                {
+                    "reason": "historical_before_session_start",
+                    "event_type": "trade" if isinstance(event, UserTradeEvent) else "order",
+                    "event_id": event.id,
+                },
+            )
+            self.stats = LiveSessionStats(
+                market_snapshots_processed=self.stats.market_snapshots_processed,
+                user_events_processed=self.stats.user_events_processed + 1,
+                submitted_orders=self.stats.submitted_orders,
+                stale_orders_cancelled=self.stats.stale_orders_cancelled,
+                recovered_open_orders=self.stats.recovered_open_orders,
+                replayed_trades=self.stats.replayed_trades,
+                rebuilt_positions=self.stats.rebuilt_positions,
+                reconnects=self.stats.reconnects,
+            )
+            return
         if isinstance(event, UserOrderEvent):
+            previous_order = self.execution.tracker.get(event.id)
             tracked = self.execution.apply_user_order_event(event)
+            if tracked is not None:
+                await sync_live_execution_state(
+                    risk_manager=self.risk_manager,
+                    execution=self.execution,
+                    snapshots=tuple(self.snapshots_by_market_id.values()),
+                )
+                standardized = _standardized_order_event_from_user_event(
+                    previous_order=previous_order,
+                    tracked_order=tracked,
+                    event=event,
+                    snapshots=self.snapshots_by_market_id,
+                )
+                if standardized is not None:
+                    event_type, payload = standardized
+                    await self._record(event_type, payload)
             await self._record(
                 "user.order_event",
                 {
@@ -242,12 +378,28 @@ class LiveSessionRunner:
                 },
             )
         else:
+            tracked_orders_before = {
+                order_id: (fill_source, self.execution.tracker.get(order_id))
+                for order_id, fill_source in self.execution.tracked_order_ids_for_trade_event(event)
+            }
             positions = self.execution.apply_user_trade_event(event)
             await sync_live_execution_state(
                 risk_manager=self.risk_manager,
                 execution=self.execution,
                 snapshots=tuple(self.snapshots_by_market_id.values()),
             )
+            for order_id, (fill_source, previous_order) in tracked_orders_before.items():
+                tracked_order = self.execution.tracker.get(order_id)
+                standardized = _standardized_fill_event(
+                    previous_order=previous_order,
+                    tracked_order=tracked_order,
+                    fill_source=fill_source,
+                    snapshots=self.snapshots_by_market_id,
+                )
+                if standardized is None:
+                    continue
+                event_type, payload = standardized
+                await self._record(event_type, payload)
             closed_trades = self.execution.drain_closed_trades()
             for closed_trade in closed_trades:
                 await self.risk_manager.record_trade_close(closed_trade)
@@ -256,9 +408,12 @@ class LiveSessionRunner:
                     {
                         "market_id": closed_trade.market_id,
                         "token_id": closed_trade.token_id,
+                        "strategy_id": closed_trade.strategy_id,
+                        "intent_id": closed_trade.intent_id,
                         "realized_pnl": closed_trade.realized_pnl,
                         "fees_paid": closed_trade.fees_paid,
                         "net_pnl": closed_trade.net_pnl,
+                        "closed_at": closed_trade.closed_at.isoformat(),
                     },
                 )
             await self._record(
@@ -301,19 +456,37 @@ async def supervise_live_session(
     max_user_events: int | None = None,
     reconnect_delay_seconds: float = 1.0,
     max_reconnects: int | None = None,
+    summary_every_snapshots: int | None = None,
+    recovery_scope: str = "full",
+    session_started_at: datetime | None = None,
+    shadow_coordinator: object | None = None,
 ) -> LiveSessionStats:
     current_snapshots = list(initial_snapshots or await market_data.bootstrap_snapshots())
     if current_snapshots:
         _record_data_success(risk_manager, max(snapshot.timestamp for snapshot in current_snapshots))
     aggregate = LiveSessionStats()
     include_initial = True
+    run_started_at = session_started_at or datetime.now(tz=UTC)
 
     while True:
         recovery_stats = await recover_live_state(
             risk_manager=risk_manager,
             execution=execution,
             snapshots=tuple(current_snapshots),
+            recovery_scope=recovery_scope,
+            session_started_at=run_started_at,
         )
+        if recovery_stats.historical_open_orders_skipped > 0 or recovery_stats.historical_trades_skipped > 0:
+            await _record_supervisor_event(
+                recorder=recorder,
+                event_type="live.recovery.filtered_history",
+                payload={
+                    "recovery_scope": recovery_scope,
+                    "session_started_at": run_started_at.isoformat(),
+                    "historical_open_orders_skipped": recovery_stats.historical_open_orders_skipped,
+                    "historical_trades_skipped": recovery_stats.historical_trades_skipped,
+                },
+            )
         runner = LiveSessionRunner(
             router=router,
             execution=execution,
@@ -328,6 +501,9 @@ async def supervise_live_session(
                 auth=execution.user_channel_auth,
                 markets=_subscribed_markets(current_snapshots),
             ),
+            summary_every_snapshots=summary_every_snapshots,
+            session_started_at=run_started_at,
+            shadow_coordinator=shadow_coordinator,
         )
 
         stream_error: LiveSessionStreamError | None = None
@@ -420,7 +596,14 @@ async def _refresh_snapshots(
         return tuple(fallback_snapshots)
 
     if refreshed:
+        had_failures = _consecutive_data_failures(risk_manager) > 0
         _record_data_success(risk_manager, max(snapshot.timestamp for snapshot in refreshed))
+        if had_failures:
+            await _record_supervisor_event(
+                recorder=recorder,
+                event_type="market_data.recovered",
+                payload={"updated_at": max(snapshot.timestamp for snapshot in refreshed).isoformat()},
+            )
 
     return _merge_snapshots(primary=refreshed, fallback=fallback_snapshots)
 
@@ -461,6 +644,8 @@ def _limits_satisfied(
     max_market_snapshots: int | None,
     max_user_events: int | None,
 ) -> bool:
+    if max_market_snapshots is None and max_user_events is None:
+        return False
     market_done = max_market_snapshots is None or stats.market_snapshots_processed >= max_market_snapshots
     user_done = max_user_events is None or stats.user_events_processed >= max_user_events
     return market_done and user_done
@@ -485,7 +670,10 @@ def _merge_snapshots(
     fallback: Sequence[MarketSnapshot],
 ) -> tuple[MarketSnapshot, ...]:
     by_market_id = {snapshot.market_id: snapshot for snapshot in fallback}
-    by_market_id.update({snapshot.market_id: snapshot for snapshot in primary})
+    for snapshot in primary:
+        existing = by_market_id.get(snapshot.market_id)
+        if existing is None or snapshot.timestamp >= existing.timestamp:
+            by_market_id[snapshot.market_id] = snapshot
     return tuple(by_market_id.values())
 
 
@@ -494,17 +682,23 @@ async def run_crypto_live_session(
     config_dir: str = "configs",
     state_path: str = "data/runtime/runtime_state.json",
     recorder_path: str | Path = "data/runtime/live-events.jsonl",
+    metrics_path: str | Path | None = "data/runtime/live-metrics.latest.json",
     max_pages: int = 1,
     max_market_snapshots: int | None = None,
     max_user_events: int | None = None,
     gamma_tag_id: int = CRYPTO_GAMMA_TAG_ID,
-) -> LiveSessionStats:
+    summary_every_snapshots: int | None = 50,
+) -> dict[str, object]:
     settings = load_settings_from_directory(config_dir)
     if settings.app.mode != RuntimeMode.LIVE:
         raise ValueError("Live session runner requires app.mode=live")
 
     registry = build_default_registry()
     strategies = registry.build_enabled(settings=settings)
+    crypto_config = settings.category_configs.get(Category.CRYPTO)
+    snapshot_selector = build_snapshot_selector(
+        crypto_config.markets if crypto_config is not None else None
+    )
     state_store = JsonRuntimeStateStore(state_path)
     risk_manager = BasicRiskManager(
         settings=settings.risk,
@@ -515,7 +709,17 @@ async def run_crypto_live_session(
     if not isinstance(execution, PolymarketLiveExecutionAdapter):
         raise TypeError("Live session runner requires PolymarketLiveExecutionAdapter")
 
-    recorder = JsonlRecorder(path=recorder_path)
+    recorder = LiveRuntimeRecorder(event_path=recorder_path, metrics_path=metrics_path)
+    session_started_at = datetime.now(tz=UTC)
+    await recorder.record(
+        event_type="live.session_started",
+        payload={
+            "started_at": session_started_at.isoformat(),
+            "recovery_scope": settings.polymarket.live_recovery_scope,
+            "configured_signature_type": settings.polymarket.signature_type,
+            "resolved_signature_type": execution.signature_type,
+        },
+    )
 
     async with GammaMarketsClient(
         base_url=settings.polymarket.gamma_url,
@@ -528,6 +732,7 @@ async def run_crypto_live_session(
             market_event_stream=MarketChannelClient(settings.polymarket.market_ws_url),
             max_pages=max_pages,
             tag_id=gamma_tag_id,
+            snapshot_selector=snapshot_selector,
         )
         try:
             seed_snapshots = await market_data.bootstrap_snapshots()
@@ -549,7 +754,7 @@ async def run_crypto_live_session(
             default_order_size=settings.trading.default_order_notional,
         )
         user_client = UserChannelClient(settings.polymarket.user_ws_url)
-        return await supervise_live_session(
+        stats = await supervise_live_session(
             market_data=market_data,
             user_client=user_client,
             router=router,
@@ -559,4 +764,168 @@ async def run_crypto_live_session(
             initial_snapshots=seed_snapshots,
             max_market_snapshots=max_market_snapshots,
             max_user_events=max_user_events,
+            summary_every_snapshots=summary_every_snapshots,
+            recovery_scope=settings.polymarket.live_recovery_scope,
+            session_started_at=session_started_at,
         )
+    dashboard = risk_manager.dashboard_state()
+    return {
+        "processed_snapshots": stats.market_snapshots_processed,
+        "user_events_processed": stats.user_events_processed,
+        "submitted_orders": stats.submitted_orders,
+        "stale_orders_cancelled": stats.stale_orders_cancelled,
+        "recovered_open_orders": stats.recovered_open_orders,
+        "replayed_trades": stats.replayed_trades,
+        "rebuilt_positions": stats.rebuilt_positions,
+        "reconnects": stats.reconnects,
+        "events_recorded": len(recorder.events),
+        "metrics": recorder.metrics.to_dict(),
+        "dashboard": dashboard,
+    }
+
+
+def _note_snapshot(*, recorder: EventRecorder | None, timestamp) -> None:
+    note_snapshot = getattr(recorder, "note_snapshot", None)
+    if callable(note_snapshot):
+        note_snapshot(timestamp=timestamp, payload={"updated_at": timestamp.isoformat()})
+
+
+def _standardized_order_event_from_user_event(
+    *,
+    previous_order: TrackedOrder | None,
+    tracked_order: TrackedOrder,
+    event: UserOrderEvent,
+    snapshots: Mapping[str, MarketSnapshot],
+) -> tuple[str, dict[str, object]] | None:
+    previous_status = previous_order.status if previous_order is not None else None
+    snapshot = _snapshot_for_order(order=tracked_order, snapshots=snapshots)
+    if (
+        tracked_order.status == OrderLifecycleStatus.CANCELED
+        and previous_status != OrderLifecycleStatus.CANCELED
+    ):
+        return (
+            "order.canceled",
+            {
+                **tracked_order_payload(order=tracked_order, snapshot=snapshot),
+                "reason": "exchange_canceled",
+                "exchange_status": event.status,
+            },
+        )
+    if (
+        tracked_order.status == OrderLifecycleStatus.REJECTED
+        and previous_status != OrderLifecycleStatus.REJECTED
+    ):
+        return (
+            "order.rejected",
+            {
+                **tracked_order_payload(order=tracked_order, snapshot=snapshot),
+                "reason": "exchange_rejected",
+                "exchange_status": event.status,
+            },
+        )
+    return None
+
+
+def _standardized_fill_event(
+    *,
+    previous_order: TrackedOrder | None,
+    tracked_order: TrackedOrder | None,
+    fill_source: str,
+    snapshots: Mapping[str, MarketSnapshot],
+) -> tuple[str, dict[str, object]] | None:
+    if tracked_order is None:
+        return None
+    previous_matched_shares = previous_order.matched_shares if previous_order is not None else 0.0
+    previous_matched_notional = previous_order.matched_notional if previous_order is not None else 0.0
+    previous_fees_paid = previous_order.fees_paid if previous_order is not None else 0.0
+    fill_shares_delta = tracked_order.matched_shares - previous_matched_shares
+    fill_notional_delta = tracked_order.matched_notional - previous_matched_notional
+    fees_paid_delta = tracked_order.fees_paid - previous_fees_paid
+    if fill_shares_delta <= 1e-9 and fees_paid_delta <= 1e-9:
+        return None
+    event_type = (
+        "order.filled"
+        if tracked_order.status == OrderLifecycleStatus.FILLED
+        else "order.partially_filled"
+    )
+    return (
+        event_type,
+        tracked_order_payload(
+            order=tracked_order,
+            snapshot=_snapshot_for_order(order=tracked_order, snapshots=snapshots),
+            fill_shares_delta=fill_shares_delta,
+            fill_notional_delta=fill_notional_delta,
+            fees_paid_delta=fees_paid_delta,
+            fill_source=fill_source,
+        ),
+    )
+
+
+def _snapshot_for_order(
+    *,
+    order: TrackedOrder,
+    snapshots: Mapping[str, MarketSnapshot],
+) -> MarketSnapshot | None:
+    direct = snapshots.get(order.market_id)
+    if direct is not None:
+        return direct
+    for snapshot in snapshots.values():
+        if order.token_id == snapshot.token_id or order.token_id == snapshot.metadata.get("no_token_id"):
+            return snapshot
+    return None
+
+
+def _consecutive_data_failures(risk_manager: RiskManager) -> int:
+    dashboard = getattr(risk_manager, "dashboard_state", None)
+    if not callable(dashboard):
+        return 0
+    return int(getattr(dashboard(), "consecutive_data_failures", 0))
+
+
+async def _shadow_before_market_snapshot(
+    *,
+    shadow_coordinator: object | None,
+    snapshot: MarketSnapshot,
+) -> None:
+    if shadow_coordinator is None:
+        return
+    callback = getattr(shadow_coordinator, "before_market_snapshot", None)
+    if callable(callback):
+        await callback(snapshot=snapshot)
+
+
+async def _shadow_after_market_snapshot(
+    *,
+    shadow_coordinator: object | None,
+    snapshot: MarketSnapshot,
+) -> None:
+    if shadow_coordinator is None:
+        return
+    callback = getattr(shadow_coordinator, "after_market_snapshot", None)
+    if callable(callback):
+        await callback(snapshot=snapshot)
+
+
+def _should_ignore_historical_user_event(
+    *,
+    event: UserChannelEvent,
+    session_started_at: datetime | None,
+    execution: PolymarketLiveExecutionAdapter,
+) -> bool:
+    if session_started_at is None:
+        return False
+    session_start = session_started_at.astimezone(UTC)
+    if isinstance(event, UserOrderEvent):
+        if execution.tracker.get(event.id) is not None:
+            return False
+        event_time = event.timestamp or event.created_at
+        return event_time is not None and event_time.astimezone(UTC) < session_start
+
+    if execution.has_processed_trade_id(str(event.id or "")):
+        return True
+    if event.taker_order_id and execution.tracker.get(event.taker_order_id) is not None:
+        return False
+    if any(execution.tracker.get(maker_order.order_id) is not None for maker_order in event.maker_orders):
+        return False
+    event_time = event.timestamp or event.last_update or event.matchtime
+    return event_time is not None and event_time.astimezone(UTC) < session_start

@@ -1,6 +1,6 @@
 # Known Issues
 
-Last updated: 2026-03-24
+Last updated: 2026-03-25
 
 ## 1. Replay/backtest can finish with pending paper orders
 
@@ -18,17 +18,19 @@ Last updated: 2026-03-24
     - `src/pm_bot/runtime/paper_sync.py`
     - `src/pm_bot/execution/paper_adapter.py`
 
-## 2. Paper execution is still a simplified fill model
+## 2. Paper execution is closer to live, but still not exchange-equal
 
 - Current behavior:
-  - Fills are all-or-nothing at top-of-book prices.
-  - No queue position, no partial fills, no fees, no slippage model.
+  - Paper now supports continuous sessions, partial fills, queue-ahead tracking, fee modeling, and configurable taker slippage.
+  - Matching still relies on public book/trade updates rather than exchange-internal queue state.
 - Impact:
-  - Replay/backtest and paper PnL are directionally useful, but they are still optimistic compared with live execution.
+  - Paper is now much more useful for execution diagnostics, but it still cannot perfectly reproduce true exchange priority, hidden liquidity, or cancel races under exchange-internal timing.
 - Follow-up direction:
-  - Add partial-fill simulation, fee modeling, and configurable slippage.
-  - Candidate code area:
+  - Add paper-vs-live calibration reports and fit queue/latency assumptions from small-live observations.
+  - Candidate code areas:
     - `src/pm_bot/execution/paper_adapter.py`
+    - `src/pm_bot/execution/paper_matching.py`
+    - `src/pm_bot/execution/paper_metrics.py`
 
 ## 3. Data-source recovery markers stop at local state and event logs
 

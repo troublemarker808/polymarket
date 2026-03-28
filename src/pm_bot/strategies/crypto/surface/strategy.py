@@ -9,7 +9,7 @@ the position moves too far against us.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timezone
+from dataclasses import dataclass
 import re
 from typing import Any
 
@@ -24,13 +24,38 @@ class CryptoSurfaceConfig:
         self.min_peer_count = int(config.get("min_peer_count", 3))
         self.exit_edge_bps = float(config.get("exit_edge_bps", 75))
         self.stop_loss_bps = float(config.get("stop_loss_bps", 250))
+        self.stop_loss_cooldown_seconds = int(config.get("stop_loss_cooldown_seconds", 60))
+
+
+@dataclass(slots=True, frozen=True)
+class _StopLossState:
+    occurred_at: Any
 
 
 class CryptoSurfaceStrategy:
     strategy_id = "crypto.surface"
+    _DOWNWARD_MARKET_TOKENS = (
+        "below",
+        "under",
+        "less-than",
+        "dip",
+        "drop",
+        "fall",
+        "crash",
+    )
+    _UPWARD_MARKET_TOKENS = (
+        "above",
+        "over",
+        "greater-than",
+        "reach",
+        "hit",
+        "climb",
+        "rise",
+    )
 
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.config = CryptoSurfaceConfig(config)
+        self._last_stop_loss_by_market: dict[str, _StopLossState] = {}
 
     async def evaluate(
         self,
@@ -91,7 +116,14 @@ class CryptoSurfaceStrategy:
                 fair_probability=fair_probability,
                 position=current_position,
             )
+            if exit_signal is not None and "stop_loss" in exit_signal.rationale_tags:
+                self._last_stop_loss_by_market[snapshot.market_id] = _StopLossState(
+                    occurred_at=snapshot.timestamp,
+                )
             return [exit_signal] if exit_signal is not None else []
+
+        if self._is_in_stop_loss_cooldown(snapshot=snapshot):
+            return []
 
         return self._entry_signals(snapshot=snapshot, fair_probability=fair_probability, lower_bound=lower_bound, upper_bound=upper_bound)
 
@@ -133,11 +165,11 @@ class CryptoSurfaceStrategy:
         event_title = snapshot.metadata.get("event_title", "").lower()
         combined = " ".join((question, slug, event_title))
 
-        if " by " in f" {question} " or " before " in f" {question} ":
-            return 1
-        if any(token in combined for token in ("above", "over", "greater-than")):
+        if any(token in combined for token in self._DOWNWARD_MARKET_TOKENS):
             return -1
-        if any(token in combined for token in ("below", "under", "less-than")):
+        if any(token in combined for token in self._UPWARD_MARKET_TOKENS):
+            return 1
+        if " by " in f" {question} " or " before " in f" {question} ":
             return 1
         return None
 
@@ -162,7 +194,7 @@ class CryptoSurfaceStrategy:
                         side=SignalSide.BUY_YES,
                         confidence=signal_confidence(lower_bound=lower_bound, upper_bound=upper_bound),
                         edge_bps=buy_yes_edge_bps,
-                        generated_at=datetime.now(tz=timezone.utc),
+                        generated_at=snapshot.timestamp,
                         rationale_tags=("crypto_series_monotonicity", "buy_yes"),
                     )
                 ]
@@ -180,7 +212,7 @@ class CryptoSurfaceStrategy:
                         side=SignalSide.BUY_NO,
                         confidence=signal_confidence(lower_bound=lower_bound, upper_bound=upper_bound),
                         edge_bps=buy_no_edge_bps,
-                        generated_at=datetime.now(tz=timezone.utc),
+                        generated_at=snapshot.timestamp,
                         rationale_tags=("crypto_series_monotonicity", "buy_no"),
                     )
                 ]
@@ -214,7 +246,8 @@ class CryptoSurfaceStrategy:
         stop_loss_triggered = False
         if position.average_entry_price is not None:
             stop_loss_price = position.average_entry_price * (1 - (self.config.stop_loss_bps / 10000))
-            stop_loss_triggered = exit_price <= stop_loss_price
+            stop_reference_price = token_mid_probability(snapshot=snapshot, token_id=position.token_id) or exit_price
+            stop_loss_triggered = stop_reference_price <= stop_loss_price
 
         if exit_gap_bps <= self.config.exit_edge_bps or stop_loss_triggered:
             target_notional = (position.shares or 0.0) * exit_price
@@ -230,7 +263,7 @@ class CryptoSurfaceStrategy:
                 side=side,
                 confidence=0.7 if stop_loss_triggered else 0.65,
                 edge_bps=max(0.0, exit_gap_bps),
-                generated_at=datetime.now(tz=timezone.utc),
+                generated_at=snapshot.timestamp,
                 target_price=exit_price,
                 target_size=target_notional,
                 rationale_tags=("crypto_series_exit", rationale),
@@ -262,6 +295,18 @@ class CryptoSurfaceStrategy:
     ) -> bool:
         return any(order.market_id == snapshot.market_id for order in dashboard.pending_orders)
 
+    def _is_in_stop_loss_cooldown(self, *, snapshot: MarketSnapshot) -> bool:
+        if self.config.stop_loss_cooldown_seconds <= 0:
+            return False
+        previous = self._last_stop_loss_by_market.get(snapshot.market_id)
+        if previous is None:
+            return False
+        elapsed_seconds = (snapshot.timestamp - previous.occurred_at).total_seconds()
+        if elapsed_seconds >= self.config.stop_loss_cooldown_seconds:
+            self._last_stop_loss_by_market.pop(snapshot.market_id, None)
+            return False
+        return True
+
 
 def implied_yes_probability(snapshot: MarketSnapshot) -> float | None:
     if snapshot.best_bid_yes is not None and snapshot.best_ask_yes is not None:
@@ -272,6 +317,15 @@ def implied_yes_probability(snapshot: MarketSnapshot) -> float | None:
         return snapshot.best_ask_yes
     if snapshot.best_bid_yes is not None:
         return snapshot.best_bid_yes
+    return None
+
+
+def token_mid_probability(*, snapshot: MarketSnapshot, token_id: str) -> float | None:
+    no_token_id = snapshot.metadata.get("no_token_id")
+    if token_id == snapshot.token_id:
+        return _midpoint(snapshot.best_bid_yes, snapshot.best_ask_yes)
+    if no_token_id and token_id == no_token_id:
+        return _midpoint(snapshot.best_bid_no, snapshot.best_ask_no)
     return None
 
 
@@ -311,13 +365,19 @@ def project_fair_probability(
         return lower_bound
     if upper_bound is not None and current_probability > upper_bound:
         return upper_bound
-    return None
+    return current_probability
 
 
 def signal_confidence(*, lower_bound: float | None, upper_bound: float | None) -> float:
     if lower_bound is not None and upper_bound is not None:
         return 0.75
     return 0.6
+
+
+def _midpoint(best_bid: float | None, best_ask: float | None) -> float | None:
+    if best_bid is None or best_ask is None:
+        return None
+    return (best_bid + best_ask) / 2
 
 
 def parse_numeric_threshold(raw_value: str) -> float | None:

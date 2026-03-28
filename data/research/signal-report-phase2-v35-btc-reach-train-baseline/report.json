@@ -1,0 +1,37 @@
+{
+  "generated_at": "2026-03-28T13:06:36.709901+00:00",
+  "event_path": "data\\research\\fixed-window-phase2-v35-btc-reach-v7\\train\\baseline\\events.jsonl",
+  "snapshot_path": "data\\research\\family-export-phase2-v35-btc-reach\\snapshots.jsonl",
+  "signal_rows": [
+    {
+      "market_id": "701491",
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "instrument_key": "BTC:reach:2027-01-01:150000",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "signal_side": "buy_yes",
+      "signal_type": "resolution_edge",
+      "execution_route": "maker",
+      "fair_probability": 0.12434903340343767,
+      "observed_probability": 0.095,
+      "gross_edge_bps": 293.4903340343767,
+      "net_edge_bps": 178.49033403437662,
+      "target_price": 0.09,
+      "quote_ttl_seconds": 45,
+      "generated_at": "2026-03-28T12:28:32.971000+00:00"
+    }
+  ],
+  "series_summaries": [
+    {
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "signal_count": 1,
+      "routes": [
+        "maker"
+      ],
+      "mean_gross_edge_bps": 293.4903340343767,
+      "mean_net_edge_bps": 178.49033403437662
+    }
+  ]
+}

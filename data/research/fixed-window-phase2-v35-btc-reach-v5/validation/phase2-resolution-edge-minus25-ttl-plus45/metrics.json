@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "fixed-window-phase2",
+  "events_recorded": 4,
+  "generated_at": "2026-03-28T12:30:13.806000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 2
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\fixed-window-phase2-v35-btc-reach-v5\\validation\\phase2-resolution-edge-minus25-ttl-plus45",
+  "processed_snapshots": 10,
+  "run_id": "validation-phase2-resolution-edge-minus25-ttl-plus45",
+  "signals_generated": 2,
+  "signals_rejected": 0,
+  "snapshot_path": "validation:phase2-resolution-edge-minus25-ttl-plus45",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 2
+  },
+  "submitted_orders": 2,
+  "today_pnl": 0.0,
+  "total_equity": 1000.0
+}

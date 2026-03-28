@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "fixed-window-phase2",
+  "events_recorded": 2,
+  "generated_at": "2026-03-28T10:32:41.753000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 1
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\fixed-window-phase2-v34-btc-reach-v4\\train\\baseline",
+  "processed_snapshots": 32,
+  "run_id": "train-baseline",
+  "signals_generated": 1,
+  "signals_rejected": 0,
+  "snapshot_path": "train:baseline",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 1
+  },
+  "submitted_orders": 1,
+  "today_pnl": 0.0,
+  "total_equity": 1000.0
+}

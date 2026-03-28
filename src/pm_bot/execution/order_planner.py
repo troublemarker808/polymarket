@@ -54,4 +54,6 @@ def signal_to_order_intent(
         time_in_force=signal.time_in_force,
         created_at=signal.generated_at,
         notional=notional,
+        quote_ttl_seconds=signal.quote_ttl_seconds,
+        signal_edge_bps=signal.edge_bps,
     )

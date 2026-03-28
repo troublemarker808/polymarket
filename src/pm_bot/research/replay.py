@@ -13,6 +13,7 @@ async def run_replay(
     config_dir: str = "configs",
     limit: int | None = None,
     recorder_path: str | Path | None = None,
+    metrics_path: str | Path | None = None,
 ) -> ResearchRunResult:
     """Replay recorded market snapshots through the live router in paper mode."""
 
@@ -21,4 +22,5 @@ async def run_replay(
         config_dir=config_dir,
         limit=limit,
         recorder_path=recorder_path,
+        metrics_path=metrics_path,
     )

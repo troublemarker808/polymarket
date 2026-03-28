@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-03-27T20:45:16.729893+00:00",
+  "baseline_candidate": "baseline",
+  "dataset_split": {
+    "train": "tests\\fixtures\\crypto_phase2\\eth_runtime_ladder_window.jsonl",
+    "validation": "tests\\fixtures\\crypto_phase2\\compare_snapshots.jsonl",
+    "holdout": "tests\\fixtures\\crypto_phase1\\ladder_snapshots.jsonl"
+  },
+  "results": [
+    {
+      "candidate_name": "much-shallower-plus-surface",
+      "train_score": -43.09550356882235,
+      "validation_score": 6.213421105576288,
+      "holdout_score": -40.926059761307556,
+      "aggregate_score": -27.8689374049998,
+      "accepted": true
+    },
+    {
+      "candidate_name": "shallower-plus-surface",
+      "train_score": -53.54722863663644,
+      "validation_score": -0.7061837881025639,
+      "holdout_score": -51.06427868521838,
+      "aggregate_score": -37.19832519179267,
+      "accepted": true
+    },
+    {
+      "candidate_name": "surface-heavier",
+      "train_score": -62.909459290835,
+      "validation_score": -7.2841829089268835,
+      "holdout_score": -60.44257094385491,
+      "aggregate_score": -45.728498706866546,
+      "accepted": true
+    },
+    {
+      "candidate_name": "shallower-barrier",
+      "train_score": -64.27399747966125,
+      "validation_score": -7.467914173818194,
+      "holdout_score": -61.15778390071266,
+      "aggregate_score": -46.608929772118614,
+      "accepted": true
+    },
+    {
+      "candidate_name": "baseline",
+      "train_score": -75.33845188916865,
+      "validation_score": -15.24191313479239,
+      "holdout_score": -72.241220206374,
+      "aggregate_score": -56.690043926296845,
+      "accepted": true
+    }
+  ]
+}

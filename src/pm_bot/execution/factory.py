@@ -28,7 +28,13 @@ def build_execution_adapter(
     """Build the configured execution adapter."""
 
     if settings.app.mode != RuntimeMode.LIVE:
-        return PaperExecutionAdapter(ttl_seconds=settings.trading.default_quote_ttl_seconds)
+        return PaperExecutionAdapter(
+            ttl_seconds=settings.trading.default_quote_ttl_seconds,
+            place_latency_ms=settings.trading.paper_place_latency_ms,
+            cancel_latency_ms=settings.trading.paper_cancel_latency_ms,
+            fee_bps=settings.trading.paper_fee_bps,
+            taker_slippage_bps=settings.trading.paper_taker_slippage_bps,
+        )
 
     return PolymarketLiveExecutionAdapter.from_settings(
         settings=settings.polymarket,

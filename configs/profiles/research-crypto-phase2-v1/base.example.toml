@@ -1,0 +1,35 @@
+[app]
+environment = "dev"
+mode = "paper"
+log_level = "INFO"
+
+[categories]
+sports = false
+crypto = true
+weather = false
+
+[trading]
+starting_equity = 1000.0
+default_order_notional = 5.0
+default_quote_ttl_seconds = 15
+paper_place_latency_ms = 0
+paper_cancel_latency_ms = 0
+paper_replace_latency_ms = 0
+paper_fee_bps = 0.0
+paper_taker_slippage_bps = 5.0
+max_notional_per_market = 5.0
+max_notional_per_category = 50.0
+max_concurrent_positions = 4
+max_positions_per_market = 1
+daily_order_soft_limit = 200
+daily_order_hard_limit = 1000
+live_allowed_categories = ["crypto"]
+
+[risk]
+max_daily_drawdown_pct = 40.0
+max_consecutive_losses = 40
+max_open_orders = 10
+open_order_replacement_min_edge_improvement_bps = 50.0
+kill_switch_on_stale_data_seconds = 30
+manual_resume_required = true
+halt_on_data_source_failure = true

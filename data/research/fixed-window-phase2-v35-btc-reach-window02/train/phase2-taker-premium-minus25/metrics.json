@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "fixed-window-phase2",
+  "events_recorded": 0,
+  "generated_at": "2026-03-28T12:28:32.964000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 0
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\fixed-window-phase2-v35-btc-reach-window02\\train\\phase2-taker-premium-minus25",
+  "processed_snapshots": 12,
+  "run_id": "train-phase2-taker-premium-minus25",
+  "signals_generated": 0,
+  "signals_rejected": 0,
+  "snapshot_path": "train:phase2-taker-premium-minus25",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 0
+  },
+  "submitted_orders": 0,
+  "today_pnl": 0.0,
+  "total_equity": 1000.0
+}

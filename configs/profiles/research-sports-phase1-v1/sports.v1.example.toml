@@ -1,0 +1,11 @@
+category = "sports"
+enabled_strategies = ["sports.anchor"]
+
+[markets]
+leagues = ["nba"]
+min_liquidity_score = 0.5
+
+[strategy.anchor]
+min_edge_bps = 300
+max_time_to_start_minutes = 1440
+cancel_before_start_minutes = 5

@@ -71,6 +71,7 @@ def _position_state_from_live_position(position: LivePosition) -> PositionState:
 def _pending_order_state_from_tracked_order(order: TrackedOrder) -> PendingOrderState:
     return PendingOrderState(
         order_id=order.order_id,
+        intent_id=order.intent_id,
         market_id=order.market_id,
         token_id=order.token_id,
         category=order.category,
@@ -79,6 +80,7 @@ def _pending_order_state_from_tracked_order(order: TrackedOrder) -> PendingOrder
         limit_price=order.limit_price,
         requested_shares=order.requested_shares,
         requested_notional=order.requested_notional,
+        quote_ttl_seconds=order.quote_ttl_seconds,
         matched_shares=order.matched_shares,
         matched_notional=order.matched_notional,
         fees_paid=order.fees_paid,

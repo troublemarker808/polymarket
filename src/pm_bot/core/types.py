@@ -7,6 +7,12 @@ from datetime import datetime
 from enum import Enum
 
 
+@dataclass(slots=True, frozen=True)
+class OrderBookLevel:
+    price: float
+    size: float
+
+
 class Category(str, Enum):
     SPORTS = "sports"
     CRYPTO = "crypto"
@@ -45,7 +51,19 @@ class MarketSnapshot:
     best_ask_yes: float | None = None
     best_bid_no: float | None = None
     best_ask_no: float | None = None
+    best_bid_yes_size: float | None = None
+    best_ask_yes_size: float | None = None
+    best_bid_no_size: float | None = None
+    best_ask_no_size: float | None = None
+    tick_size: float | None = None
+    min_order_size: float | None = None
     last_traded_price: float | None = None
+    last_trade_side: str | None = None
+    last_trade_size: float | None = None
+    yes_bid_levels: tuple[OrderBookLevel, ...] = field(default_factory=tuple)
+    yes_ask_levels: tuple[OrderBookLevel, ...] = field(default_factory=tuple)
+    no_bid_levels: tuple[OrderBookLevel, ...] = field(default_factory=tuple)
+    no_ask_levels: tuple[OrderBookLevel, ...] = field(default_factory=tuple)
     liquidity_score: float = 0.0
     metadata: dict[str, str] = field(default_factory=dict)
 
@@ -64,7 +82,9 @@ class StrategySignal:
     target_price: float | None = None
     target_size: float | None = None
     time_in_force: str = "GTC"
+    quote_ttl_seconds: int | None = None
     rationale_tags: tuple[str, ...] = ()
+    diagnostics: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -80,9 +100,13 @@ class OrderIntent:
     time_in_force: str
     created_at: datetime
     notional: float | None = None
+    quote_ttl_seconds: int | None = None
+    signal_edge_bps: float | None = None
+    intent_id: str | None = None
 
 
 @dataclass(slots=True)
 class RiskDecision:
     approved: bool
     reason: str
+    replacement_order_id: str | None = None

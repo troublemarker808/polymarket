@@ -1,0 +1,74 @@
+{
+  "generated_at": "2026-03-28T12:38:35.896618+00:00",
+  "snapshot_path": "tests\\fixtures\\crypto_phase2\\btc_runtime_ladder_window.jsonl",
+  "model_parameters": {
+    "barrier_steepness": 1.65,
+    "fusion_barrier_weight": 0.35,
+    "fusion_surface_weight": 0.65
+  },
+  "series_reports": [
+    {
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "underlying": "BTC",
+      "event_family": "dip",
+      "market_count": 3,
+      "positive_net_edge_count": 3,
+      "mean_net_edge_bps": 1056.3794089876412,
+      "median_net_edge_bps": 1026.8948495201475,
+      "mean_entry_cost_bps": 50.00000000000004,
+      "min_liquidity_score": 0.9794079478954972,
+      "recommended_action": "tradable",
+      "reasons": []
+    }
+  ],
+  "market_rows": [
+    {
+      "market_id": "1339767",
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "instrument_key": "BTC:dip:2027-01-01:50000",
+      "underlying": "BTC",
+      "event_family": "dip",
+      "observed_probability": 0.645,
+      "fair_probability": 0.4941705355669872,
+      "net_edge_bps": 1393.2946443301282,
+      "entry_cost_bps": 50.00000000000004,
+      "liquidity_score": 0.9794079478954972,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "recommended_action": "tradable_market",
+      "reasons": []
+    },
+    {
+      "market_id": "1339768",
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "instrument_key": "BTC:dip:2027-01-01:40000",
+      "underlying": "BTC",
+      "event_family": "dip",
+      "observed_probability": 0.395,
+      "fair_probability": 0.3086051266887352,
+      "net_edge_bps": 748.9487331126481,
+      "entry_cost_bps": 50.00000000000004,
+      "liquidity_score": 0.9890952251428006,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "recommended_action": "tradable_market",
+      "reasons": []
+    },
+    {
+      "market_id": "701502",
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "instrument_key": "BTC:dip:2027-01-01:45000",
+      "underlying": "BTC",
+      "event_family": "dip",
+      "observed_probability": 0.505,
+      "fair_probability": 0.39081051504798525,
+      "net_edge_bps": 1026.8948495201475,
+      "entry_cost_bps": 50.00000000000004,
+      "liquidity_score": 0.9999750006249843,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "recommended_action": "tradable_market",
+      "reasons": []
+    }
+  ]
+}

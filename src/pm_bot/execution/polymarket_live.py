@@ -19,7 +19,12 @@ from pm_bot.core.types import Category, MarketSnapshot, OrderAction, OrderIntent
 from pm_bot.execution.order_tracker import OrderLifecycleTracker
 from pm_bot.execution.position_ledger import LivePosition, PositionLedger
 from pm_bot.adapters.polymarket.geoblock_client import GeoblockStatus, fetch_geoblock_status_sync
-from pm_bot.adapters.polymarket.user_ws_client import UserChannelAuth, UserOrderEvent, UserTradeEvent
+from pm_bot.adapters.polymarket.user_ws_client import (
+    UserChannelAuth,
+    UserMakerOrder,
+    UserOrderEvent,
+    UserTradeEvent,
+)
 from pm_bot.runtime.state import ClosedTrade
 
 
@@ -162,6 +167,7 @@ class PolymarketLiveExecutionAdapter:
         client: SyncTradingClient,
         ttl_seconds: int,
         post_only: bool,
+        signature_type: int = 0,
         build_order_args: Callable[[OrderIntent], object],
         resolve_order_type: Callable[[str], object],
         user_channel_auth: UserChannelAuth,
@@ -173,12 +179,16 @@ class PolymarketLiveExecutionAdapter:
         self.client = client
         self.ttl_seconds = ttl_seconds
         self.post_only = post_only
+        self.signature_type = signature_type
         self.build_order_args = build_order_args
         self.resolve_order_type = resolve_order_type
         self.user_channel_auth = user_channel_auth
         self.parse_order_id = parse_order_id or _extract_order_id
         self.tracker = tracker or OrderLifecycleTracker()
-        self.position_ledger = position_ledger or PositionLedger()
+        self.position_ledger = position_ledger or PositionLedger(
+            allow_synthetic_complement_on_sell=False
+        )
+        self.processed_trade_ids: set[str] = set()
         self.account_addresses = frozenset(
             normalized
             for value in account_addresses
@@ -251,6 +261,12 @@ class PolymarketLiveExecutionAdapter:
                 derived_creds = client.create_or_derive_api_creds()
                 client.set_api_creds(derived_creds)
                 user_channel_auth = _coerce_user_channel_auth(derived_creds)
+            resolved_signature_type = _resolve_signature_type_with_allowance_probe(
+                client=client,
+                preferred_signature_type=settings.signature_type,
+            )
+            if getattr(client, "builder", None) is not None:
+                client.builder.sig_type = resolved_signature_type
 
             assert OrderArgs is not None
             assert OrderType is not None
@@ -280,6 +296,7 @@ class PolymarketLiveExecutionAdapter:
                 client=client,
                 ttl_seconds=ttl_seconds,
                 post_only=settings.post_only_live_orders,
+                signature_type=resolved_signature_type,
                 build_order_args=build_order_args,
                 resolve_order_type=resolve_order_type,
                 user_channel_auth=user_channel_auth,
@@ -329,10 +346,18 @@ class PolymarketLiveExecutionAdapter:
         if user_channel_auth is None:
             raise ValueError("Unable to resolve user-channel credentials for live execution")
 
+        resolved_signature_type = _resolve_signature_type_with_allowance_probe(
+            client=client,
+            preferred_signature_type=settings.signature_type,
+        )
+        if getattr(client, "builder", None) is not None:
+            client.builder.sig_type = resolved_signature_type
+
         return cls(
             client=client,
             ttl_seconds=ttl_seconds,
             post_only=settings.post_only_live_orders,
+            signature_type=resolved_signature_type,
             build_order_args=build_order_args,
             resolve_order_type=resolve_order_type,
             user_channel_auth=user_channel_auth,
@@ -351,22 +376,38 @@ class PolymarketLiveExecutionAdapter:
         self.tracker.register_submission(order_id=order_id, intent=intent)
         return order_id
 
+    async def cancel_order(
+        self,
+        order_id: str,
+        *,
+        now: datetime | None = None,
+    ) -> object | None:
+        try:
+            await asyncio.to_thread(self.client.cancel, order_id)
+        except Exception:
+            return None
+        return self.tracker.mark_canceled(order_id, at=now or datetime.now(tz=timezone.utc))
+
     async def cancel_stale(self) -> int:
+        return len(await self.cancel_stale_orders())
+
+    async def cancel_stale_orders(self) -> tuple[object, ...]:
         tracked_orders = self.tracker.snapshot()
         if not tracked_orders:
-            return 0
+            return ()
 
         now = datetime.now(tz=timezone.utc)
         stale_order_ids = self.tracker.stale_order_ids(now=now, ttl_seconds=self.ttl_seconds)
-        cancelled = 0
+        cancelled: list[object] = []
         for order_id in stale_order_ids:
             try:
                 await asyncio.to_thread(self.client.cancel, order_id)
             except Exception:
                 continue
-            self.tracker.mark_canceled(order_id, at=now)
-            cancelled += 1
-        return cancelled
+            tracked = self.tracker.mark_canceled(order_id, at=now)
+            if tracked is not None:
+                cancelled.append(tracked)
+        return tuple(cancelled)
 
     async def fetch_open_orders(self) -> list[dict[str, object]]:
         response = await asyncio.to_thread(self.client.get_orders)
@@ -380,6 +421,10 @@ class PolymarketLiveExecutionAdapter:
         return self.tracker.apply_order_event(event)
 
     def apply_user_trade_event(self, event: UserTradeEvent) -> tuple[LivePosition, ...]:
+        trade_id = str(event.id or "").strip()
+        if trade_id and trade_id in self.processed_trade_ids:
+            return ()
+
         updated_positions: list[LivePosition] = []
         trader_side = str(event.trader_side or "").strip().upper()
 
@@ -428,11 +473,41 @@ class PolymarketLiveExecutionAdapter:
                 position = self.position_ledger.apply_tracked_order(tracked_order)
                 if position is not None:
                     updated_positions.append(position)
+        if trade_id:
+            self.processed_trade_ids.add(trade_id)
         return tuple(updated_positions)
+
+    def tracked_order_ids_for_trade_event(
+        self,
+        event: UserTradeEvent,
+    ) -> tuple[tuple[str, str], ...]:
+        tracked_orders: list[tuple[str, str]] = []
+        trader_side = str(event.trader_side or "").strip().upper()
+        if trader_side != "MAKER" and event.taker_order_id:
+            tracked_orders.append((event.taker_order_id, "taker"))
+        if trader_side == "MAKER":
+            tracked_orders.extend(
+                (maker_order.order_id, "maker")
+                for maker_order in self.local_maker_orders_for_trade_event(event)
+            )
+        return tuple(tracked_orders)
+
+    def local_maker_orders_for_trade_event(
+        self,
+        event: UserTradeEvent,
+    ) -> tuple[UserMakerOrder, ...]:
+        return self._select_local_maker_orders(event.maker_orders)
 
     def matches_account_address(self, value: object) -> bool:
         normalized = _normalize_address(value)
         return bool(normalized) and normalized in self.account_addresses
+
+    def has_processed_trade_id(self, trade_id: str) -> bool:
+        return trade_id in self.processed_trade_ids
+
+    def mark_processed_trade_id(self, trade_id: str) -> None:
+        if trade_id:
+            self.processed_trade_ids.add(trade_id)
 
     def _select_local_maker_orders(
         self,
@@ -465,6 +540,81 @@ class PolymarketLiveExecutionAdapter:
     def _submit_sync(self, order_args: object, order_type: object) -> object:
         order = self.client.create_order(order_args)
         return self.client.post_order(order, orderType=order_type, post_only=self.post_only)
+
+
+def _resolve_signature_type_with_allowance_probe(
+    *,
+    client: SyncTradingClient,
+    preferred_signature_type: int,
+) -> int:
+    balance_reader = getattr(client, "get_balance_allowance", None)
+    if not callable(balance_reader):
+        return preferred_signature_type
+
+    preferred_score = _signature_type_probe_score(
+        _probe_balance_allowance(
+            client=client,
+            signature_type=preferred_signature_type,
+        )
+    )
+    resolved_signature_type = preferred_signature_type
+    best_score = preferred_score
+    for candidate in (0, 1, 2):
+        if candidate == preferred_signature_type:
+            continue
+        score = _signature_type_probe_score(
+            _probe_balance_allowance(
+                client=client,
+                signature_type=candidate,
+            )
+        )
+        if score > best_score:
+            best_score = score
+            resolved_signature_type = candidate
+    return resolved_signature_type
+
+
+def _probe_balance_allowance(
+    *,
+    client: SyncTradingClient,
+    signature_type: int,
+) -> Mapping[str, object] | None:
+    try:
+        from py_clob_client.clob_types import AssetType, BalanceAllowanceParams
+    except Exception:
+        return None
+
+    try:
+        response = client.get_balance_allowance(
+            BalanceAllowanceParams(
+                asset_type=AssetType.COLLATERAL,
+                signature_type=signature_type,
+            )
+        )
+    except Exception:
+        return None
+    return response if isinstance(response, Mapping) else None
+
+
+def _signature_type_probe_score(response: Mapping[str, object] | None) -> int:
+    if response is None:
+        return -1
+
+    balance = int(str(response.get("balance") or "0"))
+    allowances = response.get("allowances")
+    max_allowance = 0
+    if isinstance(allowances, Mapping):
+        for value in allowances.values():
+            try:
+                max_allowance = max(max_allowance, int(str(value)))
+            except ValueError:
+                continue
+    score = 0
+    if balance > 0:
+        score += 1
+    if max_allowance > 0:
+        score += 2
+    return score
 
 
 def _extract_order_id(response: object) -> str:

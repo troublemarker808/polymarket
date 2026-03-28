@@ -1,0 +1,21 @@
+{
+  "board": "crypto",
+  "config_dir": "configs\\profiles\\research-crypto-phase1-v1",
+  "events_recorded": 0,
+  "generated_at": "2026-03-27T20:13:55.889645+00:00",
+  "generated_by_strategy": {},
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\phase2_compare\\baseline-eth-runtime",
+  "processed_snapshots": 24,
+  "run_id": "crypto-phase1-20260327-201355",
+  "signals_generated": 0,
+  "signals_rejected": 0,
+  "snapshot_path": "tests\\fixtures\\crypto_phase2\\eth_runtime_ladder_window.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {},
+  "submitted_orders": 0,
+  "today_pnl": 0.0,
+  "total_equity": 1000.0
+}

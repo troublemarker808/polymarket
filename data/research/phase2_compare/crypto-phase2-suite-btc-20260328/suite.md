@@ -1,0 +1,34 @@
+# Crypto Phase 2 Suite
+
+- generated_at: 2026-03-27T21:38:05.339130+00:00
+- snapshot_path: tests\fixtures\crypto_phase2\btc_runtime_ladder_window.jsonl
+- selection_output_dir: data\research\phase2_compare\crypto-phase2-suite-btc-20260328\selection
+- skip_series_keys: what-price-will-bitcoin-hit-before-2027
+
+## Replays
+
+### unfiltered
+
+- output_dir: data\research\phase2_compare\crypto-phase2-suite-btc-20260328\replay-unfiltered
+- signals_generated: 0
+- submitted_orders: 0
+- events_recorded: 0
+- today_pnl: 0.000000
+- total_equity: 1000.000000
+- status: completed
+
+### filtered
+
+- output_dir: data\research\phase2_compare\crypto-phase2-suite-btc-20260328\replay-filtered
+- signals_generated: 0
+- submitted_orders: 0
+- events_recorded: 0
+- today_pnl: 0.000000
+- total_equity: 1000.000000
+- status: completed
+
+## Delta
+
+- signals_delta: 0
+- orders_delta: 0
+- pnl_delta: 0.000000

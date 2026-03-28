@@ -1,0 +1,30 @@
+{
+  "runs": [
+    {
+      "model_name": "gfs",
+      "station_id": "KNYC",
+      "issued_at": "2026-03-23T00:00:00Z",
+      "target_date": "2026-03-24T00:00:00Z",
+      "predicted_high_temp_f": 73.5,
+      "distribution_sigma_f": 2.5,
+      "run_cycle": "00z"
+    },
+    {
+      "model_name": "ecmwf",
+      "station_id": "KNYC",
+      "issued_at": "2026-03-23T06:00:00Z",
+      "target_date": "2026-03-24T00:00:00Z",
+      "predicted_high_temp_f": 74.0,
+      "distribution_sigma_f": 2.0,
+      "run_cycle": "06z"
+    },
+    {
+      "model_name": "gfs",
+      "station_id": "KBOS",
+      "issued_at": "2026-03-23T00:00:00Z",
+      "target_date": "2026-03-24T00:00:00Z",
+      "predicted_high_temp_f": 60.0,
+      "distribution_sigma_f": 2.8
+    }
+  ]
+}

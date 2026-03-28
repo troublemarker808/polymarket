@@ -1,0 +1,271 @@
+"""Crypto Phase 2 position and execution management helpers."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+
+from pm_bot.core.research_types import FairValueEstimate
+from pm_bot.core.types import SignalSide
+from pm_bot.runtime.state import ClosedTrade, PendingOrderState, PositionState
+from pm_bot.strategies.crypto.phase2.models import (
+    CryptoExecutionFeedback,
+    CryptoExitDecision,
+    CryptoPositionIntent,
+    CryptoReentryState,
+    CryptoSignalClassification,
+)
+
+
+def build_position_intent(
+    *,
+    fair_value: FairValueEstimate,
+    classification: CryptoSignalClassification,
+    token_id: str,
+    created_at: datetime,
+    entry_fill_price: float | None = None,
+    entry_mid_price: float | None = None,
+    entry_fill_source: str | None = None,
+) -> CryptoPositionIntent:
+    observed_probability = fair_value.observed_probability or fair_value.fair_probability
+    expected_holding_seconds = fair_value.half_life_seconds or 24 * 3600
+    net_edge_bps = float(fair_value.supporting_values.get("net_edge_bps", 0.0))
+    return CryptoPositionIntent(
+        market_id=fair_value.market_id,
+        token_id=token_id,
+        signal_type=classification.signal_type,
+        entry_side=classification.side,
+        expected_exit_mode=classification.expected_exit_mode,
+        expected_holding_seconds=expected_holding_seconds,
+        entry_fair_probability=fair_value.fair_probability,
+        entry_observed_probability=observed_probability,
+        net_edge_bps=net_edge_bps,
+        created_at=created_at,
+        entry_fill_price=entry_fill_price,
+        entry_mid_price=entry_mid_price,
+        entry_fill_source=entry_fill_source,
+        rationale_tags=classification.rationale_tags,
+    )
+
+
+def evaluate_exit(
+    *,
+    fair_value: FairValueEstimate,
+    position: PositionState,
+    intent: CryptoPositionIntent,
+    best_bid_yes: float | None,
+    best_bid_no: float | None,
+    as_of: datetime,
+    exit_edge_bps: float = 75.0,
+    stop_loss_bps: float = 250.0,
+    max_holding_multiplier: float = 2.0,
+    execution_max_holding_seconds: float | None = None,
+    min_holding_seconds_before_exit: float = 1.0,
+    aging_exit_edge_bps: float = 150.0,
+    stale_exit_edge_bps: float = 300.0,
+    aging_start_fraction: float = 0.5,
+    stale_start_fraction: float = 1.0,
+    stop_loss_min_ticks: int = 2,
+    tick_size: float | None = None,
+    stop_loss_max_remaining_edge_bps: float = 150.0,
+    adverse_fill_exit_bps: float = 75.0,
+    adverse_fill_max_remaining_edge_bps: float = 150.0,
+) -> CryptoExitDecision:
+    if position.average_entry_price is None:
+        return _hold_decision(fair_value.market_id, "missing_entry_price", 0.0)
+
+    if intent.entry_side == SignalSide.BUY_YES:
+        if best_bid_yes is None:
+            return _hold_decision(fair_value.market_id, "missing_bid", 0.0)
+        exit_side = SignalSide.SELL_YES
+        fair_exit_price = fair_value.fair_probability
+        exit_price = best_bid_yes
+    else:
+        if best_bid_no is None:
+            return _hold_decision(fair_value.market_id, "missing_bid", 0.0)
+        exit_side = SignalSide.SELL_NO
+        fair_exit_price = 1.0 - fair_value.fair_probability
+        exit_price = best_bid_no
+
+    remaining_edge_bps = (fair_exit_price - exit_price) * 10000
+    stop_loss_distance = position.average_entry_price * (stop_loss_bps / 10000)
+    if tick_size is not None and tick_size > 0:
+        stop_loss_distance = max(stop_loss_distance, tick_size * stop_loss_min_ticks)
+    stop_loss_price = max(0.0, position.average_entry_price - stop_loss_distance)
+    stop_loss_triggered = (
+        exit_price <= stop_loss_price
+        and remaining_edge_bps <= stop_loss_max_remaining_edge_bps
+    )
+    holding_seconds = max(0.0, (as_of - intent.created_at).total_seconds())
+    if holding_seconds < min_holding_seconds_before_exit:
+        return _hold_decision(fair_value.market_id, "fresh_fill_hold", remaining_edge_bps)
+    expected_holding_seconds = max(intent.expected_holding_seconds, 1)
+    if execution_max_holding_seconds is not None:
+        expected_holding_seconds = min(expected_holding_seconds, max(execution_max_holding_seconds, 1.0))
+    holding_fraction = holding_seconds / expected_holding_seconds
+    time_stop_triggered = holding_seconds >= (expected_holding_seconds * max_holding_multiplier)
+    effective_exit_edge_bps = exit_edge_bps
+    exit_reason = "fair_value_reached"
+    if holding_fraction >= stale_start_fraction:
+        effective_exit_edge_bps = max(exit_edge_bps, stale_exit_edge_bps)
+        exit_reason = "stale_position_cleanup"
+    elif holding_fraction >= aging_start_fraction:
+        effective_exit_edge_bps = max(exit_edge_bps, aging_exit_edge_bps)
+        exit_reason = "aging_exit"
+    adverse_fill_triggered = False
+    if (
+        intent.entry_fill_source == "taker"
+        and intent.signal_type in {"repricing_edge", "liquidity_edge"}
+        and intent.entry_fill_price is not None
+        and remaining_edge_bps <= adverse_fill_max_remaining_edge_bps
+    ):
+        adverse_fill_price = intent.entry_fill_price * (1 - (adverse_fill_exit_bps / 10000))
+        adverse_fill_triggered = exit_price <= adverse_fill_price
+
+    if adverse_fill_triggered:
+        return CryptoExitDecision(
+            market_id=fair_value.market_id,
+            should_exit=True,
+            exit_side=exit_side,
+            reason="adverse_fill_reversal",
+            target_price=exit_price,
+            remaining_edge_bps=remaining_edge_bps,
+            rationale_tags=("adverse_fill_reversal",),
+        )
+    if stop_loss_triggered:
+        return CryptoExitDecision(
+            market_id=fair_value.market_id,
+            should_exit=True,
+            exit_side=exit_side,
+            reason="stop_loss",
+            target_price=exit_price,
+            remaining_edge_bps=remaining_edge_bps,
+            rationale_tags=("stop_loss",),
+        )
+    if remaining_edge_bps <= effective_exit_edge_bps:
+        return CryptoExitDecision(
+            market_id=fair_value.market_id,
+            should_exit=True,
+            exit_side=exit_side,
+            reason=exit_reason,
+            target_price=exit_price,
+            remaining_edge_bps=remaining_edge_bps,
+            rationale_tags=(exit_reason,),
+        )
+    if time_stop_triggered:
+        return CryptoExitDecision(
+            market_id=fair_value.market_id,
+            should_exit=True,
+            exit_side=exit_side,
+            reason="time_stop",
+            target_price=exit_price,
+            remaining_edge_bps=remaining_edge_bps,
+            rationale_tags=("time_stop",),
+        )
+    return _hold_decision(fair_value.market_id, "hold", remaining_edge_bps)
+
+
+def update_reentry_state(
+    *,
+    market_id: str,
+    previous: CryptoReentryState | None,
+    exit_decision: CryptoExitDecision,
+    as_of: datetime,
+    cooldown_seconds: int = 300,
+    quarantine_after_stopouts: int = 3,
+) -> CryptoReentryState:
+    stop_out_count = previous.stop_out_count if previous is not None else 0
+    if exit_decision.reason == "stop_loss":
+        stop_out_count += 1
+        quarantine_active = stop_out_count >= quarantine_after_stopouts
+        blocked_until = as_of + timedelta(seconds=cooldown_seconds)
+        reason = "quarantine" if quarantine_active else "cooldown"
+        return CryptoReentryState(
+            market_id=market_id,
+            blocked_until=blocked_until,
+            stop_out_count=stop_out_count,
+            quarantine_active=quarantine_active,
+            reason=reason,
+        )
+    if previous is None:
+        return CryptoReentryState(
+            market_id=market_id,
+            blocked_until=None,
+            stop_out_count=0,
+            quarantine_active=False,
+            reason="clear",
+        )
+    return CryptoReentryState(
+        market_id=market_id,
+        blocked_until=previous.blocked_until,
+        stop_out_count=stop_out_count,
+        quarantine_active=previous.quarantine_active,
+        reason=previous.reason,
+    )
+
+
+def is_reentry_blocked(
+    *,
+    state: CryptoReentryState | None,
+    as_of: datetime,
+) -> bool:
+    if state is None:
+        return False
+    if state.quarantine_active:
+        return True
+    if state.blocked_until is None:
+        return False
+    return as_of < state.blocked_until
+
+
+def summarize_execution_feedback(
+    *,
+    pending_orders: Sequence[PendingOrderState],
+    closed_trades: Sequence[ClosedTrade],
+) -> CryptoExecutionFeedback:
+    maker_orders = [order for order in pending_orders if order.quote_ttl_seconds not in (None, 30)]
+    taker_orders = [order for order in pending_orders if order.quote_ttl_seconds == 30]
+    maker_fill_rate = (
+        sum(1 for order in maker_orders if order.matched_shares > 0) / len(maker_orders)
+        if maker_orders
+        else 0.0
+    )
+    repeated_expiration_rate = (
+        sum(1 for order in maker_orders if order.status == "expired") / len(maker_orders)
+        if maker_orders
+        else 0.0
+    )
+    stop_out_trades = sum(1 for trade in closed_trades if trade.net_pnl < 0)
+    repeated_stop_out_rate = (stop_out_trades / len(closed_trades)) if closed_trades else 0.0
+    taker_shortfall_bps = (
+        sum(abs(order.signal_edge_bps or 0.0) for order in taker_orders) / len(taker_orders) * 0.1
+        if taker_orders
+        else 0.0
+    )
+
+    if repeated_stop_out_rate >= 0.5:
+        recommended_route_bias = "more_passive"
+    elif repeated_expiration_rate >= 0.6 and maker_fill_rate < 0.2:
+        recommended_route_bias = "more_aggressive"
+    else:
+        recommended_route_bias = "stable"
+
+    return CryptoExecutionFeedback(
+        maker_fill_rate=round(maker_fill_rate, 4),
+        taker_shortfall_bps=round(taker_shortfall_bps, 4),
+        repeated_expiration_rate=round(repeated_expiration_rate, 4),
+        repeated_stop_out_rate=round(repeated_stop_out_rate, 4),
+        recommended_route_bias=recommended_route_bias,
+    )
+
+
+def _hold_decision(market_id: str, reason: str, remaining_edge_bps: float) -> CryptoExitDecision:
+    return CryptoExitDecision(
+        market_id=market_id,
+        should_exit=False,
+        exit_side=None,
+        reason=reason,
+        target_price=None,
+        remaining_edge_bps=remaining_edge_bps,
+        rationale_tags=(reason,),
+    )

@@ -48,7 +48,8 @@ The repository now includes:
 
 - layered config loading
 - strategy registry
-- paper execution adapter
+- continuous paper session runner with event and metrics persistence
+- queue-aware paper execution adapter with partial fills, TTL expiry, and configurable latency/slippage
 - file-backed replay and backtest entry points for normalized snapshot datasets
 - safe-by-default live execution adapter scaffold
 - authenticated user-channel parser and order lifecycle tracker
@@ -68,7 +69,10 @@ python -m pytest
 python -m pm_bot check-geoblock
 python -m pm_bot validate-config --config-dir configs
 python -m pm_bot validate-live-config --config-dir configs
-python -m pm_bot paper-crypto-once --config-dir configs --limit 25
+python -m pm_bot paper-crypto-once --config-dir configs --limit 25 --event-path data/runtime/paper-once-events.jsonl --metrics-path data/runtime/paper-once-metrics.json
+python -m pm_bot run-paper-crypto-session --config-dir configs --max-market-snapshots 50 --event-path data/runtime/paper-events.current.jsonl --metrics-path data/runtime/paper-metrics.latest.json
+python -m pm_bot compare-execution-metrics --baseline-metrics-path data/runtime/paper-once-metrics.json --candidate-metrics-path data/runtime/paper-metrics.latest.json
+python -m pm_bot autoresearch-report --metrics-path data/runtime/paper-metrics.latest.json --event-path data/runtime/paper-events.current.jsonl --state-path data/runtime/runtime_state.json --report-path data/runtime/autoresearch.latest.md
 python -m pm_bot replay --config-dir configs --snapshot-path data/research/sample_snapshots.jsonl
 python -m pm_bot backtest --config-dir configs --snapshot-path data/research/sample_snapshots.jsonl --event-path data/runtime/backtest-events.jsonl
 # reconnects and replays live state until the requested caps are reached

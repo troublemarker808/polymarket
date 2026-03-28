@@ -1,0 +1,14 @@
+{
+  "pregame_moneyline": {
+    "league": "nba",
+    "market_family": "moneyline",
+    "event_title": "Los Angeles Lakers vs. Boston Celtics",
+    "start_time": "2026-03-23T17:00:00Z",
+    "sharp_yes_probability": 0.52,
+    "public_yes_probability": 0.49,
+    "injury_adjustment_bps": 45.0,
+    "lineup_adjustment_bps": 10.0,
+    "travel_adjustment_bps": -15.0,
+    "rest_adjustment_bps": 20.0
+  }
+}

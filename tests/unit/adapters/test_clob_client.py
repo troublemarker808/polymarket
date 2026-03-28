@@ -69,7 +69,13 @@ def test_enrich_snapshot_with_order_book_overrides_prices() -> None:
     assert enriched.best_ask_yes == 0.15
     assert enriched.best_bid_no == 0.85
     assert enriched.best_ask_no == 0.89
+    assert enriched.best_bid_yes_size == 736.38
+    assert enriched.best_ask_yes_size == 1421.12
     assert enriched.last_traded_price == 0.11
+    assert enriched.tick_size == 0.01
+    assert enriched.min_order_size == 5.0
+    assert len(enriched.yes_bid_levels) == 3
+    assert len(enriched.no_ask_levels) == 3
     assert enriched.metadata["tick_size"] == "0.01"
     assert enriched.metadata["min_order_size"] == "5.0"
 

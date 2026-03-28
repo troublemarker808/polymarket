@@ -7,6 +7,7 @@ WebSocket updates into a single MarketDataAdapter-compatible stream.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from collections.abc import Callable, Sequence
 
 from pm_bot.adapters.polymarket.clob_client import ClobSnapshotEnricher
 from pm_bot.adapters.polymarket.gamma_client import GammaMarketsClient
@@ -26,6 +27,7 @@ class PolymarketLiveMarketDataAdapter:
         page_size: int = 100,
         max_pages: int = 1,
         tag_id: int | None = None,
+        snapshot_selector: Callable[[Sequence[MarketSnapshot]], list[MarketSnapshot]] | None = None,
     ) -> None:
         self.gamma_client = gamma_client
         self.clob_enricher = clob_enricher
@@ -33,6 +35,7 @@ class PolymarketLiveMarketDataAdapter:
         self.page_size = page_size
         self.max_pages = max_pages
         self.tag_id = tag_id
+        self.snapshot_selector = snapshot_selector
 
     async def bootstrap_snapshots(self) -> list[MarketSnapshot]:
         snapshots = await self.gamma_client.fetch_active_binary_market_snapshots(
@@ -42,6 +45,8 @@ class PolymarketLiveMarketDataAdapter:
         )
         if self.clob_enricher is not None:
             snapshots = await self.clob_enricher.enrich_snapshots(snapshots)
+        if self.snapshot_selector is not None:
+            snapshots = list(self.snapshot_selector(tuple(snapshots)))
         return snapshots
 
     async def stream_snapshots(self) -> AsyncIterator[MarketSnapshot]:
