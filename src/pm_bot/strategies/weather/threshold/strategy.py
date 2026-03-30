@@ -14,12 +14,30 @@ from pm_bot.strategies.common import (
     implied_yes_probability,
     parse_float,
 )
+from pm_bot.strategies.weather.config_registry import (
+    WeatherResolvedConfig,
+    build_weather_preset_rules,
+    resolve_weather_config_for_snapshot,
+)
 
 
 class WeatherThresholdConfig:
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.min_strip_inconsistency_bps = float(config.get("min_strip_inconsistency_bps", 300))
         self.use_official_forecast_inside_hours = int(config.get("use_official_forecast_inside_hours", 48))
+        self.preset_rules = build_weather_preset_rules(dict(config))
+
+    def resolve(self, snapshot: MarketSnapshot) -> WeatherResolvedConfig:
+        return resolve_weather_config_for_snapshot(
+            base=WeatherResolvedConfig(
+                preset_name="default",
+                min_strip_inconsistency_bps=self.min_strip_inconsistency_bps,
+                use_official_forecast_inside_hours=self.use_official_forecast_inside_hours,
+            ),
+            preset_rules=self.preset_rules,
+            snapshot=snapshot,
+            mode="threshold",
+        )
 
 
 class WeatherThresholdStrategy:
@@ -56,6 +74,7 @@ class WeatherThresholdStrategy:
         current_probability = implied_yes_probability(snapshot)
         if current_probability is None:
             return []
+        resolved = self.config.resolve(snapshot)
 
         lower_bound, upper_bound = monotonic_bounds(
             ranked_peers=ranked_peers,
@@ -67,7 +86,11 @@ class WeatherThresholdStrategy:
             lower_bound=lower_bound,
             upper_bound=upper_bound,
         )
-        forecast_probability = self._forecast_anchor(snapshot=snapshot, direction=direction)
+        forecast_probability = self._forecast_anchor(
+            snapshot=snapshot,
+            direction=direction,
+            use_official_forecast_inside_hours=int(resolved.use_official_forecast_inside_hours or 0),
+        )
         if fair_probability is None:
             fair_probability = forecast_probability
         elif forecast_probability is not None:
@@ -85,6 +108,7 @@ class WeatherThresholdStrategy:
                 snapshot=snapshot,
                 fair_probability=fair_probability,
                 position=position,
+                resolved=resolved,
             )
             return [exit_signal] if exit_signal is not None else []
 
@@ -94,6 +118,7 @@ class WeatherThresholdStrategy:
             lower_bound=lower_bound,
             upper_bound=upper_bound,
             forecast_probability=forecast_probability,
+            resolved=resolved,
         )
 
     def _series_peers(
@@ -149,11 +174,17 @@ class WeatherThresholdStrategy:
             return 1
         return None
 
-    def _forecast_anchor(self, *, snapshot: MarketSnapshot, direction: int) -> float | None:
+    def _forecast_anchor(
+        self,
+        *,
+        snapshot: MarketSnapshot,
+        direction: int,
+        use_official_forecast_inside_hours: int,
+    ) -> float | None:
         if snapshot.resolution_time is None:
             return None
         hours_to_resolution = (snapshot.resolution_time - snapshot.timestamp).total_seconds() / 3600
-        if hours_to_resolution > self.config.use_official_forecast_inside_hours:
+        if hours_to_resolution > use_official_forecast_inside_hours:
             return None
 
         official_forecast = parse_float(snapshot.metadata, "official_forecast_value", "forecast_value")
@@ -173,6 +204,7 @@ class WeatherThresholdStrategy:
         lower_bound: float | None,
         upper_bound: float | None,
         forecast_probability: float | None,
+        resolved: WeatherResolvedConfig,
     ) -> list[StrategySignal]:
         confidence = 0.6
         if lower_bound is not None and upper_bound is not None:
@@ -182,7 +214,7 @@ class WeatherThresholdStrategy:
 
         if snapshot.best_ask_yes is not None:
             buy_yes_edge_bps = (fair_probability - snapshot.best_ask_yes) * 10000
-            if buy_yes_edge_bps >= self.config.min_strip_inconsistency_bps:
+            if buy_yes_edge_bps >= float(resolved.min_strip_inconsistency_bps or 0.0):
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -195,12 +227,13 @@ class WeatherThresholdStrategy:
                         edge_bps=buy_yes_edge_bps,
                         generated_at=snapshot.timestamp,
                         rationale_tags=("weather_threshold", "strip_inconsistency"),
+                        diagnostics={"weather_preset": resolved.preset_name},
                     )
                 ]
 
         if snapshot.best_bid_yes is not None:
             buy_no_edge_bps = (snapshot.best_bid_yes - fair_probability) * 10000
-            if buy_no_edge_bps >= self.config.min_strip_inconsistency_bps:
+            if buy_no_edge_bps >= float(resolved.min_strip_inconsistency_bps or 0.0):
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -213,6 +246,7 @@ class WeatherThresholdStrategy:
                         edge_bps=buy_no_edge_bps,
                         generated_at=snapshot.timestamp,
                         rationale_tags=("weather_threshold", "strip_inconsistency"),
+                        diagnostics={"weather_preset": resolved.preset_name},
                     )
                 ]
 
@@ -224,6 +258,7 @@ class WeatherThresholdStrategy:
         snapshot: MarketSnapshot,
         fair_probability: float,
         position: PositionState,
+        resolved: WeatherResolvedConfig,
     ) -> StrategySignal | None:
         no_token_id = snapshot.metadata.get("no_token_id")
         if position.token_id == snapshot.token_id:
@@ -242,7 +277,7 @@ class WeatherThresholdStrategy:
             return None
 
         edge_remaining_bps = (fair_exit_price - exit_price) * 10000
-        if edge_remaining_bps > (self.config.min_strip_inconsistency_bps / 2):
+        if edge_remaining_bps > (float(resolved.min_strip_inconsistency_bps or 0.0) / 2):
             return None
 
         shares = position.shares or 0.0
@@ -263,6 +298,7 @@ class WeatherThresholdStrategy:
             target_price=exit_price,
             target_size=target_notional,
             rationale_tags=("weather_threshold_exit", "edge_normalized"),
+            diagnostics={"weather_preset": resolved.preset_name},
         )
 
 

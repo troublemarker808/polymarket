@@ -21,6 +21,7 @@ def fuse_weather_fair_value(
     strip_estimate: WeatherStripEstimate | None = None,
     observed_probability: float | None = None,
 ) -> WeatherFusedFairValue:
+    rationale_tags: tuple[str, ...]
     if strip_estimate is None:
         fair_probability = threshold_estimate.fair_probability
         strip_probability = None

@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pm_bot.core.research_types import FairValueEstimate, ReplayAttributionRow
 from pm_bot.core.types import Category
+from pm_bot.strategies.common import parse_float
 
 
 def build_weather_attribution_rows(
@@ -26,19 +27,20 @@ def build_weather_attribution_rows(
                 continue
             payload = event.get("payload", {})
             market_id = str(payload.get("market_id", ""))
-            realized_pnl_by_market[market_id] = realized_pnl_by_market.get(market_id, 0.0) + float(
-                payload.get("realized_pnl", 0.0)
+            realized_pnl_by_market[market_id] = realized_pnl_by_market.get(market_id, 0.0) + (
+                parse_float(payload, "realized_pnl") or 0.0
             )
 
     rows: list[ReplayAttributionRow] = []
     for fair_value in fair_values:
         observed_probability = fair_value.observed_probability or fair_value.fair_probability
         predicted_edge_bps = (fair_value.fair_probability - observed_probability) * 10000
-        threshold_probability = float(
-            fair_value.supporting_values.get("threshold_probability", fair_value.fair_probability)
-        )
-        strip_probability = fair_value.supporting_values.get("strip_probability")
-        strip_value = float(strip_probability) if strip_probability is not None else threshold_probability
+        threshold_probability = parse_float(fair_value.supporting_values, "threshold_probability")
+        if threshold_probability is None:
+            threshold_probability = fair_value.fair_probability
+        strip_value = parse_float(fair_value.supporting_values, "strip_probability")
+        if strip_value is None:
+            strip_value = threshold_probability
         realized_pnl = realized_pnl_by_market.get(fair_value.market_id, 0.0)
         rows.append(
             ReplayAttributionRow(

@@ -14,7 +14,7 @@ import re
 from typing import Any
 
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
-from pm_bot.runtime.state import DashboardState, PendingOrderState, PositionState
+from pm_bot.runtime.state import DashboardState, PositionState
 
 
 class CryptoSurfaceConfig:

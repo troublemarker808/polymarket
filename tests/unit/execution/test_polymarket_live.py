@@ -201,6 +201,79 @@ def test_live_adapter_submits_sell_orders() -> None:
     assert tracked.trade_side == "SELL"
 
 
+def test_live_adapter_normalizes_buy_size_to_valid_polymarket_amount_grid() -> None:
+    env = {"POLYMARKET_PRIVATE_KEY": "0xabc"}
+    live_adapter = build_execution_adapter(
+        settings=_live_bot_settings(),
+        env=env,
+        client_factory=FakeLiveClient,
+    )
+
+    assert isinstance(live_adapter, PolymarketLiveExecutionAdapter)
+
+    for price, expected_size in ((0.36, 14.0), (0.61, 9.0)):
+        intent = OrderIntent(
+            strategy_id="crypto.phase2",
+            category=Category.CRYPTO,
+            market_id="m1",
+            token_id="token",
+            action=OrderAction.PLACE,
+            side=SignalSide.BUY_NO,
+            price=price,
+            size=5.0 / price,
+            time_in_force="IOC",
+            created_at=datetime.now(tz=timezone.utc),
+            notional=5.0,
+        )
+        asyncio.run(live_adapter.submit(intent))
+
+        assert live_adapter.client.created_orders[-1]["size"] == expected_size
+
+
+def test_live_adapter_keeps_gtc_but_maps_ioc_to_fok() -> None:
+    env = {"POLYMARKET_PRIVATE_KEY": "0xabc"}
+    live_adapter = build_execution_adapter(
+        settings=_live_bot_settings(),
+        env=env,
+        client_factory=FakeLiveClient,
+    )
+
+    assert isinstance(live_adapter, PolymarketLiveExecutionAdapter)
+
+    gtc_intent = OrderIntent(
+        strategy_id="crypto.phase2",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="token-gtc",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.42,
+        size=12.0,
+        time_in_force="GTC",
+        created_at=datetime.now(tz=timezone.utc),
+        notional=5.0,
+    )
+    ioc_intent = OrderIntent(
+        strategy_id="crypto.phase2",
+        category=Category.CRYPTO,
+        market_id="m2",
+        token_id="token-ioc",
+        action=OrderAction.PLACE,
+        side=SignalSide.BUY_YES,
+        price=0.42,
+        size=12.0,
+        time_in_force="IOC",
+        created_at=datetime.now(tz=timezone.utc),
+        notional=5.0,
+    )
+
+    asyncio.run(live_adapter.submit(gtc_intent))
+    asyncio.run(live_adapter.submit(ioc_intent))
+
+    assert live_adapter.client.posted_orders[0][1] == "GTC"
+    assert live_adapter.client.posted_orders[1][1] == "FOK"
+
+
 def test_describe_execution_configuration_marks_live_adapter() -> None:
     summary = describe_execution_configuration(
         settings=_live_bot_settings(),
@@ -376,6 +449,68 @@ def test_live_adapter_ignores_duplicate_trade_ids() -> None:
     )
     assert len(marked) == 1
     assert marked[0].shares == 10.0
+
+
+def test_live_adapter_ignores_duplicate_trade_fingerprint_across_different_event_ids() -> None:
+    live_adapter = build_execution_adapter(
+        settings=_live_bot_settings(),
+        env={"POLYMARKET_PRIVATE_KEY": "0xabc"},
+        client_factory=FakeLiveClient,
+    )
+    assert isinstance(live_adapter, PolymarketLiveExecutionAdapter)
+
+    first = UserTradeEvent(
+        id="trade-1",
+        type="TRADE",
+        taker_order_id="live-1",
+        market="m1",
+        asset_id="yes-token",
+        side="BUY",
+        size=10.0,
+        price=0.5,
+        fee_rate_bps=0.0,
+        status="MATCHED",
+        matchtime=datetime.now(tz=timezone.utc),
+        last_update=datetime.now(tz=timezone.utc),
+        outcome="YES",
+        owner="owner-1",
+        trade_owner="owner-1",
+        maker_address="0x1234",
+        transaction_hash="",
+        bucket_index=0,
+        maker_orders=(),
+        trader_side="TAKER",
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+    second = UserTradeEvent(
+        id="trade-2",
+        type="TRADE",
+        taker_order_id="live-1",
+        market="m1",
+        asset_id="yes-token",
+        side="BUY",
+        size=10.0,
+        price=0.5,
+        fee_rate_bps=0.0,
+        status="MATCHED",
+        matchtime=datetime.now(tz=timezone.utc),
+        last_update=datetime.now(tz=timezone.utc),
+        outcome="YES",
+        owner="owner-1",
+        trade_owner="owner-1",
+        maker_address="0x1234",
+        transaction_hash="",
+        bucket_index=0,
+        maker_orders=(),
+        trader_side="TAKER",
+        timestamp=datetime.now(tz=timezone.utc),
+    )
+
+    first_positions = live_adapter.apply_user_trade_event(first)
+    second_positions = live_adapter.apply_user_trade_event(second)
+
+    assert len(first_positions) == 1
+    assert second_positions == ()
 
 
 def test_live_adapter_drains_closed_trades_after_sell_fill() -> None:

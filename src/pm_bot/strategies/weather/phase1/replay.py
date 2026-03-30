@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from pm_bot.core.research_types import FairValueEstimate
-from pm_bot.core.types import Category
+from pm_bot.core.types import Category, MarketSnapshot
 from pm_bot.research import run_phase1_replay
 from pm_bot.research.engine import load_market_snapshots
 from pm_bot.research.phase1_artifacts import write_phase1_artifacts
@@ -21,6 +21,13 @@ from pm_bot.strategies.weather.phase1.pricing import (
     estimate_strip_consistency,
     estimate_threshold_probability,
 )
+from pm_bot.strategies.weather.phase1.reports import (
+    generate_weather_market_selection_report,
+    generate_weather_run_scorecard_report,
+    generate_weather_settlement_audit_report,
+)
+from pm_bot.strategies.weather.phase1.final_report import generate_weather_final_scorecard
+from pm_bot.strategies.weather.phase1.models import WeatherMarketDefinition
 from pm_bot.strategies.weather.phase1.skill import apply_bias_corrections, load_model_skill_store
 
 
@@ -58,6 +65,31 @@ async def run_weather_phase1_replay(
         fair_values=fair_values,
         attribution_rows=attribution_rows,
     )
+    if output_dir is not None:
+        generate_weather_market_selection_report(
+            snapshot_path=snapshot_path,
+            forecast_payloads=list(forecast_payloads),
+            skill_payloads=list(skill_payloads),
+            output_dir=output_dir,
+        )
+        generate_weather_settlement_audit_report(
+            snapshot_path=snapshot_path,
+            forecast_payloads=list(forecast_payloads),
+            skill_payloads=list(skill_payloads),
+            output_dir=output_dir,
+        )
+        generate_weather_run_scorecard_report(
+            snapshot_path=snapshot_path,
+            forecast_payloads=list(forecast_payloads),
+            skill_payloads=list(skill_payloads),
+            output_dir=output_dir,
+        )
+        generate_weather_final_scorecard(
+            snapshot_path=snapshot_path,
+            forecast_payloads=list(forecast_payloads),
+            skill_payloads=list(skill_payloads),
+            output_dir=output_dir,
+        )
     return fair_values
 
 
@@ -68,13 +100,13 @@ def compute_weather_phase1_fair_values(
     skill_payloads: Sequence[dict[str, object]],
 ) -> tuple[FairValueEstimate, ...]:
     snapshots = load_market_snapshots(snapshot_path)
-    latest_by_market: dict[str, object] = {}
+    latest_by_market: dict[str, MarketSnapshot] = {}
     for snapshot in snapshots:
         if snapshot.category != Category.WEATHER:
             continue
         latest_by_market[snapshot.market_id] = snapshot
 
-    normalized_markets: list[tuple[object, object]] = []
+    normalized_markets: list[tuple[MarketSnapshot, WeatherMarketDefinition]] = []
     for snapshot in latest_by_market.values():
         normalized = normalize_weather_market(snapshot)
         if normalized is not None:

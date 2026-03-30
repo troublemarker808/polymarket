@@ -2,21 +2,23 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pm_bot.core.research_types import FairValueEstimate
-from pm_bot.core.types import Category
+from pm_bot.core.types import Category, MarketSnapshot
 from pm_bot.research import run_phase1_replay
 from pm_bot.research.engine import load_market_snapshots
 from pm_bot.research.phase1_artifacts import write_phase1_artifacts
 from pm_bot.strategies.crypto.phase1.attribution import build_crypto_attribution_rows
+from pm_bot.strategies.crypto.phase1.baseline import resolve_crypto_calibration_model_configs
 from pm_bot.strategies.crypto.phase1.edge import enrich_fair_value_with_net_edge, estimate_net_edge
 from pm_bot.strategies.crypto.phase1.fusion import fuse_crypto_fair_value, to_fair_value_estimate
 from pm_bot.strategies.crypto.phase1.inputs import build_pricing_inputs
 from pm_bot.strategies.crypto.phase1.models import (
     CryptoBarrierModelConfig,
     CryptoFusionModelConfig,
+    CryptoMarketDefinition,
     CryptoUnderlyingState,
 )
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
@@ -77,33 +79,41 @@ def compute_crypto_phase1_fair_values(
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
 ) -> tuple[FairValueEstimate, ...]:
+    _, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+        barrier_model_config=barrier_model_config,
+        fusion_model_config=fusion_model_config,
+    )
     snapshots = load_market_snapshots(snapshot_path)
     return compute_crypto_phase1_fair_values_from_snapshots(
         snapshots=snapshots,
         underlying_states=underlying_states,
         slippage_bps=slippage_bps,
         adverse_selection_bps=adverse_selection_bps,
-        barrier_model_config=barrier_model_config,
-        fusion_model_config=fusion_model_config,
+        barrier_model_config=resolved_barrier_model_config,
+        fusion_model_config=resolved_fusion_model_config,
     )
 
 
 def compute_crypto_phase1_fair_values_from_snapshots(
     *,
-    snapshots,
+    snapshots: Sequence[MarketSnapshot],
     underlying_states: Mapping[str, CryptoUnderlyingState],
     slippage_bps: float = 5.0,
     adverse_selection_bps: float = 10.0,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
 ) -> tuple[FairValueEstimate, ...]:
-    latest_by_market: dict[str, object] = {}
+    _, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+        barrier_model_config=barrier_model_config,
+        fusion_model_config=fusion_model_config,
+    )
+    latest_by_market: dict[str, MarketSnapshot] = {}
     for snapshot in snapshots:
         if snapshot.category != Category.CRYPTO:
             continue
         latest_by_market[snapshot.market_id] = snapshot
 
-    normalized_markets = []
+    normalized_markets: list[tuple[MarketSnapshot, CryptoMarketDefinition]] = []
     for snapshot in latest_by_market.values():
         normalized = normalize_crypto_market(snapshot)
         if normalized is not None:
@@ -151,7 +161,7 @@ def compute_crypto_phase1_fair_values_from_snapshots(
             )
             barrier = estimate_barrier_probability(
                 pricing_inputs,
-                model_config=barrier_model_config,
+                model_config=resolved_barrier_model_config,
             )
             surface = estimate_surface_consistency(
                 series=series,
@@ -164,7 +174,7 @@ def compute_crypto_phase1_fair_values_from_snapshots(
                 barrier_estimate=barrier,
                 surface_estimate=surface,
                 observed_probability=observed_probability,
-                model_config=fusion_model_config,
+                model_config=resolved_fusion_model_config,
             )
             fair_estimate = to_fair_value_estimate(
                 inputs=pricing_inputs,

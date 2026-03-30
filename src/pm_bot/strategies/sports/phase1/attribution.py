@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pm_bot.core.research_types import FairValueEstimate, ReplayAttributionRow
 from pm_bot.core.types import Category
+from pm_bot.strategies.common import parse_float
 
 
 def build_sports_attribution_rows(
@@ -26,17 +27,17 @@ def build_sports_attribution_rows(
                 continue
             payload = event.get("payload", {})
             market_id = str(payload.get("market_id", ""))
-            realized_pnl_by_market[market_id] = realized_pnl_by_market.get(market_id, 0.0) + float(
-                payload.get("realized_pnl", 0.0)
+            realized_pnl_by_market[market_id] = realized_pnl_by_market.get(market_id, 0.0) + (
+                parse_float(payload, "realized_pnl") or 0.0
             )
 
     rows: list[ReplayAttributionRow] = []
     for fair_value in fair_values:
         observed_probability = fair_value.observed_probability or fair_value.fair_probability
         predicted_edge_bps = (fair_value.fair_probability - observed_probability) * 10000
-        context_adjusted_edge_bps = float(
-            fair_value.supporting_values.get("context_adjusted_edge_bps", predicted_edge_bps)
-        )
+        context_adjusted_edge_bps = parse_float(fair_value.supporting_values, "context_adjusted_edge_bps")
+        if context_adjusted_edge_bps is None:
+            context_adjusted_edge_bps = predicted_edge_bps
         realized_pnl = realized_pnl_by_market.get(fair_value.market_id, 0.0)
         rows.append(
             ReplayAttributionRow(

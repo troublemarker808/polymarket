@@ -315,12 +315,12 @@ def _summarize_events(
         if event_type == "trade.closed":
             net_pnl = float(payload.get("net_pnl", 0.0) or 0.0)
             closed_trade_net_pnl_total += net_pnl
-            if current_day_closed_trade_net_pnl is not None:
+            if current_day_closed_trade_net_pnl is not None and day_started_at is not None:
                 closed_at = _parse_datetime(payload.get("closed_at"))
                 if closed_at is not None and closed_at >= day_started_at:
                     current_day_closed_trade_net_pnl += net_pnl
 
-        if event_type == "order.submitted" and current_day_submitted_orders is not None:
+        if event_type == "order.submitted" and current_day_submitted_orders is not None and day_started_at is not None:
             created_at = _parse_datetime(payload.get("created_at"))
             if created_at is not None and created_at >= day_started_at:
                 current_day_submitted_orders += 1
@@ -441,7 +441,7 @@ def _values_match(actual: Any, expected: Any) -> bool:
         if actual is None or expected is None:
             return actual is expected
         return abs(float(actual) - float(expected)) <= _FLOAT_TOLERANCE
-    return _normalize_value(actual) == _normalize_value(expected)
+    return bool(_normalize_value(actual) == _normalize_value(expected))
 
 
 def _normalize_value(value: Any) -> Any:

@@ -41,6 +41,9 @@ class TrackedOrder:
     intent_id: str | None = None
     quote_ttl_seconds: int | None = None
     signal_edge_bps: float | None = None
+    exposure_group_id: str | None = None
+    thesis_group_id: str | None = None
+    underlying_group_id: str | None = None
     time_in_force: str = "GTC"
 
 
@@ -67,6 +70,9 @@ class OrderLifecycleTracker:
             requested_notional=float(intent.notional or (intent.price * intent.size)),
             quote_ttl_seconds=int(intent.quote_ttl_seconds) if intent.quote_ttl_seconds is not None else None,
             signal_edge_bps=float(intent.signal_edge_bps) if intent.signal_edge_bps is not None else None,
+            exposure_group_id=intent.exposure_group_id,
+            thesis_group_id=intent.thesis_group_id,
+            underlying_group_id=intent.underlying_group_id,
             time_in_force=str(intent.time_in_force or "GTC"),
             matched_shares=0.0,
             matched_notional=0.0,
@@ -154,6 +160,9 @@ class OrderLifecycleTracker:
         requested_notional: float,
         quote_ttl_seconds: int | None,
         signal_edge_bps: float | None = None,
+        exposure_group_id: str | None = None,
+        thesis_group_id: str | None = None,
+        underlying_group_id: str | None = None,
         time_in_force: str = "GTC",
         matched_shares: float,
         matched_notional: float,
@@ -179,6 +188,9 @@ class OrderLifecycleTracker:
                 requested_notional=requested_notional,
                 quote_ttl_seconds=quote_ttl_seconds,
                 signal_edge_bps=signal_edge_bps,
+                exposure_group_id=exposure_group_id,
+                thesis_group_id=thesis_group_id,
+                underlying_group_id=underlying_group_id,
                 time_in_force=time_in_force,
                 matched_shares=matched_shares,
                 matched_notional=matched_notional,
@@ -204,6 +216,9 @@ class OrderLifecycleTracker:
             requested_notional=max(existing.requested_notional, requested_notional),
             quote_ttl_seconds=quote_ttl_seconds if quote_ttl_seconds is not None else existing.quote_ttl_seconds,
             signal_edge_bps=signal_edge_bps if signal_edge_bps is not None else existing.signal_edge_bps,
+            exposure_group_id=exposure_group_id if exposure_group_id is not None else existing.exposure_group_id,
+            thesis_group_id=thesis_group_id if thesis_group_id is not None else existing.thesis_group_id,
+            underlying_group_id=underlying_group_id if underlying_group_id is not None else existing.underlying_group_id,
             time_in_force=str(time_in_force or existing.time_in_force),
             matched_shares=max(existing.matched_shares, matched_shares),
             matched_notional=max(existing.matched_notional, matched_notional),
@@ -276,6 +291,9 @@ class OrderLifecycleTracker:
         fee_rate_bps: float | None,
         event_time: datetime | None,
         last_event: str,
+        exposure_group_id: str | None = None,
+        thesis_group_id: str | None = None,
+        underlying_group_id: str | None = None,
     ) -> TrackedOrder:
         tracked = self._orders.get(order_id)
         normalized_trade_side = _normalize_trade_side(trade_side)
@@ -294,6 +312,9 @@ class OrderLifecycleTracker:
                 requested_notional=max(requested_shares, fill_shares) * limit_price,
                 quote_ttl_seconds=None,
                 signal_edge_bps=None,
+                exposure_group_id=exposure_group_id,
+                thesis_group_id=thesis_group_id,
+                underlying_group_id=underlying_group_id,
                 time_in_force="GTC",
                 matched_shares=0.0,
                 matched_notional=0.0,
@@ -320,6 +341,9 @@ class OrderLifecycleTracker:
             matched_shares=next_matched_shares,
             matched_notional=next_matched_notional,
             fees_paid=next_fees,
+            exposure_group_id=exposure_group_id if exposure_group_id is not None else tracked.exposure_group_id,
+            thesis_group_id=thesis_group_id if thesis_group_id is not None else tracked.thesis_group_id,
+            underlying_group_id=underlying_group_id if underlying_group_id is not None else tracked.underlying_group_id,
             updated_at=event_time or tracked.updated_at,
             status=status,
             last_event=last_event,

@@ -24,6 +24,9 @@ class LivePosition:
     unrealized_pnl: float
     opened_at: datetime
     updated_at: datetime
+    exposure_group_id: str | None = None
+    thesis_group_id: str | None = None
+    underlying_group_id: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -175,6 +178,9 @@ class PositionLedger:
                 unrealized_pnl=0.0,
                 opened_at=tracked.created_at,
                 updated_at=tracked.updated_at,
+                exposure_group_id=tracked.exposure_group_id,
+                thesis_group_id=tracked.thesis_group_id,
+                underlying_group_id=tracked.underlying_group_id,
             )
             self._positions[key] = updated
             return updated
@@ -268,6 +274,8 @@ class PositionLedger:
             matched_shares=synthetic_open_shares,
             matched_notional=synthetic_open_notional,
             fees_paid=synthetic_open_fees,
+            thesis_group_id=tracked.thesis_group_id,
+            underlying_group_id=tracked.underlying_group_id,
         )
         return self._apply_buy_fill(
             tracked=synthetic_tracked,

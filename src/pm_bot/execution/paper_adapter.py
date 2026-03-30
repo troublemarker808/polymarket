@@ -176,6 +176,9 @@ def _position_state_from_live_position(position: LivePosition) -> PositionState:
         mark_price=position.mark_price,
         unrealized_pnl=position.unrealized_pnl,
         opened_at=position.opened_at,
+        exposure_group_id=position.exposure_group_id,
+        thesis_group_id=position.thesis_group_id,
+        underlying_group_id=position.underlying_group_id,
     )
 
 
@@ -204,4 +207,7 @@ def _pending_order_state_from_tracked_order(
         updated_at=order.updated_at,
         quote_ttl_seconds=order.quote_ttl_seconds,
         signal_edge_bps=order.signal_edge_bps,
+        exposure_group_id=order.exposure_group_id,
+        thesis_group_id=order.thesis_group_id,
+        underlying_group_id=order.underlying_group_id,
     )

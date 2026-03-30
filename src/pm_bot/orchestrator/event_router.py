@@ -15,7 +15,7 @@ from pm_bot.core.interfaces import (
     RiskManager,
     Strategy,
 )
-from pm_bot.core.types import MarketSnapshot
+from pm_bot.core.types import MarketSnapshot, OrderIntent
 from pm_bot.execution.order_planner import signal_to_order_intent
 
 
@@ -65,7 +65,18 @@ class EventRouter:
 
         for strategy in self.strategies:
             runtime_context["recent_events"] = _recent_runtime_events(self.recorder)
+            runtime_context["_strategy_runtime_events"] = []
             signals = await strategy.evaluate(snapshot=snapshot, context=runtime_context)
+            strategy_runtime_events = runtime_context.pop("_strategy_runtime_events", [])
+            if isinstance(strategy_runtime_events, list):
+                for event in strategy_runtime_events:
+                    if not isinstance(event, Mapping):
+                        continue
+                    event_type = str(event.get("event_type", "")).strip()
+                    payload = event.get("payload")
+                    if not event_type or not isinstance(payload, Mapping):
+                        continue
+                    await self._record(event_type, payload)
             for signal in signals:
                 await self._record(
                     "signal.generated",
@@ -133,19 +144,34 @@ class EventRouter:
                     )
                     if canceled_order is None:
                         await self._record(
-                        "order.rejected",
-                        {
-                            "intent_id": intent.intent_id,
-                            "strategy_id": signal.strategy_id,
-                            "market_id": signal.market_id,
-                            "side": signal.side.value,
-                            "reason": "replacement cancel failed",
-                            "created_at": intent.created_at.isoformat(),
+                            "order.rejected",
+                            {
+                                "intent_id": intent.intent_id,
+                                "strategy_id": signal.strategy_id,
+                                "market_id": signal.market_id,
+                                "side": signal.side.value,
+                                "reason": "replacement cancel failed",
+                                "created_at": intent.created_at.isoformat(),
                                 "signal_edge_bps": signal.edge_bps,
                             },
                         )
                         continue
-                    await self.risk_manager.record_order_cancellation(canceled_order.order_id)
+                    canceled_order_id = str(getattr(canceled_order, "order_id", "")).strip()
+                    if not canceled_order_id:
+                        await self._record(
+                            "order.rejected",
+                            {
+                                "intent_id": intent.intent_id,
+                                "strategy_id": signal.strategy_id,
+                                "market_id": signal.market_id,
+                                "side": signal.side.value,
+                                "reason": "replacement cancel returned missing order_id",
+                                "created_at": intent.created_at.isoformat(),
+                                "signal_edge_bps": signal.edge_bps,
+                            },
+                        )
+                        continue
+                    await self.risk_manager.record_order_cancellation(canceled_order_id)
                     runtime_context["dashboard_state"] = self.risk_manager.dashboard_state()
                     await self._record(
                         "order.canceled",
@@ -173,8 +199,11 @@ class EventRouter:
                             "price": intent.price,
                             "size": intent.size,
                             "notional": intent.notional,
-                        },
-                    )
+                            "exposure_group_id": intent.exposure_group_id,
+                            "thesis_group_id": intent.thesis_group_id,
+                            "underlying_group_id": intent.underlying_group_id,
+                    },
+                )
                     continue
                 await self.risk_manager.record_order_submission(intent, order_id)
                 runtime_context["dashboard_state"] = self.risk_manager.dashboard_state()
@@ -191,6 +220,11 @@ class EventRouter:
                         "price": intent.price,
                         "size": intent.size,
                         "notional": intent.notional,
+                        "exposure_group_id": intent.exposure_group_id,
+                        "thesis_group_id": intent.thesis_group_id,
+                        "underlying_group_id": intent.underlying_group_id,
+                        "rationale_tags": list(signal.rationale_tags),
+                        "diagnostics": dict(signal.diagnostics),
                         "created_at": intent.created_at.isoformat(),
                         "replaced_order_id": order_decision.replacement_order_id,
                     },
@@ -208,8 +242,8 @@ class EventRouter:
 
         await self.recorder.record(event_type=event_type, payload=payload)
 
-    def _assign_intent_id(self, intent):
-        if getattr(intent, "intent_id", None):
+    def _assign_intent_id(self, intent: OrderIntent) -> OrderIntent:
+        if intent.intent_id:
             return intent
         self._intent_sequence += 1
         intent.intent_id = f"intent-{self._intent_sequence:08d}"
@@ -234,6 +268,9 @@ def _tracked_order_payload(order: object) -> dict[str, object]:
         "requested_notional": getattr(order, "requested_notional", 0.0),
         "quote_ttl_seconds": getattr(order, "quote_ttl_seconds", None),
         "signal_edge_bps": getattr(order, "signal_edge_bps", None),
+        "exposure_group_id": getattr(order, "exposure_group_id", None),
+        "thesis_group_id": getattr(order, "thesis_group_id", None),
+        "underlying_group_id": getattr(order, "underlying_group_id", None),
         "matched_shares": getattr(order, "matched_shares", 0.0),
         "matched_notional": getattr(order, "matched_notional", 0.0),
         "fees_paid_total": getattr(order, "fees_paid", 0.0),

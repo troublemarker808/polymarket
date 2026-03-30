@@ -7,6 +7,11 @@ from typing import Any
 
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
 from pm_bot.runtime.state import PositionState
+from pm_bot.strategies.sports.config_registry import (
+    SportsResolvedConfig,
+    build_sports_preset_rules,
+    resolve_sports_config_for_snapshot,
+)
 from pm_bot.strategies.common import (
     current_position,
     dashboard_state,
@@ -23,6 +28,20 @@ class SportsLiveConfig:
         self.min_edge_bps = float(config.get("min_edge_bps", 500))
         self.stale_state_seconds = int(config.get("stale_state_seconds", 5))
         self.allow_maker_quotes = bool(config.get("allow_maker_quotes", False))
+        self.preset_rules = build_sports_preset_rules(dict(config))
+
+    def resolve(self, snapshot: MarketSnapshot) -> SportsResolvedConfig:
+        return resolve_sports_config_for_snapshot(
+            base=SportsResolvedConfig(
+                preset_name="default",
+                min_edge_bps=self.min_edge_bps,
+                stale_state_seconds=self.stale_state_seconds,
+                allow_maker_quotes=self.allow_maker_quotes,
+            ),
+            preset_rules=self.preset_rules,
+            snapshot=snapshot,
+            mode="live",
+        )
 
 
 class SportsLiveStrategy:
@@ -51,6 +70,7 @@ class SportsLiveStrategy:
         )
         if fair_probability is None:
             return []
+        resolved = self.config.resolve(snapshot)
 
         state_updated_at = parse_datetime(
             snapshot.metadata,
@@ -58,7 +78,7 @@ class SportsLiveStrategy:
             "scoreboard_updated_at",
             "updated_at",
         ) or snapshot.timestamp
-        if (snapshot.timestamp - state_updated_at).total_seconds() > self.config.stale_state_seconds:
+        if (snapshot.timestamp - state_updated_at).total_seconds() > float(resolved.stale_state_seconds or 0):
             return []
 
         market_state = (
@@ -76,31 +96,33 @@ class SportsLiveStrategy:
                 fair_probability=fair_probability,
                 position=position,
                 force_exit=is_terminal,
+                preset_name=resolved.preset_name,
             )
             return [exit_signal] if exit_signal is not None else []
 
         if is_terminal:
             return []
 
-        return self._entry_signals(snapshot=snapshot, fair_probability=fair_probability)
+        return self._entry_signals(snapshot=snapshot, fair_probability=fair_probability, resolved=resolved)
 
     def _entry_signals(
         self,
         *,
         snapshot: MarketSnapshot,
         fair_probability: float,
+        resolved: SportsResolvedConfig,
     ) -> list[StrategySignal]:
         buy_yes_price = snapshot.best_ask_yes
-        if self.config.allow_maker_quotes:
+        if bool(resolved.allow_maker_quotes):
             buy_yes_price = _maker_buy_price(
                 best_bid=snapshot.best_bid_yes,
                 best_ask=snapshot.best_ask_yes,
                 fair_probability=fair_probability,
-                min_edge_bps=self.config.min_edge_bps,
+                min_edge_bps=resolved.min_edge_bps,
             )
         if buy_yes_price is not None:
             buy_yes_edge_bps = (fair_probability - buy_yes_price) * 10000
-            if buy_yes_edge_bps >= self.config.min_edge_bps:
+            if buy_yes_edge_bps >= resolved.min_edge_bps:
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -114,20 +136,21 @@ class SportsLiveStrategy:
                         generated_at=snapshot.timestamp,
                         target_price=buy_yes_price,
                         rationale_tags=("sports_live", "fresh_state"),
+                        diagnostics={"sports_preset": resolved.preset_name},
                     )
                 ]
 
         buy_no_price = snapshot.best_ask_no
-        if self.config.allow_maker_quotes:
+        if bool(resolved.allow_maker_quotes):
             buy_no_price = _maker_buy_price(
                 best_bid=snapshot.best_bid_no,
                 best_ask=snapshot.best_ask_no,
                 fair_probability=1 - fair_probability,
-                min_edge_bps=self.config.min_edge_bps,
+                min_edge_bps=resolved.min_edge_bps,
             )
         if buy_no_price is not None:
             buy_no_edge_bps = ((1 - fair_probability) - buy_no_price) * 10000
-            if buy_no_edge_bps >= self.config.min_edge_bps:
+            if buy_no_edge_bps >= resolved.min_edge_bps:
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -141,6 +164,7 @@ class SportsLiveStrategy:
                         generated_at=snapshot.timestamp,
                         target_price=buy_no_price,
                         rationale_tags=("sports_live", "fresh_state"),
+                        diagnostics={"sports_preset": resolved.preset_name},
                     )
                 ]
 
@@ -153,6 +177,7 @@ class SportsLiveStrategy:
         fair_probability: float,
         position: PositionState,
         force_exit: bool,
+        preset_name: str,
     ) -> StrategySignal | None:
         no_token_id = snapshot.metadata.get("no_token_id")
         if position.token_id == snapshot.token_id:
@@ -171,7 +196,8 @@ class SportsLiveStrategy:
             return None
 
         edge_remaining_bps = (fair_exit_price - exit_price) * 10000
-        if not force_exit and edge_remaining_bps > (self.config.min_edge_bps / 3):
+        resolved = self.config.resolve(snapshot)
+        if not force_exit and edge_remaining_bps > (resolved.min_edge_bps / 3):
             return None
 
         shares = position.shares or 0.0
@@ -193,6 +219,7 @@ class SportsLiveStrategy:
             target_price=exit_price,
             target_size=target_notional,
             rationale_tags=("sports_live_exit", rationale),
+            diagnostics={"sports_preset": preset_name},
         )
 
 

@@ -15,6 +15,12 @@ _PRICE_PATTERN = re.compile(
     r"(?:dip\s+to|drop\s+to|fall\s+to|reach(?:es)?|hit(?:s)?|above|below|under|over|to)\s*\$?([0-9][0-9,]*(?:\.[0-9]+)?)",
     re.IGNORECASE,
 )
+_UNSUPPORTED_DERIVED_MARKET_PATTERNS = (
+    "volatility index",
+    "realized volatility",
+    "dominance",
+    "kimchi premium",
+)
 
 
 def classify_crypto_market(snapshot: MarketSnapshot) -> str | None:
@@ -29,6 +35,8 @@ def normalize_crypto_market(snapshot: MarketSnapshot) -> CryptoMarketDefinition 
         return None
 
     combined = _combined_text(snapshot)
+    if _is_unsupported_derived_crypto_market(combined):
+        return None
     underlying = _parse_underlying(combined)
     if underlying is None:
         return None
@@ -105,6 +113,10 @@ def _parse_barrier_price(combined: str) -> float | None:
     if match is None:
         return None
     return float(match.group(1).replace(",", ""))
+
+
+def _is_unsupported_derived_crypto_market(combined: str) -> bool:
+    return any(pattern in combined for pattern in _UNSUPPORTED_DERIVED_MARKET_PATTERNS)
 
 
 def _scope_key(

@@ -103,6 +103,9 @@ class OrderIntent:
     quote_ttl_seconds: int | None = None
     signal_edge_bps: float | None = None
     intent_id: str | None = None
+    exposure_group_id: str | None = None
+    thesis_group_id: str | None = None
+    underlying_group_id: str | None = None
 
 
 @dataclass(slots=True)

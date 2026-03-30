@@ -10,7 +10,7 @@ import json
 from collections.abc import AsyncIterator, Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
 
 import websockets
 
@@ -18,6 +18,17 @@ from pm_bot.core.types import MarketSnapshot, OrderBookLevel
 
 MARKET_WS_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 _PRICE_EPSILON = 1e-9
+
+
+class TopOfBookDepthFields(TypedDict):
+    best_bid_yes_size: float | None
+    best_ask_yes_size: float | None
+    best_bid_no_size: float | None
+    best_ask_no_size: float | None
+    yes_bid_levels: tuple[OrderBookLevel, ...]
+    yes_ask_levels: tuple[OrderBookLevel, ...]
+    no_bid_levels: tuple[OrderBookLevel, ...]
+    no_ask_levels: tuple[OrderBookLevel, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,7 +137,7 @@ MarketChannelEvent = (
 
 
 class MarketEventStream(Protocol):
-    async def stream_events(self, asset_ids: Sequence[str]) -> AsyncIterator[MarketChannelEvent]:
+    def stream_events(self, asset_ids: Sequence[str]) -> AsyncIterator[MarketChannelEvent]:
         ...
 
 
@@ -216,7 +227,14 @@ class MarketChannelSnapshotFeed:
             best_ask_yes=event.best_ask,
             best_bid_no=_infer_complement_bid(event.best_ask),
             best_ask_no=_infer_complement_ask(event.best_bid),
-            **depth_fields,
+            best_bid_yes_size=depth_fields["best_bid_yes_size"],
+            best_ask_yes_size=depth_fields["best_ask_yes_size"],
+            best_bid_no_size=depth_fields["best_bid_no_size"],
+            best_ask_no_size=depth_fields["best_ask_no_size"],
+            yes_bid_levels=depth_fields["yes_bid_levels"],
+            yes_ask_levels=depth_fields["yes_ask_levels"],
+            no_bid_levels=depth_fields["no_bid_levels"],
+            no_ask_levels=depth_fields["no_ask_levels"],
             metadata=metadata,
         )
 
@@ -298,7 +316,14 @@ class MarketChannelSnapshotFeed:
                 best_ask_yes=change.best_ask,
                 best_bid_no=_infer_complement_bid(change.best_ask),
                 best_ask_no=_infer_complement_ask(change.best_bid),
-                **depth_fields,
+                best_bid_yes_size=depth_fields["best_bid_yes_size"],
+                best_ask_yes_size=depth_fields["best_ask_yes_size"],
+                best_bid_no_size=depth_fields["best_bid_no_size"],
+                best_ask_no_size=depth_fields["best_ask_no_size"],
+                yes_bid_levels=depth_fields["yes_bid_levels"],
+                yes_ask_levels=depth_fields["yes_ask_levels"],
+                no_bid_levels=depth_fields["no_bid_levels"],
+                no_ask_levels=depth_fields["no_ask_levels"],
                 metadata=metadata,
             )
             self.snapshots_by_token[change.asset_id] = updated_snapshot
@@ -518,7 +543,7 @@ def _depth_fields_for_top_of_book(
     snapshot: MarketSnapshot,
     best_bid: float | None,
     best_ask: float | None,
-) -> dict[str, object]:
+) -> TopOfBookDepthFields:
     if _book_depth_matches_top_of_book(snapshot=snapshot, best_bid=best_bid, best_ask=best_ask):
         return {
             "best_bid_yes_size": snapshot.best_bid_yes_size,

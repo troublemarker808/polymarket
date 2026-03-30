@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from collections.abc import Sequence
 
 from pm_bot.adapters.in_memory import InMemoryMarketDataAdapter
 from pm_bot.config.loader import load_settings_from_directory
 from pm_bot.core.settings import BotSettings
 from pm_bot.core.research_types import FairValueEstimate, Phase1RunSummary
-from pm_bot.core.types import Category, SignalSide
+from pm_bot.core.types import Category, MarketSnapshot, SignalSide
+from pm_bot.strategies.common import parse_float
 from pm_bot.execution.paper_adapter import PaperExecutionAdapter
 from pm_bot.orchestrator.event_router import EventRouter
 from pm_bot.research.engine import ResearchRecorder, ResearchRunResult, load_market_snapshots
@@ -23,6 +25,7 @@ from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.state import RuntimeState
 from pm_bot.runtime.paper_sync import sync_paper_execution_state
 from pm_bot.strategies.crypto.phase1.attribution import build_crypto_attribution_rows
+from pm_bot.strategies.crypto.phase1.baseline import resolve_crypto_calibration_model_configs
 from pm_bot.strategies.crypto.phase1.models import CryptoBarrierModelConfig, CryptoFusionModelConfig, CryptoUnderlyingState
 from pm_bot.strategies.crypto.phase1.replay import (
     compute_crypto_phase1_fair_values,
@@ -30,8 +33,18 @@ from pm_bot.strategies.crypto.phase1.replay import (
 )
 from pm_bot.strategies.crypto.phase1.selection import (
     generate_crypto_market_selection_report_from_snapshots,
-    generate_crypto_market_selection_report,
-    recommended_skip_series_keys,
+    load_runtime_blocked_market_ids,
+    load_runtime_blocked_market_reasons,
+    load_runtime_market_selection_actions,
+    load_runtime_market_selection_reasons,
+    load_runtime_blocked_series_keys,
+    load_runtime_blocked_series_reasons,
+    runtime_market_selection_actions,
+    runtime_market_selection_reasons,
+    recommended_runtime_blocked_market_ids,
+    recommended_runtime_blocked_market_reasons,
+    recommended_runtime_blocked_series_keys,
+    recommended_runtime_blocked_series_reasons,
 )
 from pm_bot.strategies.crypto.phase2.execution import classify_crypto_signal
 from pm_bot.strategies.crypto.phase2.management import (
@@ -55,6 +68,8 @@ async def run_crypto_phase2_replay(
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
     apply_series_filter: bool = True,
+    selection_report_path: str | Path | None = None,
+    strategy_overrides: dict[str, object] | None = None,
 ) -> tuple[FairValueEstimate, ...]:
     settings = load_settings_from_directory(config_dir)
     snapshots = load_market_snapshots(snapshot_path)
@@ -72,13 +87,15 @@ async def run_crypto_phase2_replay(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
         apply_series_filter=apply_series_filter,
+        selection_report_path=selection_report_path,
+        strategy_overrides=strategy_overrides,
         snapshot_path=snapshot_path,
     )
 
 
 async def run_crypto_phase2_replay_snapshots(
     *,
-    snapshots,
+    snapshots: Sequence[MarketSnapshot],
     underlying_states: dict[str, CryptoUnderlyingState],
     settings: BotSettings,
     config_dir: str,
@@ -89,10 +106,14 @@ async def run_crypto_phase2_replay_snapshots(
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
     apply_series_filter: bool = True,
+    selection_report_path: str | Path | None = None,
     snapshot_path: str | Path = "in-memory",
+    strategy_overrides: dict[str, object] | None = None,
 ) -> tuple[FairValueEstimate, ...]:
-    resolved_barrier_model_config = barrier_model_config or CryptoBarrierModelConfig(steepness=1.65)
-    resolved_fusion_model_config = fusion_model_config or CryptoFusionModelConfig(barrier_weight=0.35, surface_weight=0.65)
+    _, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+        barrier_model_config=barrier_model_config,
+        fusion_model_config=fusion_model_config,
+    )
     fair_values = compute_crypto_phase1_fair_values_from_snapshots(
         snapshots=snapshots,
         underlying_states=underlying_states,
@@ -113,6 +134,8 @@ async def run_crypto_phase2_replay_snapshots(
         barrier_model_config=resolved_barrier_model_config,
         fusion_model_config=resolved_fusion_model_config,
         apply_series_filter=apply_series_filter,
+        selection_report_path=selection_report_path,
+        strategy_overrides=strategy_overrides,
     )
     attribution_rows = build_crypto_attribution_rows(
         fair_values=fair_values,
@@ -158,6 +181,8 @@ async def _run_crypto_phase2_loop(
     barrier_model_config: CryptoBarrierModelConfig,
     fusion_model_config: CryptoFusionModelConfig,
     apply_series_filter: bool,
+    selection_report_path: str | Path | None,
+    strategy_overrides: dict[str, object] | None,
 ) -> Phase1ReplayResult:
     snapshots = load_market_snapshots(snapshot_path)
     if limit is not None:
@@ -175,12 +200,14 @@ async def _run_crypto_phase2_loop(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
         apply_series_filter=apply_series_filter,
+        selection_report_path=selection_report_path,
+        strategy_overrides=strategy_overrides,
     )
 
 
 async def _run_crypto_phase2_loop_with_settings(
     *,
-    snapshots,
+    snapshots: Sequence[MarketSnapshot],
     fair_values: tuple[FairValueEstimate, ...],
     underlying_states: dict[str, CryptoUnderlyingState],
     settings: BotSettings,
@@ -191,6 +218,8 @@ async def _run_crypto_phase2_loop_with_settings(
     barrier_model_config: CryptoBarrierModelConfig,
     fusion_model_config: CryptoFusionModelConfig,
     apply_series_filter: bool,
+    selection_report_path: str | Path | None,
+    strategy_overrides: dict[str, object] | None,
 ) -> Phase1ReplayResult:
     started_at = snapshots[0].timestamp if snapshots else datetime.now(tz=timezone.utc)
 
@@ -204,18 +233,46 @@ async def _run_crypto_phase2_loop_with_settings(
     engine_metrics_path = resolved_output_dir / "engine.metrics.json"
     _reset_replay_output_files(events_path=events_path, engine_metrics_path=engine_metrics_path)
 
-    strategy_config = settings.category_configs[Category.CRYPTO].strategy.get("phase2", {})
+    strategy_config = dict(settings.category_configs[Category.CRYPTO].strategy.get("phase2", {}))
+    if strategy_overrides:
+        strategy_config.update(strategy_overrides)
     strategy = CryptoPhase2Strategy(strategy_config)
-    blocked_series_keys: set[str] = set()
-    if apply_series_filter:
-        selection_report = generate_crypto_market_selection_report_from_snapshots(
-            snapshots=snapshots,
-            snapshot_label=str(snapshot_path),
-            underlying_states=underlying_states,
-            barrier_model_config=barrier_model_config,
-            fusion_model_config=fusion_model_config,
-        )
-        blocked_series_keys = set(recommended_skip_series_keys(selection_report))
+    static_blocked_series_keys = (
+        set(load_runtime_blocked_series_keys(selection_report_path))
+        if selection_report_path is not None
+        else set()
+    )
+    static_blocked_market_ids = (
+        set(load_runtime_blocked_market_ids(selection_report_path))
+        if selection_report_path is not None
+        else set()
+    )
+    static_blocked_series_reasons = (
+        load_runtime_blocked_series_reasons(selection_report_path)
+        if selection_report_path is not None
+        else {}
+    )
+    static_blocked_market_reasons = (
+        load_runtime_blocked_market_reasons(selection_report_path)
+        if selection_report_path is not None
+        else {}
+    )
+    static_market_selection_actions = (
+        load_runtime_market_selection_actions(selection_report_path)
+        if selection_report_path is not None
+        else {}
+    )
+    static_market_selection_reasons = (
+        load_runtime_market_selection_reasons(selection_report_path)
+        if selection_report_path is not None
+        else {}
+    )
+    blocked_series_keys: set[str] = set(static_blocked_series_keys)
+    blocked_market_ids: set[str] = set(static_blocked_market_ids)
+    blocked_series_reasons: dict[str, tuple[str, ...]] = dict(static_blocked_series_reasons)
+    blocked_market_reasons: dict[str, tuple[str, ...]] = dict(static_blocked_market_reasons)
+    market_selection_actions: dict[str, str] = dict(static_market_selection_actions)
+    market_selection_reasons: dict[str, tuple[str, ...]] = dict(static_market_selection_reasons)
     risk_manager = BasicRiskManager(
         settings=settings.risk,
         trading_settings=settings.trading,
@@ -258,6 +315,32 @@ async def _run_crypto_phase2_loop_with_settings(
             barrier_model_config=barrier_model_config,
             fusion_model_config=fusion_model_config,
         )
+        if apply_series_filter:
+            (
+                runtime_blocked_series_keys,
+                runtime_blocked_market_ids,
+                runtime_blocked_series_reasons,
+                runtime_blocked_market_reasons,
+                runtime_selection_actions,
+                runtime_selection_reasons,
+            ) = _runtime_blocked_selection(
+                snapshots=tuple(router.snapshot_cache.values()) + (snapshot,),
+                snapshot_path=snapshot_path,
+                underlying_states=underlying_states,
+                recorder=recorder,
+                barrier_model_config=barrier_model_config,
+                fusion_model_config=fusion_model_config,
+            )
+            blocked_series_keys = static_blocked_series_keys.union(runtime_blocked_series_keys)
+            blocked_market_ids = static_blocked_market_ids.union(runtime_blocked_market_ids)
+            blocked_series_reasons = dict(static_blocked_series_reasons)
+            blocked_series_reasons.update(runtime_blocked_series_reasons)
+            blocked_market_reasons = dict(static_blocked_market_reasons)
+            blocked_market_reasons.update(runtime_blocked_market_reasons)
+            market_selection_actions = dict(static_market_selection_actions)
+            market_selection_actions.update(runtime_selection_actions)
+            market_selection_reasons = dict(static_market_selection_reasons)
+            market_selection_reasons.update(runtime_selection_reasons)
         await sync_paper_execution_state(
             risk_manager=risk_manager,
             execution=execution,
@@ -279,6 +362,11 @@ async def _run_crypto_phase2_loop_with_settings(
                 "position_intents_by_market_id": position_intents_by_market_id,
                 "reentry_state_by_market_id": reentry_state_by_market_id,
                 "blocked_series_keys": blocked_series_keys,
+                "blocked_market_ids": blocked_market_ids,
+                "blocked_series_reasons": blocked_series_reasons,
+                "blocked_market_reasons": blocked_market_reasons,
+                "market_selection_actions": market_selection_actions,
+                "market_selection_reasons": market_selection_reasons,
             },
         )
         await sync_paper_execution_state(
@@ -351,7 +439,7 @@ async def _run_crypto_phase2_loop_with_settings(
 
 def _refresh_fair_values_by_market_id(
     *,
-    snapshots,
+    snapshots: Sequence[MarketSnapshot],
     underlying_states: dict[str, CryptoUnderlyingState],
     barrier_model_config: CryptoBarrierModelConfig,
     fusion_model_config: CryptoFusionModelConfig,
@@ -363,6 +451,40 @@ def _refresh_fair_values_by_market_id(
         fusion_model_config=fusion_model_config,
     )
     return {item.market_id: item for item in fair_values}
+
+
+def _runtime_blocked_selection(
+    *,
+    snapshots: Sequence[MarketSnapshot],
+    snapshot_path: str | Path,
+    underlying_states: dict[str, CryptoUnderlyingState],
+    recorder: ResearchRecorder,
+    barrier_model_config: CryptoBarrierModelConfig,
+    fusion_model_config: CryptoFusionModelConfig,
+) -> tuple[
+    set[str],
+    set[str],
+    dict[str, tuple[str, ...]],
+    dict[str, tuple[str, ...]],
+    dict[str, str],
+    dict[str, tuple[str, ...]],
+]:
+    selection_report = generate_crypto_market_selection_report_from_snapshots(
+        snapshots=snapshots,
+        snapshot_label=str(snapshot_path),
+        underlying_states=underlying_states,
+        events=recorder.events,
+        barrier_model_config=barrier_model_config,
+        fusion_model_config=fusion_model_config,
+    )
+    return (
+        set(recommended_runtime_blocked_series_keys(selection_report)),
+        set(recommended_runtime_blocked_market_ids(selection_report)),
+        recommended_runtime_blocked_series_reasons(selection_report),
+        recommended_runtime_blocked_market_reasons(selection_report),
+        runtime_market_selection_actions(selection_report),
+        runtime_market_selection_reasons(selection_report),
+    )
 
 
 def _update_runtime_context_from_events(
@@ -393,7 +515,7 @@ def _update_runtime_context_from_events(
             )
         elif event.get("event_type") == "trade.closed":
             position_intents_by_market_id.pop(market_id, None)
-            realized_pnl = float(payload.get("realized_pnl", 0.0))
+            realized_pnl = parse_float(payload, "realized_pnl") or 0.0
             if realized_pnl < 0:
                 reentry_state_by_market_id[market_id] = update_reentry_state(
                     market_id=market_id,
@@ -412,7 +534,7 @@ def _update_runtime_context_from_events(
     return len(recorder.events)
 
 
-def _parse_event_timestamp(raw_value: object):
+def _parse_event_timestamp(raw_value: object) -> datetime:
     if isinstance(raw_value, str) and raw_value:
         parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
         if parsed.tzinfo is None:
@@ -424,4 +546,11 @@ def _parse_event_timestamp(raw_value: object):
 def _optional_float(raw_value: object) -> float | None:
     if raw_value in (None, ""):
         return None
-    return float(raw_value)
+    if isinstance(raw_value, bool):
+        return None
+    if isinstance(raw_value, (int, float, str, bytes, bytearray)):
+        return float(raw_value)
+    try:
+        return float(str(raw_value))
+    except (TypeError, ValueError):
+        return None

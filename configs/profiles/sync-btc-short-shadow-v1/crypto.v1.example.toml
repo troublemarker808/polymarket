@@ -1,0 +1,59 @@
+category = "crypto"
+enabled_strategies = ["crypto.phase2"]
+
+[markets]
+assets = ["BTC"]
+include_keywords = ["dip", "drop", "fall", "reach", "hit", "above", "below", "under", "over"]
+exclude_keywords = ["volatility", "realized", "dominance", "premium", "kimchi"]
+expiries = ["next_3d"]
+max_barrier_distance_ratio = 0.35
+discovery_max_pages = 3
+min_liquidity_score = 0.5
+max_active_markets = 6
+max_markets_per_event = 1
+min_markets_per_event = 1
+
+[strategy.phase2]
+min_confidence = 0.6
+min_net_edge_bps = 75.0
+max_spread_bps = 250.0
+min_liquidity_score = 0.0
+min_contract_price = 0.05
+taker_urgency_threshold = 0.62
+maker_min_edge_bps = 100.0
+resolution_maker_min_edge_bps = 150.0
+maker_aggressiveness = 1.4
+high_edge_taker_min_edge_bps = 125.0
+high_edge_taker_max_spread_bps = 140.0
+taker_max_entry_premium_bps = 600.0
+taker_time_in_force = "GTC"
+maker_quote_ttl_seconds = 10
+resolution_maker_quote_ttl_seconds = 15
+default_notional = 5.0
+exit_edge_bps = 75
+stop_loss_bps = 250
+execution_max_holding_seconds = 1800.0
+min_holding_seconds_before_exit = 30.0
+aging_exit_edge_bps = 150.0
+stale_exit_edge_bps = 300.0
+aging_start_fraction = 0.35
+stale_start_fraction = 0.75
+stop_loss_min_ticks = 2
+stop_loss_max_remaining_edge_bps = 150.0
+adverse_fill_exit_bps = 75.0
+adverse_fill_max_remaining_edge_bps = 150.0
+max_holding_multiplier = 1.0
+exit_repost_cooldown_seconds = 30.0
+entry_repost_cooldown_seconds = 30.0
+entry_failure_cooldown_seconds = 45.0
+thesis_entry_cooldown_seconds = 90.0
+max_no_fill_entry_attempts_per_market = 1
+time_stop_force_ioc_after_expiries = 1
+
+[strategy.phase2.preset_registry.btc_dip_short_shadow]
+match = { underlying = "BTC", event_family = "dip" }
+overrides = { taker_urgency_threshold = 0.58, maker_aggressiveness = 1.6, maker_quote_ttl_seconds = 8, high_edge_taker_min_edge_bps = 110.0, high_edge_taker_max_spread_bps = 150.0, taker_max_entry_premium_bps = 750.0, max_no_fill_entry_attempts_per_market = 1 }
+
+[strategy.phase2.preset_registry.btc_reach_short_shadow]
+match = { underlying = "BTC", event_family = "reach" }
+overrides = { taker_urgency_threshold = 0.60, maker_aggressiveness = 1.5, maker_quote_ttl_seconds = 8, high_edge_taker_min_edge_bps = 110.0, high_edge_taker_max_spread_bps = 150.0, taker_max_entry_premium_bps = 750.0, max_no_fill_entry_attempts_per_market = 1 }

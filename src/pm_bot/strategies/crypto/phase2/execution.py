@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pm_bot.core.research_types import FairValueEstimate
 from pm_bot.core.types import MarketSnapshot, OrderAction, OrderIntent, SignalSide
-from pm_bot.strategies.common import implied_yes_probability
+from pm_bot.execution.exposure_keys import derive_exposure_keys
+from pm_bot.strategies.common import implied_yes_probability, parse_float
 from pm_bot.strategies.crypto.phase2.models import (
     CryptoExecutionDecision,
     CryptoSignalClassification,
@@ -17,7 +18,7 @@ def classify_crypto_signal(
     fair_value: FairValueEstimate,
 ) -> CryptoSignalClassification:
     observed_probability = fair_value.observed_probability or fair_value.fair_probability
-    net_edge_bps = float(fair_value.supporting_values.get("net_edge_bps", 0.0))
+    net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
     half_life_seconds = fair_value.half_life_seconds or 24 * 3600
     side = SignalSide.BUY_YES if fair_value.fair_probability >= observed_probability else SignalSide.BUY_NO
 
@@ -60,7 +61,7 @@ def evaluate_trade_eligibility(
     min_liquidity_score: float = 0.0,
     min_contract_price: float = 0.05,
 ) -> CryptoTradeEligibility:
-    net_edge_bps = float(fair_value.supporting_values.get("net_edge_bps", 0.0))
+    net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
     market_spread_bps = spread_cost_bps(snapshot=snapshot, side=classification.side)
     contract_price = _contract_price(snapshot=snapshot, side=classification.side)
 
@@ -114,7 +115,7 @@ def route_execution(
             rationale_tags=(eligibility.reason,),
         )
 
-    net_edge_bps = float(fair_value.supporting_values.get("net_edge_bps", 0.0))
+    net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
     observed_probability = implied_yes_probability(snapshot) or fair_value.observed_probability or fair_value.fair_probability
     quote_ttl_seconds = (
         resolution_maker_quote_ttl_seconds
@@ -137,16 +138,11 @@ def route_execution(
             urgency_score=classification.urgency_score,
             rationale_tags=(classification.signal_type, "taker"),
         )
-    if classification.signal_type == "repricing_edge" and classification.urgency_score >= taker_urgency_threshold:
-        return CryptoExecutionDecision(
-            market_id=fair_value.market_id,
-            route="skip",
-            side=classification.side,
-            target_price=None,
-            quote_ttl_seconds=None,
-            urgency_score=classification.urgency_score,
-            rationale_tags=("repricing_taker_too_expensive",),
-        )
+    repricing_taker_too_expensive = (
+        classification.signal_type == "repricing_edge"
+        and classification.urgency_score >= taker_urgency_threshold
+        and taker_entry_premium_bps > taker_max_entry_premium_bps
+    )
 
     if (
         classification.signal_type in {"liquidity_edge", "resolution_edge"}
@@ -190,7 +186,11 @@ def route_execution(
             ),
             quote_ttl_seconds=quote_ttl_seconds,
             urgency_score=classification.urgency_score,
-            rationale_tags=(classification.signal_type, "maker"),
+            rationale_tags=(
+                ("repricing_taker_too_expensive", "maker_fallback")
+                if repricing_taker_too_expensive
+                else (classification.signal_type, "maker")
+            ),
         )
 
     return CryptoExecutionDecision(
@@ -210,6 +210,7 @@ def build_order_intent(
     snapshot: MarketSnapshot,
     decision: CryptoExecutionDecision,
     default_notional: float,
+    taker_time_in_force: str = "IOC",
     strategy_id: str = "crypto.phase2.execution",
 ) -> OrderIntent | None:
     if decision.route == "skip" or decision.target_price is None or decision.target_price <= 0:
@@ -223,7 +224,8 @@ def build_order_intent(
     if size <= 0:
         return None
 
-    time_in_force = "IOC" if decision.route == "taker" else "GTC"
+    time_in_force = taker_time_in_force.upper() if decision.route == "taker" else "GTC"
+    exposure_keys = derive_exposure_keys(snapshot)
     return OrderIntent(
         strategy_id=strategy_id,
         category=fair_value.category,
@@ -237,7 +239,10 @@ def build_order_intent(
         created_at=snapshot.timestamp,
         notional=default_notional,
         quote_ttl_seconds=decision.quote_ttl_seconds,
-        signal_edge_bps=float(fair_value.supporting_values.get("net_edge_bps", 0.0)),
+        signal_edge_bps=parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0,
+        exposure_group_id=exposure_keys.exposure_group_id,
+        thesis_group_id=exposure_keys.thesis_group_id,
+        underlying_group_id=exposure_keys.underlying_group_id,
     )
 
 
@@ -383,7 +388,6 @@ def _urgency_score(*, confidence: float, net_edge_bps: float, half_life_seconds:
     edge_component = min(0.4, max(0.0, net_edge_bps) / 1000 * 0.4)
     half_life_component = 0.2 if half_life_seconds <= 2 * 3600 else (0.1 if half_life_seconds <= 8 * 3600 else 0.02)
     return round(min(1.0, confidence_component + edge_component + half_life_component), 4)
-
 
 def _ineligible(
     market_id: str,

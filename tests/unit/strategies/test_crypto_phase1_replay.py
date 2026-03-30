@@ -13,6 +13,7 @@ from pm_bot.research.engine import ResearchRunResult
 from pm_bot.research.phase1_artifacts import Phase1ArtifactPaths
 from pm_bot.research.phase1_runner import Phase1ReplayResult
 from pm_bot.runtime.state import DashboardState, HaltReason, RuntimeStatus
+from pm_bot.strategies.crypto.phase1.baseline import get_locked_crypto_calibration_baseline_preset
 from pm_bot.strategies.crypto.phase1.inputs import build_underlying_state
 from pm_bot.strategies.crypto.phase1.replay import compute_crypto_phase1_fair_values, run_crypto_phase1_replay
 
@@ -37,6 +38,38 @@ def test_compute_crypto_phase1_fair_values_returns_enriched_estimates_for_suppor
     assert tuple(item.market_id for item in fair_values) == ("eth-dip-1000", "eth-dip-1500", "eth-dip-800")
     assert all(item.model_id == "crypto.phase1.fused" for item in fair_values)
     assert all("net_edge_bps" in item.supporting_values for item in fair_values)
+
+
+def test_compute_crypto_phase1_fair_values_uses_locked_baseline_by_default() -> None:
+    explicit_preset = get_locked_crypto_calibration_baseline_preset()
+    default_fair_values = compute_crypto_phase1_fair_values(
+        snapshot_path=FIXTURE_SNAPSHOTS,
+        underlying_states={
+            "ETH": build_underlying_state(
+                underlying="ETH",
+                as_of=datetime.fromisoformat("2026-03-23T12:00:00+00:00"),
+                spot_price=1850.0,
+                realized_volatility=0.62,
+                implied_volatility=0.71,
+            )
+        },
+    )
+    explicit_fair_values = compute_crypto_phase1_fair_values(
+        snapshot_path=FIXTURE_SNAPSHOTS,
+        underlying_states={
+            "ETH": build_underlying_state(
+                underlying="ETH",
+                as_of=datetime.fromisoformat("2026-03-23T12:00:00+00:00"),
+                spot_price=1850.0,
+                realized_volatility=0.62,
+                implied_volatility=0.71,
+            )
+        },
+        barrier_model_config=explicit_preset.barrier_model_config,
+        fusion_model_config=explicit_preset.fusion_model_config,
+    )
+
+    assert default_fair_values == explicit_fair_values
 
 
 def test_run_crypto_phase1_replay_rewrites_attribution_artifact(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

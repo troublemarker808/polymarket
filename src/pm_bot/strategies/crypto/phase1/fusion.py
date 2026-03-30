@@ -22,6 +22,7 @@ def fuse_crypto_fair_value(
     model_config: CryptoFusionModelConfig | None = None,
 ) -> CryptoFusedFairValue:
     config = model_config or CryptoFusionModelConfig()
+    rationale_tags: tuple[str, ...]
     if surface_estimate is None:
         fair_probability = barrier_estimate.fair_probability
         surface_probability = None

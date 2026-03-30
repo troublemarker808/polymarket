@@ -107,7 +107,7 @@ def _format_counter(counter: dict[str, int]) -> str:
 
 
 def _normalize(value: Any) -> Any:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         return _normalize(asdict(value))
     if isinstance(value, Enum):
         return value.value

@@ -7,11 +7,16 @@ from pm_bot.strategies.crypto.phase2.execution import (
     route_execution,
     spread_cost_bps,
 )
+from pm_bot.strategies.crypto.phase2.final_report import (
+    build_crypto_phase2_final_scorecard,
+    format_crypto_phase2_final_scorecard,
+)
 from pm_bot.strategies.crypto.phase2.management import (
     build_position_intent,
     evaluate_exit,
     is_reentry_blocked,
     summarize_execution_feedback,
+    summarize_execution_feedback_from_events,
     update_reentry_state,
 )
 from pm_bot.strategies.crypto.phase2.models import (
@@ -34,14 +39,17 @@ __all__ = [
     "CryptoReentryState",
     "CryptoSignalClassification",
     "CryptoTradeEligibility",
+    "build_crypto_phase2_final_scorecard",
     "build_order_intent",
     "build_position_intent",
     "classify_crypto_signal",
     "evaluate_trade_eligibility",
     "evaluate_exit",
+    "format_crypto_phase2_final_scorecard",
     "is_reentry_blocked",
     "route_execution",
     "spread_cost_bps",
     "summarize_execution_feedback",
+    "summarize_execution_feedback_from_events",
     "update_reentry_state",
 ]

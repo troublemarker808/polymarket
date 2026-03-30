@@ -48,6 +48,7 @@ class ResearchRecorder:
         metrics_path: str | Path | None = None,
     ) -> None:
         self.events: list[dict[str, Any]] = []
+        self._jsonl: JsonlRecorder | None
         if path is not None:
             event_path = Path(path)
             event_path.parent.mkdir(parents=True, exist_ok=True)

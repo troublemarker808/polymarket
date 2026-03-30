@@ -12,11 +12,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.util import find_spec
 import os
-from typing import Any, Protocol
+from decimal import Decimal, ROUND_HALF_UP
+from typing import Protocol
 
 from pm_bot.core.settings import PolymarketSettings
 from pm_bot.core.types import Category, MarketSnapshot, OrderAction, OrderIntent, SignalSide
-from pm_bot.execution.order_tracker import OrderLifecycleTracker
+from pm_bot.execution.order_tracker import OrderLifecycleTracker, TrackedOrder
 from pm_bot.execution.position_ledger import LivePosition, PositionLedger
 from pm_bot.adapters.polymarket.geoblock_client import GeoblockStatus, fetch_geoblock_status_sync
 from pm_bot.adapters.polymarket.user_ws_client import (
@@ -52,6 +53,9 @@ class SyncTradingClient(Protocol):
     def set_api_creds(self, creds: object) -> None:
         ...
 
+    def get_balance_allowance(self, params: object) -> object:
+        ...
+
 
 @dataclass(slots=True, frozen=True)
 class ResolvedPolymarketCredentials:
@@ -80,6 +84,77 @@ def live_dependency_available() -> bool:
     return find_spec("py_clob_client.client") is not None and find_spec(
         "py_clob_client.clob_types"
     ) is not None
+
+
+_PRICE_CENT = Decimal("0.01")
+_SIZE_STEP = Decimal("0.0001")
+
+
+def _round_size_for_live(intent: OrderIntent) -> float:
+    """Normalize live sizes to Polymarket's buy-side amount precision rules."""
+
+    size = Decimal(str(intent.size))
+    price = Decimal(str(intent.price or 0.0))
+    if price <= 0:
+        return float(size.quantize(_SIZE_STEP, rounding=ROUND_HALF_UP))
+
+    if intent.side in (SignalSide.BUY_YES, SignalSide.BUY_NO):
+        target_notional = Decimal(str(intent.notional or 0.0))
+        target_cents = max(
+            int((target_notional.quantize(_PRICE_CENT, rounding=ROUND_HALF_UP) * 100)),
+            1,
+        )
+        price_cents = int((price.quantize(_PRICE_CENT, rounding=ROUND_HALF_UP) * 100))
+        for maker_cents in range(target_cents, target_cents + max(price_cents * 4, 500)):
+            scaled = maker_cents * 10_000
+            if scaled % price_cents != 0:
+                continue
+            normalized_size = Decimal(scaled // price_cents) / Decimal(10_000)
+            return float(normalized_size.quantize(_SIZE_STEP, rounding=ROUND_HALF_UP))
+
+    return float(size.quantize(_SIZE_STEP, rounding=ROUND_HALF_UP))
+
+
+def _trade_event_fingerprint(event: UserTradeEvent) -> str:
+    return "|".join(
+        [
+            str(event.trader_side or "").strip().upper(),
+            str(event.taker_order_id or "").strip(),
+            str(event.asset_id or "").strip(),
+            str(event.side or "").strip().upper(),
+            _canonical_trade_number(event.price),
+            _canonical_trade_number(event.size),
+        ]
+    )
+
+
+def canonical_trade_fingerprint(
+    *,
+    trader_side: object,
+    taker_order_id: object,
+    asset_id: object,
+    side: object,
+    price: object,
+    size: object,
+) -> str:
+    return "|".join(
+        [
+            str(trader_side or "").strip().upper(),
+            str(taker_order_id or "").strip(),
+            str(asset_id or "").strip(),
+            str(side or "").strip().upper(),
+            _canonical_trade_number(price),
+            _canonical_trade_number(size),
+        ]
+    )
+
+
+def _canonical_trade_number(value: object) -> str:
+    try:
+        normalized = Decimal(str(value or "0"))
+    except Exception:
+        return str(value or "").strip()
+    return format(normalized.quantize(Decimal("0.000001")), "f")
 
 
 def resolve_polymarket_credentials(
@@ -171,7 +246,7 @@ class PolymarketLiveExecutionAdapter:
         build_order_args: Callable[[OrderIntent], object],
         resolve_order_type: Callable[[str], object],
         user_channel_auth: UserChannelAuth,
-        parse_order_id: Callable[[object], str] = None,
+        parse_order_id: Callable[[object], str] | None = None,
         tracker: OrderLifecycleTracker | None = None,
         position_ledger: PositionLedger | None = None,
         account_addresses: frozenset[str] = frozenset(),
@@ -183,7 +258,7 @@ class PolymarketLiveExecutionAdapter:
         self.build_order_args = build_order_args
         self.resolve_order_type = resolve_order_type
         self.user_channel_auth = user_channel_auth
-        self.parse_order_id = parse_order_id or _extract_order_id
+        self.parse_order_id = _extract_order_id if parse_order_id is None else parse_order_id
         self.tracker = tracker or OrderLifecycleTracker()
         self.position_ledger = position_ledger or PositionLedger(
             allow_synthetic_complement_on_sell=False
@@ -232,10 +307,13 @@ class PolymarketLiveExecutionAdapter:
             OrderArgs = None
             OrderType = None
 
+        user_channel_auth: UserChannelAuth | None = None
         if client_factory is None:
             creds = None
-            user_channel_auth: UserChannelAuth | None = None
             if credentials.has_api_credentials:
+                assert credentials.api_key is not None
+                assert credentials.api_secret is not None
+                assert credentials.api_passphrase is not None
                 assert ApiCreds is not None
                 creds = ApiCreds(
                     api_key=credentials.api_key,
@@ -265,15 +343,16 @@ class PolymarketLiveExecutionAdapter:
                 client=client,
                 preferred_signature_type=settings.signature_type,
             )
-            if getattr(client, "builder", None) is not None:
-                client.builder.sig_type = resolved_signature_type
+            builder = getattr(client, "builder", None)
+            if builder is not None:
+                setattr(builder, "sig_type", resolved_signature_type)
 
             assert OrderArgs is not None
             assert OrderType is not None
             if user_channel_auth is None:
                 raise ValueError("Unable to resolve user-channel credentials for live execution")
 
-            def build_order_args(intent: OrderIntent) -> object:
+            def live_build_order_args(intent: OrderIntent) -> object:
                 if intent.action != OrderAction.PLACE:
                     raise ValueError("Only PLACE intents are supported for live trading")
                 if intent.price is None:
@@ -281,12 +360,14 @@ class PolymarketLiveExecutionAdapter:
                 return OrderArgs(
                     token_id=intent.token_id,
                     price=float(intent.price),
-                    size=float(intent.size),
+                    size=_round_size_for_live(intent),
                     side=_execution_side_for_signal(intent.side),
                 )
 
-            def resolve_order_type(time_in_force: str) -> object:
+            def live_resolve_order_type(time_in_force: str) -> object:
                 normalized = time_in_force.upper()
+                if normalized == "IOC":
+                    normalized = "FOK"
                 try:
                     return getattr(OrderType, normalized)
                 except AttributeError as exc:
@@ -297,8 +378,8 @@ class PolymarketLiveExecutionAdapter:
                 ttl_seconds=ttl_seconds,
                 post_only=settings.post_only_live_orders,
                 signature_type=resolved_signature_type,
-                build_order_args=build_order_args,
-                resolve_order_type=resolve_order_type,
+                build_order_args=live_build_order_args,
+                resolve_order_type=live_resolve_order_type,
                 user_channel_auth=user_channel_auth,
                 account_addresses=credentials.account_addresses,
             )
@@ -311,8 +392,10 @@ class PolymarketLiveExecutionAdapter:
             signature_type=settings.signature_type,
             funder=credentials.funder,
         )
-        user_channel_auth: UserChannelAuth | None = None
         if credentials.has_api_credentials:
+            assert credentials.api_key is not None
+            assert credentials.api_secret is not None
+            assert credentials.api_passphrase is not None
             client.set_api_creds(
                 {
                     "api_key": credentials.api_key,
@@ -332,16 +415,19 @@ class PolymarketLiveExecutionAdapter:
             client.set_api_creds(derived_creds)
             user_channel_auth = _coerce_user_channel_auth(derived_creds)
 
-        def build_order_args(intent: OrderIntent) -> object:
+        def factory_build_order_args(intent: OrderIntent) -> object:
             return {
                 "token_id": intent.token_id,
                 "price": intent.price,
-                "size": intent.size,
+                "size": _round_size_for_live(intent),
                 "side": _execution_side_for_signal(intent.side),
             }
 
-        def resolve_order_type(time_in_force: str) -> object:
-            return time_in_force.upper()
+        def factory_resolve_order_type(time_in_force: str) -> object:
+            normalized = time_in_force.upper()
+            if normalized == "IOC":
+                normalized = "FOK"
+            return normalized
 
         if user_channel_auth is None:
             raise ValueError("Unable to resolve user-channel credentials for live execution")
@@ -350,16 +436,17 @@ class PolymarketLiveExecutionAdapter:
             client=client,
             preferred_signature_type=settings.signature_type,
         )
-        if getattr(client, "builder", None) is not None:
-            client.builder.sig_type = resolved_signature_type
+        builder = getattr(client, "builder", None)
+        if builder is not None:
+            setattr(builder, "sig_type", resolved_signature_type)
 
         return cls(
             client=client,
             ttl_seconds=ttl_seconds,
             post_only=settings.post_only_live_orders,
             signature_type=resolved_signature_type,
-            build_order_args=build_order_args,
-            resolve_order_type=resolve_order_type,
+            build_order_args=factory_build_order_args,
+            resolve_order_type=factory_resolve_order_type,
             user_channel_auth=user_channel_auth,
             account_addresses=credentials.account_addresses,
         )
@@ -381,7 +468,7 @@ class PolymarketLiveExecutionAdapter:
         order_id: str,
         *,
         now: datetime | None = None,
-    ) -> object | None:
+    ) -> TrackedOrder | None:
         try:
             await asyncio.to_thread(self.client.cancel, order_id)
         except Exception:
@@ -391,14 +478,14 @@ class PolymarketLiveExecutionAdapter:
     async def cancel_stale(self) -> int:
         return len(await self.cancel_stale_orders())
 
-    async def cancel_stale_orders(self) -> tuple[object, ...]:
+    async def cancel_stale_orders(self) -> tuple[TrackedOrder, ...]:
         tracked_orders = self.tracker.snapshot()
         if not tracked_orders:
             return ()
 
         now = datetime.now(tz=timezone.utc)
         stale_order_ids = self.tracker.stale_order_ids(now=now, ttl_seconds=self.ttl_seconds)
-        cancelled: list[object] = []
+        cancelled: list[TrackedOrder] = []
         for order_id in stale_order_ids:
             try:
                 await asyncio.to_thread(self.client.cancel, order_id)
@@ -411,18 +498,23 @@ class PolymarketLiveExecutionAdapter:
 
     async def fetch_open_orders(self) -> list[dict[str, object]]:
         response = await asyncio.to_thread(self.client.get_orders)
-        return [item for item in response if isinstance(item, dict)]
+        records = response if isinstance(response, (list, tuple)) else ()
+        return [item for item in records if isinstance(item, dict)]
 
     async def fetch_trade_history(self) -> list[dict[str, object]]:
         response = await asyncio.to_thread(self.client.get_trades)
-        return [item for item in response if isinstance(item, dict)]
+        records = response if isinstance(response, (list, tuple)) else ()
+        return [item for item in records if isinstance(item, dict)]
 
-    def apply_user_order_event(self, event: UserOrderEvent) -> object | None:
+    def apply_user_order_event(self, event: UserOrderEvent) -> TrackedOrder | None:
         return self.tracker.apply_order_event(event)
 
     def apply_user_trade_event(self, event: UserTradeEvent) -> tuple[LivePosition, ...]:
         trade_id = str(event.id or "").strip()
-        if trade_id and trade_id in self.processed_trade_ids:
+        trade_fingerprint = _trade_event_fingerprint(event)
+        if (trade_id and trade_id in self.processed_trade_ids) or (
+            trade_fingerprint and trade_fingerprint in self.processed_trade_ids
+        ):
             return ()
 
         updated_positions: list[LivePosition] = []
@@ -475,6 +567,8 @@ class PolymarketLiveExecutionAdapter:
                     updated_positions.append(position)
         if trade_id:
             self.processed_trade_ids.add(trade_id)
+        if trade_fingerprint:
+            self.processed_trade_ids.add(trade_fingerprint)
         return tuple(updated_positions)
 
     def tracked_order_ids_for_trade_event(
@@ -503,11 +597,19 @@ class PolymarketLiveExecutionAdapter:
         return bool(normalized) and normalized in self.account_addresses
 
     def has_processed_trade_id(self, trade_id: str) -> bool:
-        return trade_id in self.processed_trade_ids
+        normalized = str(trade_id).strip()
+        return bool(normalized) and normalized in self.processed_trade_ids
 
     def mark_processed_trade_id(self, trade_id: str) -> None:
-        if trade_id:
-            self.processed_trade_ids.add(trade_id)
+        normalized = str(trade_id).strip()
+        if normalized:
+            self.processed_trade_ids.add(normalized)
+
+    def restore_processed_trade_ids(self, trade_ids: tuple[str, ...] | list[str]) -> None:
+        for trade_id in trade_ids:
+            normalized = str(trade_id).strip()
+            if normalized:
+                self.processed_trade_ids.add(normalized)
 
     def _select_local_maker_orders(
         self,

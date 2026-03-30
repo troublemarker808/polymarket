@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 
 from pm_bot.research.engine import load_market_snapshots
+from pm_bot.core.types import MarketSnapshot
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
 
 
@@ -90,12 +91,12 @@ def generate_crypto_window_family_report(
             market_id = str(payload.get("market_id", "")).strip()
             if not market_id:
                 continue
-            key = normalized_by_market_id.get(market_id)
-            if key is None:
+            bucket_key = normalized_by_market_id.get(market_id)
+            if bucket_key is None:
                 continue
             event_type = str(raw.get("event_type", "")).strip()
             if event_type:
-                bucket_event_counts[key][event_type] += 1
+                bucket_event_counts[bucket_key][event_type] += 1
 
     buckets = tuple(
         sorted(
@@ -203,7 +204,7 @@ def export_crypto_family_window(
 ) -> CryptoFamilyExportResult:
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
-    filtered_snapshots: list[object] = []
+    filtered_snapshots: list[MarketSnapshot] = []
     retained_market_ids: set[str] = set()
     for snapshot in load_market_snapshots(snapshot_path):
         normalized = normalize_crypto_market(snapshot)
@@ -308,7 +309,7 @@ def _load_event_records(path: str | Path) -> list[dict[str, object]]:
     return records
 
 
-def _snapshot_record(snapshot) -> dict[str, object]:
+def _snapshot_record(snapshot: MarketSnapshot) -> dict[str, object]:
     return {
         "event_type": "market.snapshot",
         "payload": {

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC
 import re
 
 from pm_bot.core.types import MarketSnapshot
@@ -14,6 +15,12 @@ from pm_bot.core.types import MarketSnapshot
 class MarketUniversePolicy:
     min_liquidity_score: float = 0.0
     asset_keywords: tuple[str, ...] = ()
+    include_keywords: tuple[str, ...] = ()
+    exclude_keywords: tuple[str, ...] = ()
+    expiries: tuple[str, ...] = ()
+    event_slugs: tuple[str, ...] = ()
+    market_ids: tuple[str, ...] = ()
+    preferred_market_ids: tuple[str, ...] = ()
     max_active_markets: int | None = None
     max_markets_per_event: int | None = None
     min_markets_per_event: int = 1
@@ -21,7 +28,7 @@ class MarketUniversePolicy:
 
 def build_snapshot_selector(
     markets_config: Mapping[str, object] | None,
-):
+) -> Callable[[Sequence[MarketSnapshot]], list[MarketSnapshot]] | None:
     if not isinstance(markets_config, Mapping):
         return None
     policy = _policy_from_config(markets_config)
@@ -52,8 +59,57 @@ def select_market_snapshots(
             for snapshot in candidates
             if _snapshot_matches_assets(snapshot=snapshot, asset_keywords=policy.asset_keywords)
         ]
-        if asset_filtered:
-            candidates = asset_filtered
+        candidates = asset_filtered
+
+    if policy.include_keywords:
+        candidates = [
+            snapshot
+            for snapshot in candidates
+            if _snapshot_matches_required_keywords(
+                snapshot=snapshot,
+                include_keywords=policy.include_keywords,
+            )
+        ]
+
+    if policy.exclude_keywords:
+        candidates = [
+            snapshot
+            for snapshot in candidates
+            if not _snapshot_matches_excluded_keywords(
+                snapshot=snapshot,
+                exclude_keywords=policy.exclude_keywords,
+            )
+        ]
+
+    if policy.expiries:
+        expiry_filtered = [
+            snapshot
+            for snapshot in candidates
+            if _snapshot_matches_expiry_buckets(snapshot=snapshot, expiries=policy.expiries)
+        ]
+        candidates = expiry_filtered
+
+    if policy.event_slugs:
+        event_filtered = [
+            snapshot
+            for snapshot in candidates
+            if _snapshot_matches_event_slugs(snapshot=snapshot, event_slugs=policy.event_slugs)
+        ]
+        candidates = event_filtered
+
+    if policy.market_ids:
+        allowed_market_ids = set(policy.market_ids)
+        market_id_filtered = [
+            snapshot
+            for snapshot in candidates
+            if snapshot.market_id in allowed_market_ids
+        ]
+        candidates = market_id_filtered
+
+    preferred_market_positions = {
+        market_id: index
+        for index, market_id in enumerate(policy.preferred_market_ids)
+    }
 
     grouped = _group_snapshots(candidates)
     if policy.min_markets_per_event > 1:
@@ -71,6 +127,7 @@ def select_market_snapshots(
             sorted(
                 event_snapshots,
                 key=lambda snapshot: (
+                    preferred_market_positions.get(snapshot.market_id, len(preferred_market_positions)),
                     -snapshot.liquidity_score,
                     snapshot.slug,
                     snapshot.market_id,
@@ -129,17 +186,65 @@ def _policy_from_config(markets_config: Mapping[str, object]) -> MarketUniverseP
         )
         if keyword
     )
+    include_keywords = tuple(
+        keyword
+        for keyword in (
+            _normalize_keyword(raw_keyword)
+            for raw_keyword in _parse_string_list(markets_config.get("include_keywords"))
+        )
+        if keyword
+    )
+    exclude_keywords = tuple(
+        keyword
+        for keyword in (
+            _normalize_keyword(raw_keyword)
+            for raw_keyword in _parse_string_list(markets_config.get("exclude_keywords"))
+        )
+        if keyword
+    )
+    expiries = tuple(
+        str(raw_expiry).strip().lower()
+        for raw_expiry in _parse_string_list(markets_config.get("expiries"))
+        if str(raw_expiry).strip()
+    )
+    event_slugs = tuple(
+        str(raw_slug).strip()
+        for raw_slug in _parse_string_list(markets_config.get("event_slugs"))
+        if str(raw_slug).strip()
+    )
+    market_ids = tuple(
+        str(raw_market_id).strip()
+        for raw_market_id in _parse_string_list(markets_config.get("market_ids"))
+        if str(raw_market_id).strip()
+    )
+    preferred_market_ids = tuple(
+        str(raw_market_id).strip()
+        for raw_market_id in _parse_string_list(markets_config.get("preferred_market_ids"))
+        if str(raw_market_id).strip()
+    )
     if (
         min_liquidity_score <= 0
         and max_active_markets is None
         and max_markets_per_event is None
         and min_markets_per_event <= 1
         and not asset_keywords
+        and not include_keywords
+        and not exclude_keywords
+        and not expiries
+        and not event_slugs
+        and not market_ids
+        and not preferred_market_ids
     ):
         return None
     return MarketUniversePolicy(
         min_liquidity_score=min_liquidity_score,
         asset_keywords=asset_keywords,
+        include_keywords=include_keywords,
+        exclude_keywords=exclude_keywords,
+        expiries=expiries,
+        event_slugs=event_slugs,
+        market_ids=market_ids,
+        preferred_market_ids=preferred_market_ids,
         max_active_markets=max_active_markets,
         max_markets_per_event=max_markets_per_event,
         min_markets_per_event=max(1, min_markets_per_event),
@@ -165,6 +270,87 @@ def _snapshot_matches_assets(
 ) -> bool:
     tokens = _snapshot_tokens(snapshot)
     return any(_keyword_aliases(keyword) & tokens for keyword in asset_keywords)
+
+
+def _snapshot_matches_excluded_keywords(
+    *,
+    snapshot: MarketSnapshot,
+    exclude_keywords: tuple[str, ...],
+) -> bool:
+    tokens = _snapshot_tokens(snapshot)
+    return any(_keyword_aliases(keyword) & tokens for keyword in exclude_keywords)
+
+
+def _snapshot_matches_required_keywords(
+    *,
+    snapshot: MarketSnapshot,
+    include_keywords: tuple[str, ...],
+) -> bool:
+    tokens = _snapshot_tokens(snapshot)
+    return any(_keyword_aliases(keyword) & tokens for keyword in include_keywords)
+
+
+def _snapshot_matches_event_slugs(
+    *,
+    snapshot: MarketSnapshot,
+    event_slugs: tuple[str, ...],
+) -> bool:
+    event_slug = str(snapshot.metadata.get("event_slug", "")).strip()
+    if not event_slug:
+        return False
+    return event_slug in event_slugs
+
+
+def _snapshot_matches_expiry_buckets(
+    *,
+    snapshot: MarketSnapshot,
+    expiries: tuple[str, ...],
+) -> bool:
+    if snapshot.resolution_time is None:
+        return False
+    time_to_expiry_days = max(
+        (snapshot.resolution_time.astimezone(UTC) - snapshot.timestamp.astimezone(UTC)).total_seconds() / 86400.0,
+        0.0,
+    )
+    return any(_matches_expiry_bucket(time_to_expiry_days=time_to_expiry_days, bucket=bucket) for bucket in expiries)
+
+
+def _matches_expiry_bucket(*, time_to_expiry_days: float, bucket: str) -> bool:
+    normalized = bucket.strip().lower()
+    if normalized in {"intraday", "same_day", "today"}:
+        return time_to_expiry_days <= 1
+    if normalized in {"next_3d", "near", "near_term"}:
+        return time_to_expiry_days <= 3
+    if normalized in {"next_7d", "week"}:
+        return time_to_expiry_days <= 7
+    if normalized in {"short", "short_term"}:
+        return time_to_expiry_days <= 30
+    if normalized in {"medium", "mid", "mid_term"}:
+        return 30 < time_to_expiry_days <= 180
+    if normalized in {"long", "long_term"}:
+        return time_to_expiry_days > 180
+    duration_days = _parse_duration_bucket_to_days(normalized)
+    if duration_days is None:
+        return False
+    tolerance_days = max(duration_days * 0.35, 3.0)
+    return abs(time_to_expiry_days - duration_days) <= tolerance_days
+
+
+def _parse_duration_bucket_to_days(value: str) -> float | None:
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)([dwmy])", value)
+    if match is None:
+        return None
+    amount = float(match.group(1))
+    unit = match.group(2)
+    if unit == "d":
+        return amount
+    if unit == "w":
+        return amount * 7.0
+    if unit == "m":
+        return amount * 30.0
+    if unit == "y":
+        return amount * 365.0
+    return None
 
 
 def _snapshot_tokens(snapshot: MarketSnapshot) -> set[str]:
@@ -209,10 +395,24 @@ def _keyword_aliases(keyword: str) -> set[str]:
 def _parse_optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value.strip())
+    raise TypeError(f"expected int-like value, got {type(value).__name__}")
 
 
 def _parse_optional_float(value: object) -> float | None:
     if value in (None, ""):
         return None
-    return float(value)
+    if isinstance(value, bool):
+        return float(int(value))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        return float(value.strip())
+    raise TypeError(f"expected float-like value, got {type(value).__name__}")

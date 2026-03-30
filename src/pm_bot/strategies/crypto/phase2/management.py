@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import datetime, timedelta
+from typing import Mapping
 
 from pm_bot.core.research_types import FairValueEstimate
-from pm_bot.core.types import SignalSide
+from pm_bot.core.types import Category, SignalSide
 from pm_bot.runtime.state import ClosedTrade, PendingOrderState, PositionState
+from pm_bot.strategies.common import parse_float
 from pm_bot.strategies.crypto.phase2.models import (
     CryptoExecutionFeedback,
     CryptoExitDecision,
@@ -28,8 +30,13 @@ def build_position_intent(
     entry_fill_source: str | None = None,
 ) -> CryptoPositionIntent:
     observed_probability = fair_value.observed_probability or fair_value.fair_probability
-    expected_holding_seconds = fair_value.half_life_seconds or 24 * 3600
-    net_edge_bps = float(fair_value.supporting_values.get("net_edge_bps", 0.0))
+    effective_horizon_days = parse_float(fair_value.supporting_values, "effective_horizon_days") or 0.0
+    expected_holding_seconds = _expected_holding_seconds(
+        fair_value=fair_value,
+        classification=classification,
+        effective_horizon_days=effective_horizon_days,
+    )
+    net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
     return CryptoPositionIntent(
         market_id=fair_value.market_id,
         token_id=token_id,
@@ -37,6 +44,7 @@ def build_position_intent(
         entry_side=classification.side,
         expected_exit_mode=classification.expected_exit_mode,
         expected_holding_seconds=expected_holding_seconds,
+        effective_horizon_days=effective_horizon_days,
         entry_fair_probability=fair_value.fair_probability,
         entry_observed_probability=observed_probability,
         net_edge_bps=net_edge_bps,
@@ -99,8 +107,8 @@ def evaluate_exit(
     holding_seconds = max(0.0, (as_of - intent.created_at).total_seconds())
     if holding_seconds < min_holding_seconds_before_exit:
         return _hold_decision(fair_value.market_id, "fresh_fill_hold", remaining_edge_bps)
-    expected_holding_seconds = max(intent.expected_holding_seconds, 1)
-    if execution_max_holding_seconds is not None:
+    expected_holding_seconds: float = max(float(intent.expected_holding_seconds), 1.0)
+    if execution_max_holding_seconds is not None and intent.effective_horizon_days < 7.0:
         expected_holding_seconds = min(expected_holding_seconds, max(execution_max_holding_seconds, 1.0))
     holding_fraction = holding_seconds / expected_holding_seconds
     time_stop_triggered = holding_seconds >= (expected_holding_seconds * max_holding_multiplier)
@@ -163,6 +171,23 @@ def evaluate_exit(
             rationale_tags=("time_stop",),
         )
     return _hold_decision(fair_value.market_id, "hold", remaining_edge_bps)
+
+
+def _expected_holding_seconds(
+    *,
+    fair_value: FairValueEstimate,
+    classification: CryptoSignalClassification,
+    effective_horizon_days: float,
+) -> int:
+    base_holding_seconds = fair_value.half_life_seconds or 24 * 3600
+    horizon_floor_seconds = 0
+    if effective_horizon_days >= 180:
+        horizon_floor_seconds = 7 * 24 * 3600 if classification.expected_exit_mode == "time_decay_or_resolution" else 12 * 3600
+    elif effective_horizon_days >= 30:
+        horizon_floor_seconds = 3 * 24 * 3600 if classification.expected_exit_mode == "time_decay_or_resolution" else 6 * 3600
+    elif effective_horizon_days >= 7:
+        horizon_floor_seconds = 24 * 3600 if classification.expected_exit_mode == "time_decay_or_resolution" else 2 * 3600
+    return max(int(base_holding_seconds), horizon_floor_seconds)
 
 
 def update_reentry_state(
@@ -259,6 +284,38 @@ def summarize_execution_feedback(
     )
 
 
+def summarize_execution_feedback_from_events(
+    *,
+    recent_events: Sequence[Mapping[str, object]],
+    pending_orders: Sequence[PendingOrderState],
+) -> CryptoExecutionFeedback:
+    closed_trades: list[ClosedTrade] = []
+    for event in recent_events:
+        event_type = str(event.get("event_type", "")).strip()
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        closed_at = _parse_datetime(payload.get("closed_at"))
+        if closed_at is None:
+            continue
+        closed_trades.append(
+            ClosedTrade(
+                market_id=str(payload.get("market_id", "")),
+                token_id=str(payload.get("token_id", "")),
+                category=Category.CRYPTO,
+                strategy_id=str(payload.get("strategy_id", "")),
+                realized_pnl=float(payload.get("realized_pnl", 0.0) or 0.0),
+                fees_paid=float(payload.get("fees_paid", 0.0) or 0.0),
+                closed_at=closed_at,
+                intent_id=(str(payload.get("intent_id")) if payload.get("intent_id") not in (None, "") else None),
+            )
+        )
+    return summarize_execution_feedback(
+        pending_orders=pending_orders,
+        closed_trades=tuple(closed_trades),
+    )
+
+
 def _hold_decision(market_id: str, reason: str, remaining_edge_bps: float) -> CryptoExitDecision:
     return CryptoExitDecision(
         market_id=market_id,
@@ -269,3 +326,10 @@ def _hold_decision(market_id: str, reason: str, remaining_edge_bps: float) -> Cr
         remaining_edge_bps=remaining_edge_bps,
         rationale_tags=(reason,),
     )
+
+
+def _parse_datetime(raw_value: object) -> datetime | None:
+    if not isinstance(raw_value, str) or not raw_value:
+        return None
+    parsed = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+    return parsed

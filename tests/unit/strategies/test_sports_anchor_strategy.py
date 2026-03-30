@@ -85,3 +85,34 @@ def test_sports_anchor_exits_existing_position_before_start() -> None:
     assert len(signals) == 1
     assert signals[0].side == SignalSide.SELL_YES
     assert round(signals[0].target_size or 0.0, 2) == 5.4
+
+
+def test_sports_anchor_applies_preset_registry() -> None:
+    snapshot = _snapshot(
+        market_id="sports-1",
+        metadata={
+            "league": "nba",
+            "market_family": "moneyline",
+            "model_yes_probability": "0.68",
+            "start_time": "2026-03-23T14:00:00Z",
+        },
+        best_bid_yes=0.59,
+        best_ask_yes=0.6,
+    )
+    strategy = SportsAnchorStrategy(
+        {
+            "min_edge_bps": 900,
+            "max_time_to_start_minutes": 240,
+            "preset_registry": {
+                "nba_moneyline_fast": {
+                    "match": {"league": "nba", "market_family": "moneyline", "mode": "pregame"},
+                    "overrides": {"min_edge_bps": 300},
+                }
+            },
+        }
+    )
+
+    signals = asyncio.run(strategy.evaluate(snapshot=snapshot, context={"dashboard_state": _dashboard()}))
+
+    assert len(signals) == 1
+    assert signals[0].diagnostics["sports_preset"] == "nba_moneyline_fast"

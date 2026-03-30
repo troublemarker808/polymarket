@@ -117,6 +117,10 @@ def test_run_sports_phase1_replay_rewrites_attribution_artifact(monkeypatch: pyt
     assert attribution_rows
     assert attribution_rows[0]["market_id"] == "nba-1"
     assert attribution_rows[0]["realized_pnl"] == 0.9
+    assert (tmp_path / "sports-phase1-run" / "sports_market_selection_report.md").exists()
+    assert (tmp_path / "sports-phase1-run" / "sports_closing_line_report.md").exists()
+    assert (tmp_path / "sports-phase1-run" / "sports_event_scorecard_report.md").exists()
+    assert (tmp_path / "sports-phase1-run" / "sports_final_scorecard.md").exists()
 
 
 def _dashboard() -> DashboardState:

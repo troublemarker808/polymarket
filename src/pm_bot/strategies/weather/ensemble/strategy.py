@@ -16,12 +16,30 @@ from pm_bot.strategies.common import (
     parse_probability,
     parse_string_list,
 )
+from pm_bot.strategies.weather.config_registry import (
+    WeatherResolvedConfig,
+    build_weather_preset_rules,
+    resolve_weather_config_for_snapshot,
+)
 
 
 class WeatherEnsembleConfig:
     def __init__(self, config: Mapping[str, Any]) -> None:
         self.min_edge_bps = float(config.get("min_edge_bps", 400))
         self.model_runs_utc = tuple(str(value) for value in config.get("model_runs_utc", ()))
+        self.preset_rules = build_weather_preset_rules(dict(config))
+
+    def resolve(self, snapshot: MarketSnapshot) -> WeatherResolvedConfig:
+        return resolve_weather_config_for_snapshot(
+            base=WeatherResolvedConfig(
+                preset_name="default",
+                min_edge_bps=self.min_edge_bps,
+                model_runs_utc=self.model_runs_utc,
+            ),
+            preset_rules=self.preset_rules,
+            snapshot=snapshot,
+            mode="ensemble",
+        )
 
 
 class WeatherEnsembleStrategy:
@@ -45,8 +63,9 @@ class WeatherEnsembleStrategy:
         fair_probability, model_count = _ensemble_probability(snapshot.metadata)
         if fair_probability is None:
             return []
+        resolved = self.config.resolve(snapshot)
 
-        allowed_runs = self.config.model_runs_utc
+        allowed_runs = resolved.model_runs_utc
         if allowed_runs:
             reported_runs = parse_string_list(snapshot.metadata, "model_runs_utc", "forecast_run_utc")
             if reported_runs and not set(reported_runs).intersection(allowed_runs):
@@ -58,6 +77,7 @@ class WeatherEnsembleStrategy:
                 snapshot=snapshot,
                 fair_probability=fair_probability,
                 position=position,
+                preset_name=resolved.preset_name,
             )
             return [exit_signal] if exit_signal is not None else []
 
@@ -65,6 +85,7 @@ class WeatherEnsembleStrategy:
             snapshot=snapshot,
             fair_probability=fair_probability,
             model_count=model_count,
+            resolved=resolved,
         )
 
     def _entry_signals(
@@ -73,11 +94,12 @@ class WeatherEnsembleStrategy:
         snapshot: MarketSnapshot,
         fair_probability: float,
         model_count: int,
+        resolved: WeatherResolvedConfig,
     ) -> list[StrategySignal]:
         confidence = 0.58 + min(model_count, 5) * 0.04
         if snapshot.best_ask_yes is not None:
             buy_yes_edge_bps = (fair_probability - snapshot.best_ask_yes) * 10000
-            if buy_yes_edge_bps >= self.config.min_edge_bps:
+            if buy_yes_edge_bps >= float(resolved.min_edge_bps or 0.0):
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -90,12 +112,13 @@ class WeatherEnsembleStrategy:
                         edge_bps=buy_yes_edge_bps,
                         generated_at=snapshot.timestamp,
                         rationale_tags=("weather_ensemble", f"models_{model_count}"),
+                        diagnostics={"weather_preset": resolved.preset_name},
                     )
                 ]
 
         if snapshot.best_bid_yes is not None:
             buy_no_edge_bps = (snapshot.best_bid_yes - fair_probability) * 10000
-            if buy_no_edge_bps >= self.config.min_edge_bps:
+            if buy_no_edge_bps >= float(resolved.min_edge_bps or 0.0):
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -108,6 +131,7 @@ class WeatherEnsembleStrategy:
                         edge_bps=buy_no_edge_bps,
                         generated_at=snapshot.timestamp,
                         rationale_tags=("weather_ensemble", f"models_{model_count}"),
+                        diagnostics={"weather_preset": resolved.preset_name},
                     )
                 ]
 
@@ -119,6 +143,7 @@ class WeatherEnsembleStrategy:
         snapshot: MarketSnapshot,
         fair_probability: float,
         position: PositionState,
+        preset_name: str,
     ) -> StrategySignal | None:
         no_token_id = snapshot.metadata.get("no_token_id")
         if position.token_id == snapshot.token_id:
@@ -158,6 +183,7 @@ class WeatherEnsembleStrategy:
             target_price=exit_price,
             target_size=target_notional,
             rationale_tags=("weather_ensemble_exit", "edge_normalized"),
+            diagnostics={"weather_preset": preset_name},
         )
 
 

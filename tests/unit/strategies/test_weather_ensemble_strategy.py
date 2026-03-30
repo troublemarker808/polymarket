@@ -70,3 +70,36 @@ def test_weather_ensemble_respects_allowed_model_runs() -> None:
     signals = asyncio.run(strategy.evaluate(snapshot=snapshot, context={"dashboard_state": _dashboard()}))
 
     assert signals == []
+
+
+def test_weather_ensemble_applies_preset_registry() -> None:
+    snapshot = _snapshot(
+        metadata={
+            "ensemble_probabilities": "0.78,0.80,0.76",
+            "forecast_run_utc": "12:00",
+            "event_family": "daily_high_temperature_threshold",
+            "settlement_source": "weather.gov",
+        },
+        best_bid_yes=0.71,
+        best_ask_yes=0.72,
+    )
+    strategy = WeatherEnsembleStrategy(
+        {
+            "min_edge_bps": 1200,
+            "preset_registry": {
+                "weather_gov_ensemble": {
+                    "match": {
+                        "event_family": "daily_high_temperature_threshold",
+                        "settlement_source": "weather.gov",
+                        "mode": "ensemble",
+                    },
+                    "overrides": {"min_edge_bps": 400, "model_runs_utc": ["12:00"]},
+                }
+            },
+        }
+    )
+
+    signals = asyncio.run(strategy.evaluate(snapshot=snapshot, context={"dashboard_state": _dashboard()}))
+
+    assert len(signals) == 1
+    assert signals[0].diagnostics["weather_preset"] == "weather_gov_ensemble"

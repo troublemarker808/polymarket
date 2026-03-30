@@ -7,8 +7,11 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from statistics import mean
+from typing import Any
 
+from pm_bot.core.types import MarketSnapshot
 from pm_bot.research.engine import load_market_snapshots
+from pm_bot.strategies.common import parse_float
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
 
 
@@ -57,7 +60,7 @@ def generate_crypto_signal_report(
     snapshot_path: str | Path | None = None,
     output_dir: str | Path | None = None,
 ) -> CryptoSignalReport:
-    snapshots_by_market_id: dict[str, object] = {}
+    snapshots_by_market_id: dict[str, MarketSnapshot] = {}
     if snapshot_path is not None:
         for snapshot in load_market_snapshots(snapshot_path):
             snapshots_by_market_id[snapshot.market_id] = snapshot
@@ -77,9 +80,9 @@ def generate_crypto_signal_report(
             if not market_id:
                 continue
             normalized = None
-            snapshot = snapshots_by_market_id.get(market_id)
-            if snapshot is not None:
-                normalized = normalize_crypto_market(snapshot)
+            market_snapshot = snapshots_by_market_id.get(market_id)
+            if market_snapshot is not None:
+                normalized = normalize_crypto_market(market_snapshot)
             diagnostics = payload.get("diagnostics", {})
             if not isinstance(diagnostics, dict):
                 diagnostics = {}
@@ -93,10 +96,10 @@ def generate_crypto_signal_report(
                     signal_side=str(payload.get("side", "")),
                     signal_type=str(diagnostics.get("signal_type", "")),
                     execution_route=str(diagnostics.get("execution_route", "")),
-                    fair_probability=float(payload.get("fair_probability", 0.0) or 0.0),
-                    observed_probability=float(diagnostics.get("observed_probability", 0.0) or 0.0),
-                    gross_edge_bps=float(diagnostics.get("gross_edge_bps", 0.0) or 0.0),
-                    net_edge_bps=float(diagnostics.get("net_edge_bps", 0.0) or 0.0),
+                    fair_probability=parse_float(payload, "fair_probability") or 0.0,
+                    observed_probability=parse_float(diagnostics, "observed_probability") or 0.0,
+                    gross_edge_bps=parse_float(diagnostics, "gross_edge_bps") or 0.0,
+                    net_edge_bps=parse_float(diagnostics, "net_edge_bps") or 0.0,
                     target_price=_optional_float(payload.get("target_price")),
                     quote_ttl_seconds=_optional_int(payload.get("quote_ttl_seconds")),
                     generated_at=str(payload.get("generated_at", "")),
@@ -182,16 +185,28 @@ def format_crypto_signal_report(report: CryptoSignalReport) -> str:
 def _optional_float(value: object) -> float | None:
     if value in (None, ""):
         return None
-    return float(value)
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float, str, bytes, bytearray)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
 def _optional_int(value: object) -> int | None:
     if value in (None, ""):
         return None
-    return int(value)
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
 
 
-def _normalize(value):
+def _normalize(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, tuple):

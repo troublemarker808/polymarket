@@ -71,3 +71,33 @@ def test_sports_live_skips_stale_state() -> None:
     signals = asyncio.run(strategy.evaluate(snapshot=snapshot, context={"dashboard_state": _dashboard()}))
 
     assert signals == []
+
+
+def test_sports_live_applies_preset_registry() -> None:
+    snapshot = _snapshot(
+        metadata={
+            "league": "nba",
+            "market_family": "moneyline",
+            "live_yes_probability": "0.70",
+            "live_state_updated_at": "2026-03-23T11:59:56Z",
+        },
+        best_bid_yes=0.62,
+        best_ask_yes=0.63,
+    )
+    strategy = SportsLiveStrategy(
+        {
+            "min_edge_bps": 800,
+            "stale_state_seconds": 5,
+            "preset_registry": {
+                "nba_moneyline_live": {
+                    "match": {"league": "nba", "market_family": "moneyline", "mode": "live"},
+                    "overrides": {"min_edge_bps": 500},
+                }
+            },
+        }
+    )
+
+    signals = asyncio.run(strategy.evaluate(snapshot=snapshot, context={"dashboard_state": _dashboard()}))
+
+    assert len(signals) == 1
+    assert signals[0].diagnostics["sports_preset"] == "nba_moneyline_live"

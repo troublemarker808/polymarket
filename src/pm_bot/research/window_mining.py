@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from collections.abc import Sequence
 from typing import Any
 
 from pm_bot.core.types import MarketSnapshot, OrderBookLevel
@@ -66,12 +67,32 @@ async def mine_fixed_windows(
     window_snapshots: int = 30,
     top_windows: int = 3,
 ) -> WindowMiningReport:
+    snapshots = load_market_snapshots(snapshot_path)
+    return await mine_fixed_windows_from_snapshots(
+        snapshots=snapshots,
+        snapshot_label=str(Path(snapshot_path)),
+        event_path=event_path,
+        output_dir=output_dir,
+        window_snapshots=window_snapshots,
+        top_windows=top_windows,
+    )
+
+
+async def mine_fixed_windows_from_snapshots(
+    *,
+    snapshots: Sequence[MarketSnapshot],
+    snapshot_label: str,
+    event_path: str | Path,
+    output_dir: str | Path | None = None,
+    window_snapshots: int = 30,
+    top_windows: int = 3,
+) -> WindowMiningReport:
     if window_snapshots < 3:
         raise ValueError("window_snapshots must be at least 3")
     if top_windows < 1:
         raise ValueError("top_windows must be at least 1")
 
-    snapshots = _chronological_snapshots(load_market_snapshots(snapshot_path))
+    snapshots = _chronological_snapshots(list(snapshots))
     if len(snapshots) < window_snapshots:
         raise ValueError("Snapshot capture is smaller than the requested window size")
     events = _load_eventful_records(event_path)
@@ -123,7 +144,7 @@ async def mine_fixed_windows(
 
     report = WindowMiningReport(
         generated_at=datetime.now(tz=timezone.utc),
-        snapshot_path=str(Path(snapshot_path)),
+        snapshot_path=snapshot_label,
         event_path=str(Path(event_path)),
         output_dir=str(output_root),
         summary_path=str(output_root / "summary.md"),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 import tomllib
 from typing import Any
@@ -38,7 +39,7 @@ def load_config_file(path: str | Path) -> dict[str, Any]:
 
 def load_settings(
     base_config_path: str | Path,
-    category_config_paths: list[str | Path],
+    category_config_paths: Sequence[str | Path],
 ) -> BotSettings:
     base_raw = load_config_file(base_config_path)
     settings = BotSettings.model_validate({**base_raw, "category_configs": {}})

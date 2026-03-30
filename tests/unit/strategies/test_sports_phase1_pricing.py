@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from pm_bot.research.engine import load_market_snapshots
-from pm_bot.strategies.sports.phase1.anchors import apply_anchor_adjustments, estimate_odds_anchor
+from pm_bot.strategies.sports.phase1.anchors import estimate_odds_anchor
 from pm_bot.strategies.sports.phase1.features import build_pregame_features
 from pm_bot.strategies.sports.phase1.normalization import normalize_sports_market
 from pm_bot.strategies.sports.phase1.pricing import (

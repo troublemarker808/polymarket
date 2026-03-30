@@ -23,6 +23,7 @@ from pm_bot.runtime.live_session import (
     LiveSessionStreamError,
     supervise_live_session,
 )
+from pm_bot.runtime.state import HaltReason, RuntimeStatus
 from pm_bot.storage.recorder import InMemoryRecorder, LiveRuntimeRecorder
 
 
@@ -60,11 +61,22 @@ async def _market_stream(snapshot: MarketSnapshot):
     yield snapshot
 
 
+async def _empty_market_stream():
+    if False:
+        yield
+
+
 async def _user_stream(event: UserTradeEvent):
     yield event
 
 
 async def _empty_user_stream():
+    if False:
+        yield
+
+
+async def _hanging_user_stream():
+    await asyncio.Event().wait()
     if False:
         yield
 
@@ -124,6 +136,23 @@ class ReconnectingMarketData:
         self.stream_index += 1
         for snapshot in self.stream_cycles[index]:
             yield snapshot
+
+
+class BootstrapFailingMarketData:
+    def __init__(self, *, seed_snapshots: list[MarketSnapshot]) -> None:
+        self.seed_snapshots = seed_snapshots
+        self.bootstrap_calls = 0
+
+    async def bootstrap_snapshots(self) -> list[MarketSnapshot]:
+        self.bootstrap_calls += 1
+        if self.bootstrap_calls == 1:
+            return list(self.seed_snapshots)
+        raise RuntimeError("bootstrap failed")
+
+    async def stream_from_snapshots(self, snapshots: list[MarketSnapshot], *, include_initial: bool):
+        if include_initial:
+            for snapshot in snapshots:
+                yield snapshot
 
 
 class ReconnectingUserClient:
@@ -401,6 +430,141 @@ def test_supervise_live_session_reconnects_and_aggregates_stats() -> None:
     assert any(event["event_type"] == "live.reconnect" for event in recorder.events)
 
 
+def test_live_session_runner_stops_on_market_limit_without_waiting_for_user_stream() -> None:
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="btc-above",
+        category=Category.CRYPTO,
+        timestamp=datetime(2026, 3, 23, 12, 1, tzinfo=UTC),
+        resolution_time=None,
+        best_bid_yes=0.55,
+        best_ask_yes=0.56,
+        best_bid_no=0.44,
+        best_ask_no=0.45,
+        last_traded_price=0.55,
+        metadata={"no_token_id": "no-token", "condition_id": "0xmarket"},
+    )
+    execution = PolymarketLiveExecutionAdapter(
+        client=FakeLiveClient(),
+        ttl_seconds=15,
+        post_only=False,
+        build_order_args=lambda intent: {
+            "token_id": intent.token_id,
+            "price": intent.price,
+            "size": intent.size,
+            "side": "BUY",
+        },
+        resolve_order_type=lambda tif: tif,
+        user_channel_auth=UserChannelAuth(
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+    )
+    risk_manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    recorder = InMemoryRecorder()
+    router = EventRouter(
+        market_data=InMemoryMarketDataAdapter([snapshot]),
+        strategies=[],
+        risk_manager=risk_manager,
+        execution=execution,
+        recorder=recorder,
+        default_order_size=5.0,
+    )
+    runner = LiveSessionRunner(
+        router=router,
+        execution=execution,
+        risk_manager=risk_manager,
+        recorder=recorder,
+        market_snapshots=(snapshot,),
+        market_snapshot_stream=_market_stream(snapshot),
+        user_event_stream=_hanging_user_stream(),
+    )
+
+    stats = asyncio.run(asyncio.wait_for(runner.run(max_market_snapshots=1), timeout=1.0))
+
+    assert stats.market_snapshots_processed == 1
+    assert stats.user_events_processed == 0
+    assert stats.reconnects == 0
+
+
+def test_supervise_live_session_returns_when_market_limit_is_reached_before_user_limit() -> None:
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="btc-above",
+        category=Category.CRYPTO,
+        timestamp=datetime(2026, 3, 23, 12, 1, tzinfo=UTC),
+        resolution_time=None,
+        best_bid_yes=0.55,
+        best_ask_yes=0.56,
+        best_bid_no=0.44,
+        best_ask_no=0.45,
+        last_traded_price=0.55,
+        metadata={"no_token_id": "no-token", "condition_id": "0xmarket"},
+    )
+    execution = PolymarketLiveExecutionAdapter(
+        client=FakeLiveClient(),
+        ttl_seconds=15,
+        post_only=False,
+        build_order_args=lambda intent: {
+            "token_id": intent.token_id,
+            "price": intent.price,
+            "size": intent.size,
+            "side": "BUY",
+        },
+        resolve_order_type=lambda tif: tif,
+        user_channel_auth=UserChannelAuth(
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+    )
+    risk_manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    recorder = InMemoryRecorder()
+    router = EventRouter(
+        market_data=InMemoryMarketDataAdapter([snapshot]),
+        strategies=[],
+        risk_manager=risk_manager,
+        execution=execution,
+        recorder=recorder,
+        default_order_size=5.0,
+    )
+    market_data = ReconnectingMarketData(
+        bootstrap_cycles=[[snapshot], [snapshot]],
+        stream_cycles=[[], [snapshot]],
+    )
+    user_client = ReconnectingUserClient(event_cycles=[[], []])
+
+    stats = asyncio.run(
+        supervise_live_session(
+            market_data=market_data,
+            user_client=user_client,
+            router=router,
+            execution=execution,
+            risk_manager=risk_manager,
+            recorder=recorder,
+            initial_snapshots=[snapshot],
+            max_market_snapshots=1,
+            max_user_events=10,
+            reconnect_delay_seconds=0.0,
+            max_reconnects=1,
+        )
+    )
+
+    assert stats.market_snapshots_processed == 1
+    assert stats.user_events_processed == 0
+    reconnect_events = [event for event in recorder.events if event["event_type"] == "live.reconnect"]
+    assert reconnect_events == []
+
+
 def test_supervise_live_session_without_limits_reconnects_after_clean_stream_end() -> None:
     snapshot = MarketSnapshot(
         market_id="m1",
@@ -474,6 +638,143 @@ def test_supervise_live_session_without_limits_reconnects_after_clean_stream_end
     reconnect_events = [event for event in recorder.events if event["event_type"] == "live.reconnect"]
     assert len(reconnect_events) == 1
     assert reconnect_events[0]["payload"]["reason"] == "stream_ended"
+
+
+def test_live_session_runner_halts_when_market_data_goes_stale() -> None:
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="btc-above",
+        category=Category.CRYPTO,
+        timestamp=datetime(2026, 3, 23, 12, 1, tzinfo=UTC),
+        resolution_time=None,
+        best_bid_yes=0.6,
+        best_ask_yes=0.61,
+        best_bid_no=0.39,
+        best_ask_no=0.4,
+        last_traded_price=0.6,
+        metadata={"no_token_id": "no-token", "condition_id": "0xmarket"},
+    )
+    execution = PolymarketLiveExecutionAdapter(
+        client=FakeLiveClient(),
+        ttl_seconds=15,
+        post_only=False,
+        build_order_args=lambda intent: {
+            "token_id": intent.token_id,
+            "price": intent.price,
+            "size": intent.size,
+            "side": "BUY",
+        },
+        resolve_order_type=lambda tif: tif,
+        user_channel_auth=UserChannelAuth(
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+    )
+    risk_manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    risk_manager.record_data_success(
+        snapshot.timestamp,
+        received_at=datetime.now(tz=timezone.utc) - timedelta(seconds=31),
+    )
+    recorder = InMemoryRecorder()
+    router = EventRouter(
+        market_data=InMemoryMarketDataAdapter([snapshot]),
+        strategies=[],
+        risk_manager=risk_manager,
+        execution=execution,
+        recorder=recorder,
+        default_order_size=5.0,
+    )
+    runner = LiveSessionRunner(
+        router=router,
+        execution=execution,
+        risk_manager=risk_manager,
+        recorder=recorder,
+        market_snapshots=(snapshot,),
+        market_snapshot_stream=_empty_market_stream(),
+        user_event_stream=_empty_user_stream(),
+    )
+
+    stats = asyncio.run(runner.run())
+
+    assert stats.market_snapshots_processed == 0
+    dashboard = risk_manager.dashboard_state()
+    assert dashboard.status == RuntimeStatus.HALTED
+    assert dashboard.halt_reason == HaltReason.STALE_DATA
+    halted_event = next(event for event in recorder.events if event["event_type"] == "runtime.halted")
+    assert halted_event["payload"]["halt_reason"] == "stale_data"
+
+
+def test_supervise_live_session_halts_on_market_data_refresh_failure_when_configured() -> None:
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="btc-above",
+        category=Category.CRYPTO,
+        timestamp=datetime(2026, 3, 23, 12, 1, tzinfo=UTC),
+        resolution_time=None,
+        best_bid_yes=0.55,
+        best_ask_yes=0.56,
+        best_bid_no=0.44,
+        best_ask_no=0.45,
+        last_traded_price=0.55,
+        metadata={"no_token_id": "no-token", "condition_id": "0xmarket"},
+    )
+    execution = PolymarketLiveExecutionAdapter(
+        client=FakeLiveClient(),
+        ttl_seconds=15,
+        post_only=False,
+        build_order_args=lambda intent: {
+            "token_id": intent.token_id,
+            "price": intent.price,
+            "size": intent.size,
+            "side": "BUY",
+        },
+        resolve_order_type=lambda tif: tif,
+        user_channel_auth=UserChannelAuth(
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+    )
+    risk_manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    recorder = InMemoryRecorder()
+    router = EventRouter(
+        market_data=InMemoryMarketDataAdapter([snapshot]),
+        strategies=[],
+        risk_manager=risk_manager,
+        execution=execution,
+        recorder=recorder,
+        default_order_size=5.0,
+    )
+
+    stats = asyncio.run(
+        supervise_live_session(
+            market_data=BootstrapFailingMarketData(seed_snapshots=[snapshot]),
+            user_client=ReconnectingUserClient(event_cycles=[[], []]),
+            router=router,
+            execution=execution,
+            risk_manager=risk_manager,
+            recorder=recorder,
+            reconnect_delay_seconds=0.0,
+            max_reconnects=1,
+        )
+    )
+
+    assert stats.market_snapshots_processed == 1
+    dashboard = risk_manager.dashboard_state()
+    assert dashboard.status == RuntimeStatus.HALTED
+    assert dashboard.halt_reason == HaltReason.DATA_SOURCE_FAILURE
+    event_types = [event["event_type"] for event in recorder.events]
+    assert "market_data.failure" in event_types
+    assert "runtime.halted" in event_types
 
 
 def test_live_session_runner_surfaces_stream_errors() -> None:

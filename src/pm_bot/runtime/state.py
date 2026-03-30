@@ -36,6 +36,9 @@ class PositionState:
     average_entry_price: float | None = None
     mark_price: float | None = None
     unrealized_pnl: float = 0.0
+    exposure_group_id: str | None = None
+    thesis_group_id: str | None = None
+    underlying_group_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -59,6 +62,9 @@ class PendingOrderState:
     time_in_force: str = "GTC"
     quote_ttl_seconds: int | None = None
     signal_edge_bps: float | None = None
+    exposure_group_id: str | None = None
+    thesis_group_id: str | None = None
+    underlying_group_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -92,6 +98,11 @@ class DashboardState:
     last_data_success_at: datetime | None = None
     last_data_error: str | None = None
     consecutive_data_failures: int = 0
+    last_order_rejection_reason: str | None = None
+    last_order_rejection_market_id: str | None = None
+    last_order_rejection_exposure_group_id: str | None = None
+    last_order_rejection_thesis_group_id: str | None = None
+    last_order_rejection_underlying_group_id: str | None = None
     issue_codes: tuple[str, ...] = ()
 
 
@@ -106,6 +117,7 @@ class RuntimeState:
     orders_today: int = 0
     open_positions: dict[str, PositionState] = field(default_factory=dict)
     pending_orders: dict[str, PendingOrderState] = field(default_factory=dict)
+    processed_trade_ids: tuple[str, ...] = ()
     status: RuntimeStatus = RuntimeStatus.RUNNING
     halt_reason: HaltReason = HaltReason.NONE
     halt_message: str | None = None
@@ -113,6 +125,11 @@ class RuntimeState:
     last_data_success_at: datetime | None = None
     last_data_error: str | None = None
     consecutive_data_failures: int = 0
+    last_order_rejection_reason: str | None = None
+    last_order_rejection_market_id: str | None = None
+    last_order_rejection_exposure_group_id: str | None = None
+    last_order_rejection_thesis_group_id: str | None = None
+    last_order_rejection_underlying_group_id: str | None = None
     day_started_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
@@ -177,6 +194,11 @@ class RuntimeState:
             last_data_success_at=self.last_data_success_at,
             last_data_error=self.last_data_error,
             consecutive_data_failures=self.consecutive_data_failures,
+            last_order_rejection_reason=self.last_order_rejection_reason,
+            last_order_rejection_market_id=self.last_order_rejection_market_id,
+            last_order_rejection_exposure_group_id=self.last_order_rejection_exposure_group_id,
+            last_order_rejection_thesis_group_id=self.last_order_rejection_thesis_group_id,
+            last_order_rejection_underlying_group_id=self.last_order_rejection_underlying_group_id,
             issue_codes=tuple(issue_codes),
         )
 
@@ -198,6 +220,7 @@ def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
             order_id: pending_order_state_to_dict(order)
             for order_id, order in state.pending_orders.items()
         },
+        "processed_trade_ids": list(state.processed_trade_ids),
         "status": state.status.value,
         "halt_reason": state.halt_reason.value,
         "halt_message": state.halt_message,
@@ -207,6 +230,11 @@ def runtime_state_to_dict(state: RuntimeState) -> dict[str, Any]:
         ),
         "last_data_error": state.last_data_error,
         "consecutive_data_failures": state.consecutive_data_failures,
+        "last_order_rejection_reason": state.last_order_rejection_reason,
+        "last_order_rejection_market_id": state.last_order_rejection_market_id,
+        "last_order_rejection_exposure_group_id": state.last_order_rejection_exposure_group_id,
+        "last_order_rejection_thesis_group_id": state.last_order_rejection_thesis_group_id,
+        "last_order_rejection_underlying_group_id": state.last_order_rejection_underlying_group_id,
         "day_started_at": state.day_started_at.isoformat(),
         "updated_at": state.updated_at.isoformat(),
     }
@@ -229,6 +257,11 @@ def runtime_state_from_dict(payload: dict[str, Any]) -> RuntimeState:
             order_id: pending_order_state_from_dict(order_payload)
             for order_id, order_payload in dict(payload.get("pending_orders", {})).items()
         },
+        processed_trade_ids=tuple(
+            str(trade_id)
+            for trade_id in list(payload.get("processed_trade_ids", ()))
+            if str(trade_id).strip()
+        ),
         status=RuntimeStatus(str(payload.get("status", RuntimeStatus.RUNNING.value))),
         halt_reason=HaltReason(str(payload.get("halt_reason", HaltReason.NONE.value))),
         halt_message=payload.get("halt_message"),
@@ -236,6 +269,11 @@ def runtime_state_from_dict(payload: dict[str, Any]) -> RuntimeState:
         last_data_success_at=_parse_datetime(payload.get("last_data_success_at")),
         last_data_error=payload.get("last_data_error"),
         consecutive_data_failures=int(payload.get("consecutive_data_failures", 0)),
+        last_order_rejection_reason=payload.get("last_order_rejection_reason"),
+        last_order_rejection_market_id=payload.get("last_order_rejection_market_id"),
+        last_order_rejection_exposure_group_id=payload.get("last_order_rejection_exposure_group_id"),
+        last_order_rejection_thesis_group_id=payload.get("last_order_rejection_thesis_group_id"),
+        last_order_rejection_underlying_group_id=payload.get("last_order_rejection_underlying_group_id"),
         day_started_at=(
             _parse_datetime(payload.get("day_started_at"))
             or _parse_datetime(payload.get("updated_at"))
@@ -256,6 +294,9 @@ def position_state_to_dict(position: PositionState) -> dict[str, Any]:
         "average_entry_price": position.average_entry_price,
         "mark_price": position.mark_price,
         "unrealized_pnl": position.unrealized_pnl,
+        "exposure_group_id": position.exposure_group_id,
+        "thesis_group_id": position.thesis_group_id,
+        "underlying_group_id": position.underlying_group_id,
         "opened_at": position.opened_at.isoformat(),
     }
 
@@ -275,6 +316,9 @@ def pending_order_state_to_dict(order: PendingOrderState) -> dict[str, Any]:
         "requested_notional": order.requested_notional,
         "quote_ttl_seconds": order.quote_ttl_seconds,
         "signal_edge_bps": order.signal_edge_bps,
+        "exposure_group_id": order.exposure_group_id,
+        "thesis_group_id": order.thesis_group_id,
+        "underlying_group_id": order.underlying_group_id,
         "matched_shares": order.matched_shares,
         "matched_notional": order.matched_notional,
         "fees_paid": order.fees_paid,
@@ -296,6 +340,21 @@ def position_state_from_dict(payload: dict[str, Any]) -> PositionState:
         average_entry_price=_parse_optional_float(payload.get("average_entry_price")),
         mark_price=_parse_optional_float(payload.get("mark_price")),
         unrealized_pnl=float(payload.get("unrealized_pnl", 0.0)),
+        exposure_group_id=(
+            str(payload["exposure_group_id"])
+            if payload.get("exposure_group_id") not in (None, "")
+            else None
+        ),
+        thesis_group_id=(
+            str(payload["thesis_group_id"])
+            if payload.get("thesis_group_id") not in (None, "")
+            else None
+        ),
+        underlying_group_id=(
+            str(payload["underlying_group_id"])
+            if payload.get("underlying_group_id") not in (None, "")
+            else None
+        ),
     )
 
 
@@ -318,6 +377,21 @@ def pending_order_state_from_dict(payload: dict[str, Any]) -> PendingOrderState:
             else None
         ),
         signal_edge_bps=_parse_optional_float(payload.get("signal_edge_bps")),
+        exposure_group_id=(
+            str(payload["exposure_group_id"])
+            if payload.get("exposure_group_id") not in (None, "")
+            else None
+        ),
+        thesis_group_id=(
+            str(payload["thesis_group_id"])
+            if payload.get("thesis_group_id") not in (None, "")
+            else None
+        ),
+        underlying_group_id=(
+            str(payload["underlying_group_id"])
+            if payload.get("underlying_group_id") not in (None, "")
+            else None
+        ),
         matched_shares=float(payload.get("matched_shares", 0.0)),
         matched_notional=float(payload.get("matched_notional", 0.0)),
         fees_paid=float(payload.get("fees_paid", 0.0)),
@@ -338,6 +412,11 @@ def dashboard_state_to_lines(dashboard: DashboardState) -> list[str]:
         f"last_data_success_at={dashboard.last_data_success_at.isoformat() if dashboard.last_data_success_at is not None else ''}",
         f"last_data_error={dashboard.last_data_error or ''}",
         f"consecutive_data_failures={dashboard.consecutive_data_failures}",
+        f"last_order_rejection_reason={dashboard.last_order_rejection_reason or ''}",
+        f"last_order_rejection_market_id={dashboard.last_order_rejection_market_id or ''}",
+        f"last_order_rejection_exposure_group_id={dashboard.last_order_rejection_exposure_group_id or ''}",
+        f"last_order_rejection_thesis_group_id={dashboard.last_order_rejection_thesis_group_id or ''}",
+        f"last_order_rejection_underlying_group_id={dashboard.last_order_rejection_underlying_group_id or ''}",
         f"issue_codes={','.join(dashboard.issue_codes)}",
         f"open_positions={len(dashboard.open_positions)}",
         f"pending_orders={len(dashboard.pending_orders)}",

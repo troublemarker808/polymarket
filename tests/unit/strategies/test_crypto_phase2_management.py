@@ -13,6 +13,7 @@ from pm_bot.strategies.crypto.phase2 import (
     evaluate_exit,
     is_reentry_blocked,
     summarize_execution_feedback,
+    summarize_execution_feedback_from_events,
     update_reentry_state,
 )
 
@@ -36,6 +37,7 @@ def test_build_position_intent_captures_entry_thesis() -> None:
     assert intent.signal_type == "repricing_edge"
     assert intent.expected_exit_mode == "fair_value_reversion"
     assert intent.expected_holding_seconds == 3600
+    assert intent.effective_horizon_days == 0.0
 
 
 def test_evaluate_exit_triggers_fair_value_exit_for_buy_yes_position() -> None:
@@ -192,6 +194,90 @@ def test_evaluate_exit_caps_expected_holding_seconds_for_execution_time_scale() 
 
     assert exit_decision.should_exit
     assert exit_decision.reason == "stale_position_cleanup"
+
+
+def test_build_position_intent_raises_holding_window_for_long_horizon_market() -> None:
+    fair_value = FairValueEstimate(
+        market_id="btc-dip-50000",
+        category=Category.CRYPTO,
+        fair_probability=0.34,
+        confidence=0.75,
+        half_life_seconds=3600,
+        observed_probability=0.31,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model", "surface_consistency"),
+        supporting_values={
+            "net_edge_bps": 300.0,
+            "gross_edge_bps": 420.0,
+            "effective_horizon_days": 120.0,
+        },
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    created_at = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-dip-50000-no",
+        created_at=created_at,
+    )
+
+    assert intent.expected_exit_mode == "fair_value_reversion"
+    assert intent.effective_horizon_days == 120.0
+    assert intent.expected_holding_seconds == 6 * 3600
+
+
+def test_evaluate_exit_does_not_apply_minute_cap_to_long_horizon_market() -> None:
+    fair_value = FairValueEstimate(
+        market_id="btc-dip-50000",
+        category=Category.CRYPTO,
+        fair_probability=0.34,
+        confidence=0.75,
+        half_life_seconds=3600,
+        observed_probability=0.31,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model", "surface_consistency"),
+        supporting_values={
+            "net_edge_bps": 300.0,
+            "gross_edge_bps": 420.0,
+            "effective_horizon_days": 120.0,
+        },
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    created_at = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-dip-50000-yes",
+        created_at=created_at,
+    )
+    position = PositionState(
+        market_id="btc-dip-50000",
+        token_id="btc-dip-50000-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2.execution",
+        notional=5.0,
+        opened_at=created_at,
+        shares=14.4,
+        average_entry_price=0.31,
+        mark_price=0.331,
+    )
+
+    exit_decision = evaluate_exit(
+        fair_value=fair_value,
+        position=position,
+        intent=intent,
+        best_bid_yes=0.331,
+        best_bid_no=0.669,
+        as_of=created_at + timedelta(minutes=2),
+        execution_max_holding_seconds=60.0,
+        max_holding_multiplier=1.0,
+        aging_start_fraction=0.5,
+        stale_start_fraction=1.0,
+    )
+
+    assert not exit_decision.should_exit
+    assert exit_decision.reason == "hold"
 
 
 def test_evaluate_exit_does_not_stop_out_on_single_tick_drop_for_coarse_market() -> None:
@@ -403,6 +489,57 @@ def test_summarize_execution_feedback_recommends_more_passive_after_loss_cluster
     assert feedback.repeated_expiration_rate == 0.5
     assert feedback.repeated_stop_out_rate == 0.6667
     assert feedback.recommended_route_bias == "more_passive"
+
+
+def test_summarize_execution_feedback_from_events_recommends_more_aggressive_after_expiry_cluster() -> None:
+    recent_events = (
+        {
+            "event_type": "order.submitted",
+            "payload": {
+                "order_id": "o1",
+                "market_id": "eth-dip-1000",
+                "token_id": "eth-dip-1000-yes",
+                "strategy_id": "crypto.phase2",
+                "side": "buy_yes",
+                "price": 0.11,
+                "size": 10.0,
+                "notional": 1.1,
+                "quote_ttl_seconds": 60,
+                "created_at": "2026-03-28T00:00:00+00:00",
+                "updated_at": "2026-03-28T00:00:00+00:00",
+            },
+        },
+        {
+            "event_type": "order.expired",
+            "payload": {
+                "order_id": "o1",
+                "market_id": "eth-dip-1000",
+                "token_id": "eth-dip-1000-yes",
+                "strategy_id": "crypto.phase2",
+                "side": "buy_yes",
+                "limit_price": 0.11,
+                "requested_shares": 10.0,
+                "requested_notional": 1.1,
+                "quote_ttl_seconds": 60,
+                "updated_at": "2026-03-28T00:01:00+00:00",
+                "created_at": "2026-03-28T00:00:00+00:00",
+                "status": "expired",
+            },
+        },
+    )
+
+    feedback = summarize_execution_feedback_from_events(
+        recent_events=recent_events,
+        pending_orders=(
+            _pending_order("o1", ttl=60, matched_shares=0.0, status="expired"),
+            _pending_order("o2", ttl=60, matched_shares=0.0, status="expired"),
+            _pending_order("o3", ttl=60, matched_shares=0.0, status="expired"),
+        ),
+    )
+
+    assert feedback.maker_fill_rate == 0.0
+    assert feedback.repeated_expiration_rate == 1.0
+    assert feedback.recommended_route_bias == "more_aggressive"
 
 
 def _fair_value(case_key: str) -> FairValueEstimate:

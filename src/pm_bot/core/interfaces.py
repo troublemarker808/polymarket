@@ -13,7 +13,7 @@ from pm_bot.runtime.state import ClosedTrade, DashboardState, PendingOrderState,
 class MarketDataAdapter(Protocol):
     """Normalized read-only interface for market and external feature inputs."""
 
-    async def stream_snapshots(self) -> AsyncIterator[MarketSnapshot]:
+    def stream_snapshots(self) -> AsyncIterator[MarketSnapshot]:
         ...
 
 

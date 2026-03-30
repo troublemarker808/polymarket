@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 import httpx
 
 from pm_bot.adapters.polymarket.clob_client import (
+    ClobOrderBook,
     ClobPublicClient,
     ClobSnapshotEnricher,
     enrich_snapshot_with_order_book,
@@ -103,3 +104,30 @@ def test_clob_snapshot_enricher_fetches_public_book() -> None:
     best_ask = asyncio.run(run())
 
     assert best_ask == 0.15
+
+
+def test_clob_public_client_falls_back_to_individual_book_fetch_when_batch_400s() -> None:
+    payload = _book_payload()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/books":
+            return httpx.Response(status_code=400, json={"error": "bad batch"})
+        if request.url.path == "/book":
+            return httpx.Response(status_code=200, json=payload)
+        raise AssertionError(f"unexpected path: {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    client = ClobPublicClient(
+        client=httpx.AsyncClient(
+            base_url="https://clob.polymarket.com",
+            transport=transport,
+        )
+    )
+
+    async def run() -> list[ClobOrderBook]:
+        return await client.fetch_order_books(["token-a", "token-b"])
+
+    books = asyncio.run(run())
+
+    assert len(books) == 2
+    assert all(book.best_ask == 0.15 for book in books)

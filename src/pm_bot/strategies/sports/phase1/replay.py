@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from pm_bot.core.research_types import FairValueEstimate
-from pm_bot.core.types import Category
+from pm_bot.core.types import Category, MarketSnapshot
 from pm_bot.research import run_phase1_replay
 from pm_bot.research.engine import load_market_snapshots
 from pm_bot.research.phase1_artifacts import write_phase1_artifacts
@@ -17,6 +17,12 @@ from pm_bot.strategies.sports.phase1.pricing import (
     estimate_line_dislocation,
     estimate_pregame_fair_value,
     to_fair_value_estimate,
+)
+from pm_bot.strategies.sports.phase1.final_report import generate_sports_final_scorecard
+from pm_bot.strategies.sports.phase1.reports import (
+    generate_sports_closing_line_report,
+    generate_sports_event_scorecard_report,
+    generate_sports_market_selection_report,
 )
 
 
@@ -48,6 +54,23 @@ async def run_sports_phase1_replay(
         fair_values=fair_values,
         attribution_rows=attribution_rows,
     )
+    if output_dir is not None:
+        generate_sports_market_selection_report(
+            snapshot_path=snapshot_path,
+            output_dir=output_dir,
+        )
+        generate_sports_closing_line_report(
+            snapshot_path=snapshot_path,
+            output_dir=output_dir,
+        )
+        generate_sports_event_scorecard_report(
+            snapshot_path=snapshot_path,
+            output_dir=output_dir,
+        )
+        generate_sports_final_scorecard(
+            snapshot_path=snapshot_path,
+            output_dir=output_dir,
+        )
     return fair_values
 
 
@@ -56,7 +79,7 @@ def compute_sports_phase1_fair_values(
     snapshot_path: str | Path,
 ) -> tuple[FairValueEstimate, ...]:
     snapshots = load_market_snapshots(snapshot_path)
-    latest_by_market: dict[str, object] = {}
+    latest_by_market: dict[str, MarketSnapshot] = {}
     for snapshot in snapshots:
         if snapshot.category != Category.SPORTS:
             continue

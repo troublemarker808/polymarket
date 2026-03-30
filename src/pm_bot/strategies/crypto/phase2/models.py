@@ -47,6 +47,7 @@ class CryptoPositionIntent:
     entry_side: SignalSide
     expected_exit_mode: str
     expected_holding_seconds: int
+    effective_horizon_days: float
     entry_fair_probability: float
     entry_observed_probability: float
     net_edge_bps: float

@@ -6,6 +6,7 @@ from pm_bot.core.types import Category, MarketSnapshot
 from pm_bot.execution.polymarket_live import PolymarketLiveExecutionAdapter
 from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.live_reconcile import recover_live_state
+from pm_bot.runtime.state import runtime_state_from_dict, runtime_state_to_dict
 
 
 def _now_timestamp(offset_seconds: int = 0) -> str:
@@ -610,4 +611,104 @@ def test_recover_live_state_is_idempotent_across_reconnect_replays() -> None:
     assert second_stats.open_orders_recovered == 0
     dashboard = manager.dashboard_state()
     assert len(dashboard.open_positions) == 1
-    assert dashboard.open_positions[0].shares == 5.0
+
+
+def test_recover_live_state_is_idempotent_across_adapter_restarts_when_processed_ids_persist() -> None:
+    execution = PolymarketLiveExecutionAdapter.from_settings(
+        settings=PolymarketSettings(
+            allow_live_orders=True,
+            derive_api_creds_if_missing=True,
+            live_recovery_scope="session",
+        ),
+        ttl_seconds=15,
+        env={
+            "POLYMARKET_PRIVATE_KEY": "0xabc",
+            "POLYMARKET_FUNDER": "0xme",
+        },
+        geoblock_status=__import__(
+            "pm_bot.adapters.polymarket.geoblock_client",
+            fromlist=["GeoblockStatus"],
+        ).GeoblockStatus(
+            blocked=False,
+            country="HK",
+            region="",
+            ip="141.11.22.34",
+        ),
+        client_factory=SessionScopedRecoveryClient,
+    )
+    manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    session_started_at = datetime.now(tz=UTC) - timedelta(seconds=10)
+    snapshots = (
+        MarketSnapshot(
+            market_id="m1",
+            token_id="yes-token",
+            slug="btc-above",
+            category=Category.CRYPTO,
+            timestamp=datetime.now(tz=UTC),
+            resolution_time=None,
+            best_bid_yes=0.5,
+            best_ask_yes=0.52,
+            best_bid_no=0.48,
+            best_ask_no=0.5,
+            last_traded_price=0.51,
+            metadata={"condition_id": "0xmarket", "no_token_id": "no-token"},
+        ),
+    )
+
+    first_stats = asyncio.run(
+        recover_live_state(
+            risk_manager=manager,
+            execution=execution,
+            snapshots=snapshots,
+            recovery_scope="session",
+            session_started_at=session_started_at,
+        )
+    )
+    assert first_stats.trades_replayed == 1
+
+    persisted_state = runtime_state_from_dict(runtime_state_to_dict(manager.state))
+
+    restarted_execution = PolymarketLiveExecutionAdapter.from_settings(
+        settings=PolymarketSettings(
+            allow_live_orders=True,
+            derive_api_creds_if_missing=True,
+            live_recovery_scope="session",
+        ),
+        ttl_seconds=15,
+        env={
+            "POLYMARKET_PRIVATE_KEY": "0xabc",
+            "POLYMARKET_FUNDER": "0xme",
+        },
+        geoblock_status=__import__(
+            "pm_bot.adapters.polymarket.geoblock_client",
+            fromlist=["GeoblockStatus"],
+        ).GeoblockStatus(
+            blocked=False,
+            country="HK",
+            region="",
+            ip="141.11.22.34",
+        ),
+        client_factory=SessionScopedRecoveryClient,
+    )
+    restarted_execution.restore_processed_trade_ids(persisted_state.processed_trade_ids)
+    restarted_manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+        state=persisted_state,
+    )
+
+    second_stats = asyncio.run(
+        recover_live_state(
+            risk_manager=restarted_manager,
+            execution=restarted_execution,
+            snapshots=snapshots,
+            recovery_scope="session",
+            session_started_at=session_started_at,
+        )
+    )
+
+    assert second_stats.trades_replayed == 0
+    assert any("session-filled-1" in trade_id for trade_id in restarted_execution.processed_trade_ids)

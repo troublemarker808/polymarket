@@ -1,0 +1,56 @@
+[app]
+environment = "dev"
+mode = "live"
+log_level = "INFO"
+
+[categories]
+sports = false
+crypto = true
+weather = false
+
+[trading]
+starting_equity = 25.0
+default_order_notional = 5.0
+default_quote_ttl_seconds = 20
+paper_place_latency_ms = 250
+paper_cancel_latency_ms = 250
+paper_replace_latency_ms = 250
+paper_fee_bps = 0.0
+paper_taker_slippage_bps = 20.0
+max_notional_per_market = 5.0
+max_notional_per_exposure_group = 12.0
+max_notional_per_thesis_group = 12.0
+max_notional_per_underlying_group = 12.0
+max_notional_per_category = 12.0
+max_total_gross_notional = 18.0
+max_concurrent_positions = 2
+max_positions_per_market = 1
+daily_order_soft_limit = 12
+daily_order_hard_limit = 80
+live_allowed_categories = ["crypto"]
+
+[risk]
+max_daily_drawdown_pct = 40.0
+max_consecutive_losses = 40
+max_open_orders = 4
+open_order_replacement_min_edge_improvement_bps = 50.0
+kill_switch_on_stale_data_seconds = 30
+manual_resume_required = true
+halt_on_data_source_failure = true
+
+[polymarket]
+api_url = "https://clob.polymarket.com"
+gamma_url = "https://gamma-api.polymarket.com"
+market_ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+user_ws_url = "wss://ws-subscriptions-clob.polymarket.com/ws/user"
+chain_id = 137
+signature_type = 1
+allow_live_orders = true
+derive_api_creds_if_missing = true
+post_only_live_orders = false
+private_key_env = "POLYMARKET_PRIVATE_KEY"
+api_key_env = "POLYMARKET_API_KEY"
+api_secret_env = "POLYMARKET_API_SECRET"
+api_passphrase_env = "POLYMARKET_API_PASSPHRASE"
+funder_env = "POLYMARKET_FUNDER"
+live_recovery_scope = "session"

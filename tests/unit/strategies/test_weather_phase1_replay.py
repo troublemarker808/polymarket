@@ -137,6 +137,10 @@ def test_run_weather_phase1_replay_rewrites_attribution_artifact(
     assert attribution_rows
     assert attribution_rows[0]["market_id"] == "w70"
     assert attribution_rows[0]["realized_pnl"] == 0.45
+    assert (tmp_path / "weather-phase1-run" / "weather_market_selection_report.md").exists()
+    assert (tmp_path / "weather-phase1-run" / "weather_settlement_audit_report.md").exists()
+    assert (tmp_path / "weather-phase1-run" / "weather_run_scorecard_report.md").exists()
+    assert (tmp_path / "weather-phase1-run" / "weather_final_scorecard.md").exists()
 
 
 def _dashboard() -> DashboardState:

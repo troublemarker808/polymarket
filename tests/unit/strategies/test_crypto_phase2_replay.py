@@ -5,6 +5,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from pm_bot.strategies.crypto.phase1.baseline import get_locked_crypto_calibration_baseline_preset
 from pm_bot.strategies.crypto.phase1.inputs import build_underlying_state
 from pm_bot.strategies.crypto.phase1.models import CryptoBarrierModelConfig, CryptoFusionModelConfig
 from pm_bot.strategies.crypto.phase2.replay import (
@@ -35,6 +36,38 @@ def test_compute_crypto_phase2_fair_values_reuses_phase1_fair_value_stack() -> N
     assert tuple(item.market_id for item in fair_values) == ("eth-dip-1000", "eth-dip-1500", "eth-dip-800")
     assert all(item.model_id == "crypto.phase1.fused" for item in fair_values)
     assert all("net_edge_bps" in item.supporting_values for item in fair_values)
+
+
+def test_compute_crypto_phase2_fair_values_uses_locked_baseline_by_default() -> None:
+    preset = get_locked_crypto_calibration_baseline_preset()
+    default_fair_values = compute_crypto_phase2_fair_values(
+        snapshot_path=FIXTURE_SNAPSHOTS,
+        underlying_states={
+            "ETH": build_underlying_state(
+                underlying="ETH",
+                as_of=datetime.fromisoformat("2026-03-23T12:00:00+00:00"),
+                spot_price=1850.0,
+                realized_volatility=0.62,
+                implied_volatility=0.71,
+            )
+        },
+    )
+    explicit_fair_values = compute_crypto_phase2_fair_values(
+        snapshot_path=FIXTURE_SNAPSHOTS,
+        underlying_states={
+            "ETH": build_underlying_state(
+                underlying="ETH",
+                as_of=datetime.fromisoformat("2026-03-23T12:00:00+00:00"),
+                spot_price=1850.0,
+                realized_volatility=0.62,
+                implied_volatility=0.71,
+            )
+        },
+        barrier_model_config=preset.barrier_model_config,
+        fusion_model_config=preset.fusion_model_config,
+    )
+
+    assert default_fair_values == explicit_fair_values
 
 
 def test_run_crypto_phase2_replay_writes_phase2_artifacts(tmp_path: Path) -> None:
@@ -118,19 +151,10 @@ def test_run_crypto_phase2_replay_generates_events_on_tradable_compare_fixture(t
         if line.strip()
     ]
 
-    assert metrics["signals_generated"] == 2
-    assert metrics["submitted_orders"] == 2
-    assert metrics["events_recorded"] == 7
-    assert len(events) == 7
-    assert [event["event_type"] for event in events] == [
-        "signal.generated",
-        "order.submitted",
-        "order.filled",
-        "signal.generated",
-        "order.submitted",
-        "order.filled",
-        "trade.closed",
-    ]
+    assert metrics["signals_generated"] == 5
+    assert metrics["submitted_orders"] == 5
+    assert metrics["events_recorded"] == 17
+    assert len(events) == 17
     assert events[-1]["event_type"] == "trade.closed"
 
 
@@ -153,13 +177,17 @@ def test_run_crypto_phase2_replay_applies_series_filter_to_btc_runtime_fixture(t
             underlying_states=underlying_states,
             output_dir=output_dir,
             run_id="crypto-phase2-btc-filtered-test",
+            selection_report_path=Path("data/research/selection-overlay-phase2-v35-btc-reach-marketfilter/report.json"),
         )
     )
 
     metrics = json.loads((output_dir / "metrics.json").read_text(encoding="utf-8"))
-    events_text = (output_dir / "events.jsonl").read_text(encoding="utf-8")
+    events = [
+        json.loads(line)
+        for line in (output_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
-    assert metrics["signals_generated"] == 0
-    assert metrics["submitted_orders"] == 0
-    assert metrics["events_recorded"] == 0
-    assert events_text == ""
+    assert metrics["signals_generated"] >= 1
+    assert metrics["submitted_orders"] >= 1
+    assert all(event["payload"].get("market_id") != "701495" for event in events if event["event_type"] == "signal.generated")

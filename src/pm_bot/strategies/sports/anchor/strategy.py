@@ -7,6 +7,11 @@ from typing import Any
 
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
 from pm_bot.runtime.state import PositionState
+from pm_bot.strategies.sports.config_registry import (
+    SportsResolvedConfig,
+    build_sports_preset_rules,
+    resolve_sports_config_for_snapshot,
+)
 from pm_bot.strategies.common import (
     current_position,
     dashboard_state,
@@ -21,6 +26,20 @@ class SportsAnchorConfig:
         self.min_edge_bps = float(config.get("min_edge_bps", 300))
         self.max_time_to_start_minutes = int(config.get("max_time_to_start_minutes", 1440))
         self.cancel_before_start_minutes = int(config.get("cancel_before_start_minutes", 5))
+        self.preset_rules = build_sports_preset_rules(dict(config))
+
+    def resolve(self, snapshot: MarketSnapshot) -> SportsResolvedConfig:
+        return resolve_sports_config_for_snapshot(
+            base=SportsResolvedConfig(
+                preset_name="default",
+                min_edge_bps=self.min_edge_bps,
+                max_time_to_start_minutes=self.max_time_to_start_minutes,
+                cancel_before_start_minutes=self.cancel_before_start_minutes,
+            ),
+            preset_rules=self.preset_rules,
+            snapshot=snapshot,
+            mode="pregame",
+        )
 
 
 class SportsAnchorStrategy:
@@ -64,6 +83,7 @@ class SportsAnchorStrategy:
         minutes_to_start = (start_time - snapshot.timestamp).total_seconds() / 60
         if minutes_to_start <= 0:
             return []
+        resolved = self.config.resolve(snapshot)
 
         position = current_position(snapshot=snapshot, dashboard=dashboard)
         if position is not None:
@@ -71,17 +91,19 @@ class SportsAnchorStrategy:
                 snapshot=snapshot,
                 fair_probability=fair_probability,
                 position=position,
-                force_exit=minutes_to_start <= self.config.cancel_before_start_minutes,
+                force_exit=minutes_to_start <= float(resolved.cancel_before_start_minutes or 0),
+                preset_name=resolved.preset_name,
             )
             return [exit_signal] if exit_signal is not None else []
 
-        if minutes_to_start > self.config.max_time_to_start_minutes:
+        if minutes_to_start > float(resolved.max_time_to_start_minutes or 0):
             return []
 
         return self._entry_signals(
             snapshot=snapshot,
             fair_probability=fair_probability,
             minutes_to_start=minutes_to_start,
+            resolved=resolved,
         )
 
     def _entry_signals(
@@ -90,11 +112,12 @@ class SportsAnchorStrategy:
         snapshot: MarketSnapshot,
         fair_probability: float,
         minutes_to_start: float,
+        resolved: SportsResolvedConfig,
     ) -> list[StrategySignal]:
         confidence = _confidence(minutes_to_start=minutes_to_start)
         if snapshot.best_ask_yes is not None:
             buy_yes_edge_bps = (fair_probability - snapshot.best_ask_yes) * 10000
-            if buy_yes_edge_bps >= self.config.min_edge_bps:
+            if buy_yes_edge_bps >= resolved.min_edge_bps:
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -107,12 +130,13 @@ class SportsAnchorStrategy:
                         edge_bps=buy_yes_edge_bps,
                         generated_at=snapshot.timestamp,
                         rationale_tags=("sports_anchor", "pregame_model"),
+                        diagnostics={"sports_preset": resolved.preset_name},
                     )
                 ]
 
         if snapshot.best_bid_yes is not None:
             buy_no_edge_bps = (snapshot.best_bid_yes - fair_probability) * 10000
-            if buy_no_edge_bps >= self.config.min_edge_bps:
+            if buy_no_edge_bps >= resolved.min_edge_bps:
                 return [
                     StrategySignal(
                         strategy_id=self.strategy_id,
@@ -125,6 +149,7 @@ class SportsAnchorStrategy:
                         edge_bps=buy_no_edge_bps,
                         generated_at=snapshot.timestamp,
                         rationale_tags=("sports_anchor", "pregame_model"),
+                        diagnostics={"sports_preset": resolved.preset_name},
                     )
                 ]
 
@@ -137,6 +162,7 @@ class SportsAnchorStrategy:
         fair_probability: float,
         position: PositionState,
         force_exit: bool,
+        preset_name: str,
     ) -> StrategySignal | None:
         no_token_id = snapshot.metadata.get("no_token_id")
         if position.token_id == snapshot.token_id:
@@ -155,7 +181,8 @@ class SportsAnchorStrategy:
             return None
 
         edge_remaining_bps = (fair_exit_price - exit_price) * 10000
-        if not force_exit and edge_remaining_bps > (self.config.min_edge_bps / 2):
+        resolved = self.config.resolve(snapshot)
+        if not force_exit and edge_remaining_bps > (resolved.min_edge_bps / 2):
             return None
 
         shares = position.shares or 0.0
@@ -177,6 +204,7 @@ class SportsAnchorStrategy:
             target_price=exit_price,
             target_size=target_notional,
             rationale_tags=("sports_anchor_exit", rationale),
+            diagnostics={"sports_preset": preset_name},
         )
 
 

@@ -96,6 +96,8 @@ def test_event_router_runs_one_signal_through_paper_execution() -> None:
     assert order_ids == ["paper-1"]
     submitted = next(event for event in router.recorder.events if event["event_type"] == "order.submitted")
     assert submitted["payload"]["intent_id"] == "intent-00000001"
+    assert submitted["payload"]["rationale_tags"] == []
+    assert submitted["payload"]["diagnostics"] == {}
 
 
 def test_event_router_replaces_pending_order_when_higher_priority_signal_arrives() -> None:

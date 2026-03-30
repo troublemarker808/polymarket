@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pm_bot.core.types import MarketSnapshot
@@ -62,7 +63,7 @@ async def sync_paper_execution_state(
     return update
 
 
-def _advance_trading_day(*, risk_manager: RiskManager, timestamp) -> bool:
+def _advance_trading_day(*, risk_manager: RiskManager, timestamp: datetime) -> bool:
     advance = getattr(risk_manager, "advance_trading_day", None)
     if callable(advance):
         return bool(advance(timestamp))
@@ -80,7 +81,7 @@ async def _record(
 
 def order_payload_from_match_event(
     *,
-    order,
+    order: object,
     snapshot: MarketSnapshot,
     match_event: PaperMatchEvent,
 ) -> dict[str, object]:

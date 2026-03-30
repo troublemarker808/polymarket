@@ -2,20 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pm_bot.config.loader import load_settings_from_directory
 from pm_bot.core.settings import BotSettings, CategoryRuntimeConfig
-from pm_bot.core.types import Category, MarketSnapshot
+from pm_bot.core.types import MarketSnapshot
 from pm_bot.research.autoresearch import (
     AutoresearchReport,
     generate_autoresearch_report,
     write_autoresearch_report,
 )
 from pm_bot.research.engine import load_market_snapshots, run_replay_snapshots
+from pm_bot.research.window_mining import WindowMiningReport, mine_fixed_windows_from_snapshots
+
+if TYPE_CHECKING:
+    from pm_bot.strategies.crypto.phase1.models import CryptoUnderlyingState
 
 
 @dataclass(slots=True, frozen=True)
@@ -24,6 +29,18 @@ class DatasetSplit:
     snapshot_count: int
     started_at: datetime | None
     ended_at: datetime | None
+    source: str
+    source_name: str
+    labels: tuple[str, ...]
+    score: float | None
+    source_snapshot_path: str
+    source_event_path: str | None
+
+
+@dataclass(slots=True, frozen=True)
+class _PreparedDatasetSplit:
+    metadata: DatasetSplit
+    snapshots: tuple[MarketSnapshot, ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -71,6 +88,9 @@ class FixedWindowExperimentReport:
     snapshot_path: str
     output_dir: str
     summary_path: str
+    window_selection_mode: str
+    window_selection_reason: str
+    mining_summary_path: str | None
     dataset_splits: tuple[DatasetSplit, ...]
     baseline_classification: str
     rewritten_objective: str
@@ -95,6 +115,9 @@ async def run_fixed_window_experiments(
     mode: str = "replay",
     limit: int | None = None,
     underlying_state_path: str | Path | None = None,
+    event_path: str | Path | None = None,
+    window_snapshots: int = 30,
+    top_windows: int = 3,
 ) -> FixedWindowExperimentReport:
     snapshots = load_market_snapshots(snapshot_path)
     if limit is not None:
@@ -112,7 +135,15 @@ async def run_fixed_window_experiments(
         from pm_bot.strategies.crypto.phase1.state_loader import load_underlying_states
 
         underlying_states = load_underlying_states(underlying_state_path)
-    split_payloads = _split_snapshots(snapshots)
+    prepared_splits, window_selection_mode, window_selection_reason, mining_summary_path = await _prepare_dataset_splits(
+        snapshots=snapshots,
+        snapshot_path=snapshot_path,
+        event_path=event_path,
+        output_dir=output_root,
+        window_snapshots=window_snapshots,
+        top_windows=top_windows,
+    )
+    split_payloads = {prepared.metadata.name: list(prepared.snapshots) for prepared in prepared_splits}
 
     baseline_candidate = ExperimentCandidate(
         name="baseline",
@@ -200,7 +231,10 @@ async def run_fixed_window_experiments(
         snapshot_path=str(Path(snapshot_path)),
         output_dir=str(output_root),
         summary_path=str(output_root / "summary.md"),
-        dataset_splits=tuple(_describe_splits(split_payloads)),
+        window_selection_mode=window_selection_mode,
+        window_selection_reason=window_selection_reason,
+        mining_summary_path=mining_summary_path,
+        dataset_splits=tuple(prepared.metadata for prepared in prepared_splits),
         baseline_classification=baseline_train_report.classification,
         rewritten_objective=baseline_train_report.rewritten_objective,
         score_formula=baseline_train_report.score_formula,
@@ -225,6 +259,10 @@ def format_fixed_window_report(report: FixedWindowExperimentReport) -> str:
             f"mode={report.mode}",
             f"snapshot_path={report.snapshot_path}",
             f"output_dir={report.output_dir}",
+            f"window_selection_mode={report.window_selection_mode}",
+            f"window_selection_reason={report.window_selection_reason}",
+            f"mining_summary_path={report.mining_summary_path or ''}",
+            f"dataset_split_sources={_format_split_sources(report.dataset_splits)}",
             f"baseline_classification={report.baseline_classification}",
             f"validation_winner={report.validation_winner}",
             f"promoted_winner={report.promoted_winner}",
@@ -255,7 +293,7 @@ async def _run_candidate(
     output_dir: Path,
     mode: str,
     tunable_parameters: tuple[str, ...] | None = None,
-    underlying_states: dict[str, object] | None = None,
+    underlying_states: dict[str, CryptoUnderlyingState] | None = None,
 ) -> ExperimentRunArtifact:
     if tunable_parameters is not None:
         _validate_overrides(candidate.overrides, tunable_parameters)
@@ -355,19 +393,146 @@ def _split_snapshots(snapshots: list[MarketSnapshot]) -> dict[str, list[MarketSn
     }
 
 
-def _describe_splits(split_payloads: dict[str, list[MarketSnapshot]]) -> list[DatasetSplit]:
-    described: list[DatasetSplit] = []
+async def _prepare_dataset_splits(
+    *,
+    snapshots: list[MarketSnapshot],
+    snapshot_path: str | Path,
+    event_path: str | Path | None,
+    output_dir: Path,
+    window_snapshots: int,
+    top_windows: int,
+) -> tuple[tuple[_PreparedDatasetSplit, ...], str, str, str | None]:
+    chronological = _chronological_prepared_splits(
+        snapshots=snapshots,
+        snapshot_path=snapshot_path,
+        event_path=event_path,
+    )
+    if event_path is None:
+        return (
+            chronological,
+            "chronological_baseline",
+            "No event log was provided, so fixed-window experiments use a chronological split of the full capture.",
+            None,
+        )
+
+    resolved_window_snapshots = max(3, min(window_snapshots, len(snapshots)))
+    try:
+        mining_report = await mine_fixed_windows_from_snapshots(
+            snapshots=snapshots,
+            snapshot_label=str(Path(snapshot_path)),
+            event_path=event_path,
+            output_dir=output_dir / "mined-windows",
+            window_snapshots=resolved_window_snapshots,
+            top_windows=top_windows,
+        )
+    except ValueError as exc:
+        return (
+            chronological,
+            "chronological_baseline_fallback",
+            f"Eventful-window mining could not promote any fixed window: {exc}",
+            None,
+        )
+
+    mined = _mined_prepared_splits(mining_report=mining_report)
+    if len(mined) >= 3:
+        return (
+            mined[:3],
+            "eventful_mined",
+            "Train, validation, and holdout splits were promoted from mined eventful windows.",
+            mining_report.summary_path,
+        )
+
+    mixed = list(mined)
+    used_names = {item.metadata.name for item in mixed}
+    for baseline in chronological:
+        if baseline.metadata.name in used_names:
+            continue
+        mixed.append(baseline)
+        if len(mixed) >= 3:
+            break
+    mixed.sort(key=lambda item: ("train", "validation", "holdout").index(item.metadata.name))
+    return (
+        tuple(mixed[:3]),
+        "eventful_mined_mixed",
+        "Mined eventful windows were used where available, with chronological baseline fallbacks for the remaining splits.",
+        mining_report.summary_path,
+    )
+
+
+def _chronological_prepared_splits(
+    *,
+    snapshots: list[MarketSnapshot],
+    snapshot_path: str | Path,
+    event_path: str | Path | None,
+) -> tuple[_PreparedDatasetSplit, ...]:
+    split_payloads = _split_snapshots(snapshots)
+    prepared: list[_PreparedDatasetSplit] = []
     for name in ("train", "validation", "holdout"):
-        snapshots = split_payloads[name]
-        described.append(
-            DatasetSplit(
-                name=name,
-                snapshot_count=len(snapshots),
-                started_at=(snapshots[0].timestamp if snapshots else None),
-                ended_at=(snapshots[-1].timestamp if snapshots else None),
+        split_snapshots = tuple(split_payloads[name])
+        prepared.append(
+            _PreparedDatasetSplit(
+                metadata=_dataset_split_metadata(
+                    name=name,
+                    snapshots=split_snapshots,
+                    source="chronological_baseline",
+                    source_name="chronological-baseline",
+                    labels=("baseline-chronological",),
+                    score=None,
+                    source_snapshot_path=str(Path(snapshot_path)),
+                    source_event_path=(str(Path(event_path)) if event_path is not None else None),
+                ),
+                snapshots=split_snapshots,
             )
         )
-    return described
+    return tuple(prepared)
+
+
+def _mined_prepared_splits(*, mining_report: WindowMiningReport) -> tuple[_PreparedDatasetSplit, ...]:
+    prepared: list[_PreparedDatasetSplit] = []
+    split_names = ("train", "validation", "holdout")
+    for name, window in zip(split_names, mining_report.mined_windows, strict=False):
+        split_snapshots = tuple(load_market_snapshots(window.snapshot_path))
+        prepared.append(
+            _PreparedDatasetSplit(
+                metadata=_dataset_split_metadata(
+                    name=name,
+                    snapshots=split_snapshots,
+                    source="mined_window",
+                    source_name=window.name,
+                    labels=window.labels,
+                    score=window.score,
+                    source_snapshot_path=window.snapshot_path,
+                    source_event_path=window.event_path,
+                ),
+                snapshots=split_snapshots,
+            )
+        )
+    return tuple(prepared)
+
+
+def _dataset_split_metadata(
+    *,
+    name: str,
+    snapshots: Sequence[MarketSnapshot],
+    source: str,
+    source_name: str,
+    labels: tuple[str, ...],
+    score: float | None,
+    source_snapshot_path: str,
+    source_event_path: str | None,
+) -> DatasetSplit:
+    return DatasetSplit(
+        name=name,
+        snapshot_count=len(snapshots),
+        started_at=(snapshots[0].timestamp if snapshots else None),
+        ended_at=(snapshots[-1].timestamp if snapshots else None),
+        source=source,
+        source_name=source_name,
+        labels=labels,
+        score=score,
+        source_snapshot_path=source_snapshot_path,
+        source_event_path=source_event_path,
+    )
 
 
 def _default_candidates(*, classification: str, settings: BotSettings) -> tuple[ExperimentCandidate, ...]:
@@ -377,7 +542,6 @@ def _default_candidates(*, classification: str, settings: BotSettings) -> tuple[
     maker = _strategy_config(settings, "maker")
     spread = int(float(maker.get("min_spread_bps", 100)))
     quote_ttl = int(maker.get("quote_ttl_seconds", 10))
-    cooldown = int(maker.get("market_cooldown_seconds", 20))
     failure_cooldown = int(maker.get("failure_cooldown_seconds", 0))
     requote = int(float(maker.get("min_requote_edge_improvement_bps", 50)))
     failure_reentry = int(float(maker.get("failure_reentry_edge_improvement_bps", requote)))
@@ -476,12 +640,8 @@ def _default_phase2_candidates(*, classification: str, settings: BotSettings) ->
     maker_edge = float(phase2.get("maker_min_edge_bps", 100.0))
     resolution_edge = float(phase2.get("resolution_maker_min_edge_bps", 150.0))
     maker_aggressiveness = float(phase2.get("maker_aggressiveness", 1.0))
-    high_edge_taker = float(phase2.get("high_edge_taker_min_edge_bps", 2000.0))
-    high_edge_spread = float(phase2.get("high_edge_taker_max_spread_bps", 100.0))
     taker_premium = float(phase2.get("taker_max_entry_premium_bps", 750.0))
     entry_cooldown = float(phase2.get("entry_repost_cooldown_seconds", 120.0))
-    min_holding = float(phase2.get("min_holding_seconds_before_exit", 1.0))
-    adverse_fill_remaining_edge = float(phase2.get("adverse_fill_max_remaining_edge_bps", 150.0))
 
     if classification == "execution-bound":
         return (
@@ -671,6 +831,9 @@ def _render_fixed_window_report(report: FixedWindowExperimentReport) -> str:
         f"- mode: {report.mode}",
         f"- snapshot_path: {report.snapshot_path}",
         f"- output_dir: {report.output_dir}",
+        f"- window_selection_mode: {report.window_selection_mode}",
+        f"- window_selection_reason: {report.window_selection_reason}",
+        f"- mining_summary_path: {report.mining_summary_path or ''}",
         f"- baseline_classification: {report.baseline_classification}",
         f"- validation_winner: {report.validation_winner}",
         f"- promoted_winner: {report.promoted_winner}",
@@ -685,8 +848,11 @@ def _render_fixed_window_report(report: FixedWindowExperimentReport) -> str:
     ]
     for split in report.dataset_splits:
         lines.append(
-            f"- {split.name}: {split.snapshot_count} snapshots ({_format_dt(split.started_at)} -> {_format_dt(split.ended_at)})"
+            f"- {split.name}: {split.snapshot_count} snapshots ({_format_dt(split.started_at)} -> {_format_dt(split.ended_at)}), "
+            f"source={split.source}, source_name={split.source_name}, score={_format_optional_score(split.score)}, labels={','.join(split.labels) or 'none'}"
         )
+        lines.append(f"  source_snapshot_path: {split.source_snapshot_path}")
+        lines.append(f"  source_event_path: {split.source_event_path or ''}")
 
     lines.extend(
         [
@@ -847,3 +1013,16 @@ def _format_promotion_score_line(results: tuple[ExperimentRunArtifact, ...]) -> 
 
 def _format_dt(value: datetime | None) -> str:
     return "" if value is None else value.isoformat()
+
+
+def _format_optional_score(value: float | None) -> str:
+    return "" if value is None else f"{value:.2f}"
+
+
+def _format_split_sources(splits: tuple[DatasetSplit, ...]) -> str:
+    if not splits:
+        return ""
+    return ",".join(
+        f"{split.name}:{split.source}:{split.source_name}:{_format_optional_score(split.score)}:{'+'.join(split.labels) or 'none'}"
+        for split in splits
+    )

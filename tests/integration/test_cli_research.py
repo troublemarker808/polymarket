@@ -133,6 +133,7 @@ def test_cli_crypto_calibration_experiments_runs_against_fixed_split(tmp_path: P
     )
 
     assert "Crypto Calibration Experiments" in completed.stdout
+    assert "Promotion Decision" in completed.stdout
     assert "aggregate_score" in completed.stdout
     assert (output_dir / "experiments.json").exists()
     assert (output_dir / "experiments.md").exists()
@@ -291,7 +292,7 @@ def test_cli_crypto_phase2_suite_runs_end_to_end(tmp_path: Path) -> None:
     )
 
     assert "Crypto Phase 2 Suite" in completed.stdout
-    assert "skip_series_keys: none" in completed.stdout
+    assert "blocked_series_keys: none" in completed.stdout
     assert (output_dir / "suite.json").exists()
     assert (output_dir / "suite.md").exists()
     assert (output_dir / "selection" / "summary.md").exists()

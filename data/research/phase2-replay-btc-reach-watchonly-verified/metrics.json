@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/research-crypto-phase2-v1",
+  "events_recorded": 0,
+  "generated_at": "2026-03-27T15:17:25.892000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 0
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\phase2-replay-btc-reach-watchonly-verified",
+  "processed_snapshots": 24,
+  "run_id": "crypto-phase2-cli",
+  "signals_generated": 0,
+  "signals_rejected": 0,
+  "snapshot_path": "tests\\fixtures\\crypto_phase2\\btc_runtime_ladder_window.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 0
+  },
+  "submitted_orders": 0,
+  "today_pnl": 0.0,
+  "total_equity": 1000.0
+}

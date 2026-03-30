@@ -8,8 +8,12 @@ from typing import Any
 
 from pm_bot.core.interfaces import RiskManager
 from pm_bot.core.types import Category, MarketSnapshot
+from pm_bot.execution.exposure_keys import derive_exposure_keys
 from pm_bot.execution.order_tracker import OrderLifecycleStatus
-from pm_bot.execution.polymarket_live import PolymarketLiveExecutionAdapter
+from pm_bot.execution.polymarket_live import (
+    PolymarketLiveExecutionAdapter,
+    canonical_trade_fingerprint,
+)
 from pm_bot.runtime.live_sync import sync_live_execution_state
 
 
@@ -69,6 +73,9 @@ async def recover_live_state(
         if _restore_open_order(raw_order=raw_order, execution=execution, snapshot_index=snapshot_index):
             open_orders_recovered += 1
 
+    state = getattr(risk_manager, "state", None)
+    if state is not None:
+        state.processed_trade_ids = tuple(sorted(execution.processed_trade_ids))
     marked_positions = await sync_live_execution_state(
         risk_manager=risk_manager,
         execution=execution,
@@ -124,6 +131,13 @@ def _restore_open_order(
         requested_shares=original_size,
         requested_notional=original_size * price,
         quote_ttl_seconds=None,
+        exposure_group_id=_snapshot_exposure_group_id(snapshot),
+        thesis_group_id=_snapshot_thesis_group_id(
+            snapshot,
+            trade_side=raw_order.get("side"),
+            token_id=asset_id,
+        ),
+        underlying_group_id=_snapshot_underlying_group_id(snapshot),
         matched_shares=size_matched,
         matched_notional=size_matched * price,
         fees_paid=0.0,
@@ -178,6 +192,13 @@ def _replay_trade(
             fee_rate_bps=_parse_optional_float(trade.get("fee_rate_bps")),
             event_time=trade_time,
             last_event="reconcile:trade:taker",
+            exposure_group_id=_snapshot_exposure_group_id(snapshot),
+            thesis_group_id=_snapshot_thesis_group_id(
+                snapshot,
+                trade_side=trade.get("side"),
+                token_id=asset_id,
+            ),
+            underlying_group_id=_snapshot_underlying_group_id(snapshot),
         )
         execution.position_ledger.apply_tracked_order(tracked)
         replayed = True
@@ -217,6 +238,13 @@ def _replay_trade(
             fee_rate_bps=_parse_optional_float(maker_order.get("fee_rate_bps")),
             event_time=trade_time,
             last_event="reconcile:trade:maker",
+            exposure_group_id=_snapshot_exposure_group_id(snapshot),
+            thesis_group_id=_snapshot_thesis_group_id(
+                snapshot,
+                trade_side=maker_order.get("side"),
+                token_id=asset_id,
+            ),
+            underlying_group_id=_snapshot_underlying_group_id(snapshot),
         )
         execution.position_ledger.apply_tracked_order(tracked)
         replayed = True
@@ -248,12 +276,12 @@ def _select_local_maker_orders(
 class _SnapshotIndex:
     def __init__(self, snapshots: tuple[MarketSnapshot, ...]) -> None:
         self._snapshots_by_market_id: dict[str, MarketSnapshot] = {}
-        self.by_condition_id = {
+        self.by_condition_id: dict[str, MarketSnapshot] = {
             snapshot.metadata.get("condition_id", ""): snapshot
             for snapshot in snapshots
             if snapshot.metadata.get("condition_id")
         }
-        self.by_asset_id = {}
+        self.by_asset_id: dict[str, MarketSnapshot] = {}
         for snapshot in snapshots:
             self._register_snapshot(snapshot)
 
@@ -352,18 +380,21 @@ def _parse_timestamp(value: Any) -> datetime | None:
 
 
 def _trade_identifier(trade: dict[str, Any]) -> str:
-    explicit_id = str(trade.get("id") or "").strip()
-    if explicit_id:
-        return explicit_id
-    return "|".join(
-        [
-            str(trade.get("taker_order_id") or ""),
-            str(trade.get("market") or ""),
-            str(trade.get("asset_id") or ""),
-            str(trade.get("price") or ""),
-            str(trade.get("size") or ""),
-            str(trade.get("timestamp") or trade.get("last_update") or trade.get("matchtime") or ""),
-        ]
+    explicit_trade_id = str(
+        trade.get("id")
+        or trade.get("trade_id")
+        or trade.get("match_id")
+        or ""
+    )
+    if explicit_trade_id.strip():
+        return explicit_trade_id.strip()
+    return canonical_trade_fingerprint(
+        trader_side=trade.get("trader_side"),
+        taker_order_id=trade.get("taker_order_id"),
+        asset_id=trade.get("asset_id"),
+        side=trade.get("side"),
+        price=trade.get("price"),
+        size=trade.get("size"),
     )
 
 
@@ -405,3 +436,55 @@ def _order_status(value: Any) -> OrderLifecycleStatus:
     if normalized in {"REJECTED", "FAILED"}:
         return OrderLifecycleStatus.REJECTED
     return OrderLifecycleStatus.UNKNOWN
+
+
+def _snapshot_exposure_group_id(snapshot: MarketSnapshot | None) -> str | None:
+    if snapshot is None:
+        return None
+    return derive_exposure_keys(snapshot).exposure_group_id
+
+
+def _snapshot_thesis_group_id(
+    snapshot: MarketSnapshot | None,
+    *,
+    trade_side: Any = None,
+    token_id: str | None = None,
+) -> str | None:
+    if snapshot is None:
+        return None
+    return derive_exposure_keys(
+        snapshot,
+        side=_normalize_reconcile_side(
+            trade_side=trade_side,
+            snapshot=snapshot,
+            token_id=token_id,
+        ),
+    ).thesis_group_id
+
+
+def _snapshot_underlying_group_id(snapshot: MarketSnapshot | None) -> str | None:
+    if snapshot is None:
+        return None
+    return derive_exposure_keys(snapshot).underlying_group_id
+
+
+def _normalize_reconcile_side(
+    *,
+    trade_side: Any,
+    snapshot: MarketSnapshot | None,
+    token_id: str | None,
+) -> str | None:
+    if trade_side is None or trade_side == "":
+        return None
+    normalized = str(trade_side).strip().upper()
+    is_no_token = bool(
+        snapshot is not None
+        and token_id
+        and token_id == snapshot.metadata.get("no_token_id")
+    )
+    if normalized == "BUY":
+        return "buy_no" if is_no_token else "buy_yes"
+    if normalized == "SELL":
+        return "sell_no" if is_no_token else "sell_yes"
+    lowered = normalized.lower()
+    return lowered or None

@@ -8,10 +8,23 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 from statistics import mean, median
+from typing import Any
 
+from pm_bot.core.research_types import FairValueEstimate
+from pm_bot.core.types import MarketSnapshot
+from pm_bot.strategies.common import parse_float
 from pm_bot.research.engine import load_market_snapshots
+from pm_bot.strategies.crypto.phase1.baseline import (
+    get_locked_crypto_calibration_baseline_preset,
+    resolve_crypto_calibration_model_configs,
+)
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
-from pm_bot.strategies.crypto.phase1.models import CryptoBarrierModelConfig, CryptoFusionModelConfig
+from pm_bot.strategies.crypto.phase1.models import (
+    CryptoBarrierModelConfig,
+    CryptoFusionModelConfig,
+    CryptoMarketDefinition,
+    CryptoUnderlyingState,
+)
 from pm_bot.strategies.crypto.phase1.pricing import observed_mid_probability
 from pm_bot.strategies.crypto.phase1.replay import compute_crypto_phase1_fair_values_from_snapshots
 
@@ -27,12 +40,19 @@ class CryptoCalibrationMarketRow:
     timestamp: datetime
     observed_probability: float
     fair_probability: float
+    barrier_probability: float
+    surface_probability: float | None
     gross_edge_bps: float
     net_edge_bps: float
     final_observed_probability: float
     repricing_bps: float
+    barrier_miss_bps: float
+    surface_miss_bps: float
+    fusion_miss_bps: float
+    late_repricing_miss_bps: float
     repricing_observed: bool
     sign_aligned: bool
+    selection_miss: bool
     confidence: float
 
 
@@ -51,6 +71,11 @@ class CryptoCalibrationDatasetReport:
     mean_abs_gap_bps: float
     mean_net_edge_bps: float
     median_net_edge_bps: float
+    mean_barrier_miss_bps: float
+    mean_surface_miss_bps: float
+    mean_fusion_miss_bps: float
+    mean_late_repricing_miss_bps: float
+    selection_miss_count: int
     calibration_score: float
 
 
@@ -86,11 +111,21 @@ class CryptoCalibrationExperimentResult:
 
 
 @dataclass(slots=True, frozen=True)
+class CryptoCalibrationPromotionDecision:
+    decision: str
+    locked_baseline_candidate: str
+    evaluated_locked_baseline: bool
+    recommended_candidate: str
+    reason: str
+
+
+@dataclass(slots=True, frozen=True)
 class CryptoCalibrationExperimentReport:
     generated_at: datetime
     baseline_candidate: str
     dataset_split: dict[str, str]
     results: tuple[CryptoCalibrationExperimentResult, ...]
+    promotion_decision: CryptoCalibrationPromotionDecision
 
 
 def generate_crypto_calibration_report(
@@ -98,11 +133,15 @@ def generate_crypto_calibration_report(
     train_snapshot_path: str | Path,
     validation_snapshot_path: str | Path,
     holdout_snapshot_path: str | Path,
-    underlying_states,
+    underlying_states: dict[str, CryptoUnderlyingState],
     output_dir: str | Path | None = None,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
 ) -> CryptoCalibrationReport:
+    baseline_preset, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+        barrier_model_config=barrier_model_config,
+        fusion_model_config=fusion_model_config,
+    )
     dataset_specs = {
         "train": Path(train_snapshot_path),
         "validation": Path(validation_snapshot_path),
@@ -116,8 +155,8 @@ def generate_crypto_calibration_report(
             dataset=dataset,
             snapshot_path=snapshot_path,
             underlying_states=underlying_states,
-            barrier_model_config=barrier_model_config,
-            fusion_model_config=fusion_model_config,
+            barrier_model_config=resolved_barrier_model_config,
+            fusion_model_config=resolved_fusion_model_config,
         )
         all_rows.extend(rows)
         dataset_reports.append(_build_dataset_report(dataset=dataset, snapshot_path=snapshot_path, rows=rows))
@@ -153,7 +192,13 @@ def generate_crypto_calibration_report(
             "score = (40 * sign_alignment_rate) + (8 * positive_net_edge_count) "
             "- (0.02 * mean_abs_gap_bps) - (0.03 * max(-mean_net_edge_bps, 0))"
         ),
-        dataset_split={name: str(path) for name, path in dataset_specs.items()},
+        dataset_split={
+            "baseline_preset": baseline_preset.preset_id,
+            "baseline_candidate": baseline_preset.candidate_name,
+            "train": str(dataset_specs["train"]),
+            "validation": str(dataset_specs["validation"]),
+            "holdout": str(dataset_specs["holdout"]),
+        },
         dominant_failure_mechanisms=_describe_failure_mechanisms(tuple(dataset_reports)),
         datasets=tuple(dataset_reports),
         market_rows=tuple(all_rows),
@@ -167,13 +212,13 @@ def build_crypto_calibration_rows(
     *,
     dataset: str,
     snapshot_path: str | Path,
-    underlying_states,
+    underlying_states: dict[str, CryptoUnderlyingState],
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
 ) -> tuple[CryptoCalibrationMarketRow, ...]:
     snapshots = load_market_snapshots(snapshot_path)
-    normalized_by_market_id = {}
-    latest_probability_by_market_id = {}
+    normalized_by_market_id: dict[str, CryptoMarketDefinition] = {}
+    latest_probability_by_market_id: dict[str, float] = {}
     for snapshot in snapshots:
         normalized = normalize_crypto_market(snapshot)
         if normalized is None:
@@ -188,9 +233,9 @@ def build_crypto_calibration_rows(
         normalized_by_market_id[snapshot.market_id] = normalized
         latest_probability_by_market_id[snapshot.market_id] = probability
 
-    first_snapshot_by_market_id = {}
-    cache_by_market_id = {}
-    fair_value_by_market_id = {}
+    first_snapshot_by_market_id: dict[str, MarketSnapshot] = {}
+    cache_by_market_id: dict[str, MarketSnapshot] = {}
+    fair_value_by_market_id: dict[str, FairValueEstimate] = {}
     grouped_market_ids = defaultdict(set)
     for market_id, normalized in normalized_by_market_id.items():
         grouped_market_ids[normalized.series_key].add(market_id)
@@ -238,13 +283,21 @@ def build_crypto_calibration_rows(
         )
         if first_observed_probability is None:
             continue
-        gross_edge_bps = float(fair_value.supporting_values.get("gross_edge_bps", 0.0))
-        net_edge_bps = float(fair_value.supporting_values.get("net_edge_bps", 0.0))
+        gross_edge_bps = parse_float(fair_value.supporting_values, "gross_edge_bps") or 0.0
+        net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
+        barrier_probability = parse_float(fair_value.supporting_values, "barrier_probability") or fair_value.fair_probability
+        surface_probability = parse_float(fair_value.supporting_values, "surface_probability")
         repricing_bps = (final_observed_probability - first_observed_probability) * 10000
         repricing_observed = abs(repricing_bps) >= 1.0
         sign_aligned = False
         if repricing_observed and abs(gross_edge_bps) >= 1.0:
             sign_aligned = (gross_edge_bps > 0 and repricing_bps > 0) or (gross_edge_bps < 0 and repricing_bps < 0)
+        barrier_miss_bps = abs(barrier_probability - final_observed_probability) * 10000
+        surface_reference = surface_probability if surface_probability is not None else barrier_probability
+        surface_miss_bps = abs(surface_reference - final_observed_probability) * 10000
+        fusion_miss_bps = abs(fair_value.fair_probability - final_observed_probability) * 10000
+        late_repricing_miss_bps = abs(repricing_bps - gross_edge_bps)
+        selection_miss = gross_edge_bps > 0 and repricing_observed and not sign_aligned
         rows.append(
             CryptoCalibrationMarketRow(
                 dataset=dataset,
@@ -256,12 +309,19 @@ def build_crypto_calibration_rows(
                 timestamp=first_snapshot.timestamp,
                 observed_probability=first_observed_probability,
                 fair_probability=fair_value.fair_probability,
+                barrier_probability=barrier_probability,
+                surface_probability=surface_probability,
                 gross_edge_bps=gross_edge_bps,
                 net_edge_bps=net_edge_bps,
                 final_observed_probability=final_observed_probability,
                 repricing_bps=repricing_bps,
+                barrier_miss_bps=barrier_miss_bps,
+                surface_miss_bps=surface_miss_bps,
+                fusion_miss_bps=fusion_miss_bps,
+                late_repricing_miss_bps=late_repricing_miss_bps,
                 repricing_observed=repricing_observed,
                 sign_aligned=sign_aligned,
+                selection_miss=selection_miss,
                 confidence=fair_value.confidence,
             )
         )
@@ -287,13 +347,16 @@ def run_crypto_calibration_experiments(
     train_snapshot_path: str | Path,
     validation_snapshot_path: str | Path,
     holdout_snapshot_path: str | Path,
-    underlying_states,
+    underlying_states: dict[str, CryptoUnderlyingState],
     output_dir: str | Path | None = None,
     candidate_set: str = "default",
 ) -> CryptoCalibrationExperimentReport:
     candidates = build_crypto_calibration_candidates(candidate_set)
     results: list[CryptoCalibrationExperimentResult] = []
+    baseline_preset = get_locked_crypto_calibration_baseline_preset()
     dataset_split = {
+        "baseline_preset": baseline_preset.preset_id,
+        "baseline_candidate": baseline_preset.candidate_name,
         "train": str(Path(train_snapshot_path)),
         "validation": str(Path(validation_snapshot_path)),
         "holdout": str(Path(holdout_snapshot_path)),
@@ -323,9 +386,13 @@ def run_crypto_calibration_experiments(
         results.append(result)
     report = CryptoCalibrationExperimentReport(
         generated_at=datetime.now(tz=timezone.utc),
-        baseline_candidate="baseline",
+        baseline_candidate=baseline_preset.candidate_name,
         dataset_split=dataset_split,
         results=tuple(sorted(results, key=lambda item: item.aggregate_score, reverse=True)),
+        promotion_decision=_build_crypto_calibration_promotion_decision(
+            locked_baseline_candidate=baseline_preset.candidate_name,
+            results=tuple(sorted(results, key=lambda item: item.aggregate_score, reverse=True)),
+        ),
     )
     if output_dir is not None:
         write_crypto_calibration_experiment_report(report=report, output_dir=output_dir)
@@ -485,7 +552,21 @@ def format_crypto_calibration_experiment_report(report: CryptoCalibrationExperim
         "",
     ]
     lines.extend(f"- {name}: {path}" for name, path in sorted(report.dataset_split.items()))
-    lines.extend(["", "## Results", ""])
+    lines.extend(
+        [
+            "",
+            "## Promotion Decision",
+            "",
+            f"- decision: {report.promotion_decision.decision}",
+            f"- locked_baseline_candidate: {report.promotion_decision.locked_baseline_candidate}",
+            f"- evaluated_locked_baseline: {str(report.promotion_decision.evaluated_locked_baseline).lower()}",
+            f"- recommended_candidate: {report.promotion_decision.recommended_candidate}",
+            f"- reason: {report.promotion_decision.reason}",
+            "",
+            "## Results",
+            "",
+        ]
+    )
     for item in report.results:
         lines.extend(
             [
@@ -538,6 +619,11 @@ def format_crypto_calibration_report(report: CryptoCalibrationReport) -> str:
                 f"- mean_abs_gap_bps: {dataset.mean_abs_gap_bps:.2f}",
                 f"- mean_net_edge_bps: {dataset.mean_net_edge_bps:.2f}",
                 f"- median_net_edge_bps: {dataset.median_net_edge_bps:.2f}",
+                f"- mean_barrier_miss_bps: {dataset.mean_barrier_miss_bps:.2f}",
+                f"- mean_surface_miss_bps: {dataset.mean_surface_miss_bps:.2f}",
+                f"- mean_fusion_miss_bps: {dataset.mean_fusion_miss_bps:.2f}",
+                f"- mean_late_repricing_miss_bps: {dataset.mean_late_repricing_miss_bps:.2f}",
+                f"- selection_miss_count: {dataset.selection_miss_count}",
                 f"- calibration_score: {dataset.calibration_score:.2f}",
                 "",
             ]
@@ -566,6 +652,11 @@ def _build_dataset_report(
             mean_abs_gap_bps=0.0,
             mean_net_edge_bps=0.0,
             median_net_edge_bps=0.0,
+            mean_barrier_miss_bps=0.0,
+            mean_surface_miss_bps=0.0,
+            mean_fusion_miss_bps=0.0,
+            mean_late_repricing_miss_bps=0.0,
+            selection_miss_count=0,
             calibration_score=0.0,
         )
 
@@ -599,6 +690,11 @@ def _build_dataset_report(
         mean_abs_gap_bps=mean_abs_gap_bps,
         mean_net_edge_bps=mean_net_edge_bps,
         median_net_edge_bps=median(row.net_edge_bps for row in rows),
+        mean_barrier_miss_bps=mean(row.barrier_miss_bps for row in rows),
+        mean_surface_miss_bps=mean(row.surface_miss_bps for row in rows),
+        mean_fusion_miss_bps=mean(row.fusion_miss_bps for row in rows),
+        mean_late_repricing_miss_bps=mean(row.late_repricing_miss_bps for row in rows),
+        selection_miss_count=sum(1 for row in rows if row.selection_miss),
         calibration_score=calibration_score,
     )
 
@@ -625,6 +721,66 @@ def _classify_baseline(datasets: tuple[CryptoCalibrationDatasetReport, ...]) -> 
     return "mixed"
 
 
+def _build_crypto_calibration_promotion_decision(
+    *,
+    locked_baseline_candidate: str,
+    results: tuple[CryptoCalibrationExperimentResult, ...],
+) -> CryptoCalibrationPromotionDecision:
+    locked_baseline_result = next((item for item in results if item.candidate_name == locked_baseline_candidate), None)
+    best_result = results[0] if results else None
+    if best_result is None:
+        return CryptoCalibrationPromotionDecision(
+            decision="keep_locked_baseline",
+            locked_baseline_candidate=locked_baseline_candidate,
+            evaluated_locked_baseline=locked_baseline_result is not None,
+            recommended_candidate=locked_baseline_candidate,
+            reason="No experiment results were produced.",
+        )
+    if locked_baseline_result is None:
+        return CryptoCalibrationPromotionDecision(
+            decision="keep_locked_baseline",
+            locked_baseline_candidate=locked_baseline_candidate,
+            evaluated_locked_baseline=False,
+            recommended_candidate=locked_baseline_candidate,
+            reason="Locked baseline was not included in the candidate set, so this run is exploratory only.",
+        )
+    if best_result.candidate_name == locked_baseline_candidate:
+        return CryptoCalibrationPromotionDecision(
+            decision="keep_locked_baseline",
+            locked_baseline_candidate=locked_baseline_candidate,
+            evaluated_locked_baseline=True,
+            recommended_candidate=locked_baseline_candidate,
+            reason="Locked baseline remains the strongest evaluated candidate on aggregate score.",
+        )
+    if (
+        best_result.accepted
+        and best_result.validation_score >= locked_baseline_result.validation_score
+        and best_result.holdout_score >= locked_baseline_result.holdout_score
+        and best_result.aggregate_score > locked_baseline_result.aggregate_score
+    ):
+        return CryptoCalibrationPromotionDecision(
+            decision="promote_candidate",
+            locked_baseline_candidate=locked_baseline_candidate,
+            evaluated_locked_baseline=True,
+            recommended_candidate=best_result.candidate_name,
+            reason=(
+                f"{best_result.candidate_name} beat the locked baseline on validation, holdout, "
+                "and aggregate score while remaining accepted."
+            ),
+        )
+    return CryptoCalibrationPromotionDecision(
+        decision="keep_locked_baseline",
+        locked_baseline_candidate=locked_baseline_candidate,
+        evaluated_locked_baseline=True,
+        recommended_candidate=locked_baseline_candidate,
+        reason=(
+            f"{best_result.candidate_name} ranked first, but it did not clear the full promotion gate "
+            "against the locked baseline."
+        ),
+    )
+    return "mixed"
+
+
 def _describe_failure_mechanisms(
     datasets: tuple[CryptoCalibrationDatasetReport, ...],
 ) -> tuple[str, ...]:
@@ -643,7 +799,7 @@ def _describe_failure_mechanisms(
     return tuple(failures)
 
 
-def _normalize(value):
+def _normalize(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
     if isinstance(value, dict):

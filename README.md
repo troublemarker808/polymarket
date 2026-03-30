@@ -64,8 +64,24 @@ The repository now includes:
 
 ## Quick Validation
 
+Install the dev validation toolchain once:
+
 ```bash
-python -m pytest
+python -m pip install -e .[dev]
+```
+
+Run the full repository quality gate with one command:
+
+```bash
+python -m pm_bot validate-repo
+```
+
+This command runs `pytest`, `ruff`, and `mypy` in order. If the dev toolchain is
+missing, it fails loudly and tells you to install `.[dev]` instead of silently
+skipping lint or type-checking.
+
+```bash
+python -m pm_bot validate-repo
 python -m pm_bot check-geoblock
 python -m pm_bot validate-config --config-dir configs
 python -m pm_bot validate-live-config --config-dir configs
@@ -73,9 +89,33 @@ python -m pm_bot paper-crypto-once --config-dir configs --limit 25 --event-path 
 python -m pm_bot run-paper-crypto-session --config-dir configs --max-market-snapshots 50 --event-path data/runtime/paper-events.current.jsonl --metrics-path data/runtime/paper-metrics.latest.json
 python -m pm_bot compare-execution-metrics --baseline-metrics-path data/runtime/paper-once-metrics.json --candidate-metrics-path data/runtime/paper-metrics.latest.json
 python -m pm_bot autoresearch-report --metrics-path data/runtime/paper-metrics.latest.json --event-path data/runtime/paper-events.current.jsonl --state-path data/runtime/runtime_state.json --report-path data/runtime/autoresearch.latest.md
+python -m pm_bot multi-board-ops-report --crypto-operator-summary-path data/runtime/crypto-operator-summary.md --sports-scorecard-path data/research/phase1/sports_event_scorecard_report.md --weather-scorecard-path data/research/phase1/weather_run_scorecard_report.md --ops-summary-path data/runtime/multi-board-ops.md
+python -m pm_bot daily-ops-bundle --crypto-operator-summary-path data/runtime/crypto-operator-summary.md --sports-scorecard-path data/research/phase1/sports_event_scorecard_report.md --weather-scorecard-path data/research/phase1/weather_run_scorecard_report.md --daily-bundle-path data/runtime/daily-ops-bundle.md
+python -m pm_bot ops-console --crypto-operator-summary-path data/runtime/crypto-operator-summary.md --sports-scorecard-path data/research/phase1/sports_event_scorecard_report.md --weather-scorecard-path data/research/phase1/weather_run_scorecard_report.md --console-path data/runtime/ops-console.md
+python -m pm_bot ops-control-panel --config-dir configs --state-path data/runtime/runtime_state.json --crypto-operator-summary-path data/runtime/crypto-operator-summary.md --sports-scorecard-path data/research/phase1/sports_event_scorecard_report.md --weather-scorecard-path data/research/phase1/weather_run_scorecard_report.md
+python -m pm_bot scheduled-ops-bundle --crypto-operator-summary-path data/runtime/crypto-operator-summary.md --sports-scorecard-path data/research/phase1/sports_event_scorecard_report.md --weather-scorecard-path data/research/phase1/weather_run_scorecard_report.md --promotion-evidence-stage small_live_stability --promotion-evidence-bundle-paths data/runtime/crypto-bundles/run-001.md data/runtime/crypto-bundles/run-002.md --output-root data/runtime/ops-runs --run-id morning-check
 python -m pm_bot replay --config-dir configs --snapshot-path data/research/sample_snapshots.jsonl
 python -m pm_bot backtest --config-dir configs --snapshot-path data/research/sample_snapshots.jsonl --event-path data/runtime/backtest-events.jsonl
 # reconnects and replays live state until the requested caps are reached
 python -m pm_bot run-live-crypto-session --config-dir configs --max-market-snapshots 10 --max-user-events 10
 python -m pm_bot show-dashboard --config-dir configs
+```
+
+## BTC Shadow Validation Profiles
+
+For BTC shadow validation, do not mix long-horizon thesis markets with short-horizon execution validation in the same profile.
+
+- `configs/profiles/sync-btc-short-shadow-v1`
+  Use this as the primary BTC validation pool. It scans short-horizon BTC price-barrier markets and excludes derivative BTC markets such as volatility, dominance, and premium contracts.
+- `configs/profiles/sync-btc-shadow-v1`
+  Use this as long-horizon thesis observation. It now scans long-horizon BTC price-barrier markets only and is not the main fast alpha validation pool.
+
+Example commands:
+
+```bash
+python -m pm_bot validate-live-config --config-dir configs/profiles/sync-btc-short-shadow-v1
+python -m pm_bot run-sync-crypto-session --config-dir configs/profiles/sync-btc-short-shadow-v1 --underlying-state-path data/research/crypto_underlying_states.json --max-market-snapshots 40 --max-user-events 80
+
+python -m pm_bot validate-live-config --config-dir configs/profiles/sync-btc-shadow-v1
+python -m pm_bot run-sync-crypto-session --config-dir configs/profiles/sync-btc-shadow-v1 --underlying-state-path data/research/crypto_underlying_states.json --max-market-snapshots 40 --max-user-events 80
 ```

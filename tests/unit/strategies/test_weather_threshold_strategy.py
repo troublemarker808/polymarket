@@ -110,3 +110,43 @@ def test_weather_threshold_uses_official_forecast_anchor() -> None:
     assert len(signals) == 1
     assert signals[0].side == SignalSide.BUY_NO
     assert round(signals[0].fair_probability, 2) == 0.4
+
+
+def test_weather_threshold_applies_preset_registry() -> None:
+    snapshot = _snapshot(
+        market_id="w80",
+        threshold="80",
+        question="Will NYC high temperature be above 80F?",
+        best_bid_yes=0.55,
+        best_ask_yes=0.57,
+        metadata={
+            "official_forecast_value": "74",
+            "event_family": "daily_high_temperature_threshold",
+            "settlement_source": "weather.gov",
+        },
+    )
+    strategy = WeatherThresholdStrategy(
+        {
+            "min_strip_inconsistency_bps": 2000,
+            "preset_registry": {
+                "hot_day_threshold": {
+                    "match": {
+                        "event_family": "daily_high_temperature_threshold",
+                        "settlement_source": "weather.gov",
+                        "mode": "threshold",
+                    },
+                    "overrides": {"min_strip_inconsistency_bps": 100},
+                }
+            },
+        }
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={"snapshot_cache": (snapshot,), "dashboard_state": _dashboard()},
+        )
+    )
+
+    assert len(signals) == 1
+    assert signals[0].diagnostics["weather_preset"] == "hot_day_threshold"

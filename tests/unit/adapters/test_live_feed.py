@@ -25,7 +25,11 @@ class FakeGammaClient:
 
 
 class FakeClobEnricher:
+    def __init__(self) -> None:
+        self.last_market_ids: list[str] = []
+
     async def enrich_snapshots(self, snapshots):
+        self.last_market_ids = [snapshot.market_id for snapshot in snapshots]
         enriched = list(snapshots)
         enriched[0] = MarketSnapshot(
             market_id=enriched[0].market_id,
@@ -56,10 +60,12 @@ class FakeEventStream:
 
 
 def test_polymarket_live_market_data_adapter_bootstraps_and_streams_updates() -> None:
+    enricher = FakeClobEnricher()
     adapter = PolymarketLiveMarketDataAdapter(
         gamma_client=FakeGammaClient(),
-        clob_enricher=FakeClobEnricher(),
+        clob_enricher=enricher,
         market_event_stream=FakeEventStream(),
+        snapshot_selector=lambda snapshots: [snapshot for snapshot in snapshots if snapshot.market_id == "824952"],
     )
 
     async def collect():
@@ -77,3 +83,4 @@ def test_polymarket_live_market_data_adapter_bootstraps_and_streams_updates() ->
     assert snapshots[0].best_ask_yes == 0.16
     assert snapshots[1].best_bid_yes == 0.13
     assert snapshots[1].best_ask_yes == 0.17
+    assert enricher.last_market_ids == ["824952"]

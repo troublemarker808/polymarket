@@ -162,6 +162,64 @@ def test_run_fixed_window_experiments_sorts_snapshots_before_splitting(tmp_path:
     assert split_ranges["validation"][1] <= split_ranges["holdout"][0]
 
 
+def test_run_fixed_window_experiments_promotes_mined_windows_when_event_log_is_available(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "window-eventful.jsonl"
+    event_path = tmp_path / "window-eventful.events.jsonl"
+    output_dir = tmp_path / "eventful-experiments"
+    records = []
+    for index in range(18):
+        records.append(
+            {
+                "market_id": f"crypto-{index}",
+                "token_id": f"crypto-{index}-yes",
+                "slug": f"crypto-{index}",
+                "category": "crypto",
+                "timestamp": f"2026-03-23T12:{index:02d}:00Z",
+                "best_bid_yes": 0.5,
+                "best_ask_yes": 0.52,
+                "best_bid_no": 0.48,
+                "best_ask_no": 0.5,
+                "last_traded_price": 0.51,
+                "metadata": {
+                    "reference_yes_probability": "0.53",
+                    "no_token_id": f"crypto-{index}-no",
+                },
+            }
+        )
+    snapshot_path.write_text("\n".join(json.dumps(record) for record in records), encoding="utf-8")
+    event_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"event_type": "order.filled", "payload": {"updated_at": "2026-03-23T12:02:30Z"}}),
+                json.dumps({"event_type": "trade.closed", "payload": {"closed_at": "2026-03-23T12:02:40Z", "net_pnl": 0.1}}),
+                json.dumps({"event_type": "order.canceled", "payload": {"updated_at": "2026-03-23T12:08:30Z", "reason": "open_order_replaced"}}),
+                json.dumps({"event_type": "order.rejected", "payload": {"created_at": "2026-03-23T12:08:40Z", "reason": "daily order hard limit reached"}}),
+                json.dumps({"event_type": "order.partially_filled", "payload": {"updated_at": "2026-03-23T12:14:30Z"}}),
+                json.dumps({"event_type": "trade.closed", "payload": {"closed_at": "2026-03-23T12:14:45Z", "net_pnl": 0.2}}),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = asyncio.run(
+        run_fixed_window_experiments(
+            snapshot_path=snapshot_path,
+            event_path=event_path,
+            config_dir="configs",
+            output_dir=output_dir,
+            window_snapshots=4,
+            top_windows=3,
+        )
+    )
+
+    assert report.window_selection_mode == "eventful_mined"
+    assert Path(report.mining_summary_path or "").exists()
+    assert tuple(split.source for split in report.dataset_splits) == ("mined_window", "mined_window", "mined_window")
+    assert tuple(split.source_name for split in report.dataset_splits) == ("window-01", "window-02", "window-03")
+    assert all(split.score is not None for split in report.dataset_splits)
+    assert all(Path(split.source_snapshot_path).exists() for split in report.dataset_splits)
+
+
 def test_pick_validation_winner_rejects_candidate_that_only_reduces_activity() -> None:
     baseline = ExperimentRunArtifact(
         split_name="validation",

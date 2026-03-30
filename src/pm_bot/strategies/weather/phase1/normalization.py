@@ -120,7 +120,7 @@ def _parse_threshold(snapshot: MarketSnapshot) -> float | None:
     raw_threshold = snapshot.metadata.get("group_item_threshold") or snapshot.metadata.get("threshold")
     if raw_threshold not in (None, ""):
         try:
-            return float(raw_threshold)
+            return float(str(raw_threshold))
         except ValueError:
             return None
     combined = _combined_text(snapshot)

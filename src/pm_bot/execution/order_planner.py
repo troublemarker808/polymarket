@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pm_bot.core.types import MarketSnapshot, OrderAction, OrderIntent, SignalSide, StrategySignal
+from pm_bot.execution.exposure_keys import derive_exposure_keys
 
 
 def signal_to_order_intent(
@@ -41,6 +42,7 @@ def signal_to_order_intent(
     token_id = signal.token_id
     if signal.side in {SignalSide.BUY_NO, SignalSide.SELL_NO}:
         token_id = snapshot.metadata.get("no_token_id", token_id)
+    exposure_keys = derive_exposure_keys(snapshot, side=signal.side)
 
     return OrderIntent(
         strategy_id=signal.strategy_id,
@@ -56,4 +58,7 @@ def signal_to_order_intent(
         notional=notional,
         quote_ttl_seconds=signal.quote_ttl_seconds,
         signal_edge_bps=signal.edge_bps,
+        exposure_group_id=exposure_keys.exposure_group_id,
+        thesis_group_id=exposure_keys.thesis_group_id,
+        underlying_group_id=exposure_keys.underlying_group_id,
     )

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from pm_bot.adapters.polymarket import (
     ClobPublicClient,
@@ -16,11 +16,13 @@ from pm_bot.adapters.polymarket import (
     MarketChannelClient,
     PolymarketLiveMarketDataAdapter,
     UserChannelClient,
+    UserChannelAuth,
     UserChannelEvent,
     UserOrderEvent,
     UserTradeEvent,
 )
 from pm_bot.config.loader import load_settings_from_directory
+from pm_bot.core.settings import TradingSettings
 from pm_bot.core.types import Category, MarketSnapshot, RuntimeMode
 from pm_bot.execution.order_tracker import OrderLifecycleStatus, TrackedOrder
 from pm_bot.execution.factory import build_execution_adapter
@@ -32,9 +34,11 @@ from pm_bot.runtime.execution_artifacts import tracked_order_payload
 from pm_bot.risk.manager import BasicRiskManager
 from pm_bot.runtime.live_reconcile import LiveRecoveryStats, recover_live_state
 from pm_bot.runtime.market_universe import build_snapshot_selector
+from pm_bot.runtime.state import DashboardState, HaltReason, RuntimeStatus
 from pm_bot.runtime.live_sync import sync_live_execution_state
 from pm_bot.storage.recorder import LiveRuntimeRecorder
 from pm_bot.storage.runtime_state_store import JsonRuntimeStateStore
+from pm_bot.strategies.crypto.phase2.runtime_context import CryptoPhase2PaperContextBuilder
 
 if TYPE_CHECKING:
     from pm_bot.core.interfaces import EventRecorder, RiskManager
@@ -47,7 +51,7 @@ class UserEventStream(Protocol):
     def stream_events(
         self,
         *,
-        auth: object,
+        auth: UserChannelAuth,
         markets: Sequence[str] = (),
     ) -> AsyncIterator[UserChannelEvent]:
         ...
@@ -63,6 +67,17 @@ class LiveMarketDataSource(Protocol):
         *,
         include_initial: bool,
     ) -> AsyncIterator[MarketSnapshot]:
+        ...
+
+
+class LiveRuntimeContextBuilder(Protocol):
+    def __call__(
+        self,
+        *,
+        snapshot: MarketSnapshot,
+        snapshots_by_market_id: Mapping[str, MarketSnapshot],
+        recorder: EventRecorder | None,
+    ) -> Mapping[str, object]:
         ...
 
 
@@ -105,6 +120,11 @@ def format_live_session_summary(result: dict[str, object]) -> str:
     metrics = result.get("metrics")
     metrics_map = metrics if isinstance(metrics, Mapping) else {}
     dashboard = result.get("dashboard")
+    dashboard_state = dashboard if isinstance(dashboard, DashboardState) else None
+    trading_settings = result.get("trading_settings")
+    typed_trading_settings = (
+        trading_settings if isinstance(trading_settings, TradingSettings) else None
+    )
     lines = [
         f"processed_snapshots={result['processed_snapshots']}",
         f"user_events_processed={result['user_events_processed']}",
@@ -132,8 +152,13 @@ def format_live_session_summary(result: dict[str, object]) -> str:
         f"market_data_recoveries={metrics_map.get('market_data_recoveries', 0)}",
         f"events_recorded={result['events_recorded']}",
     ]
-    if dashboard is not None:
-        lines.append(render_dashboard(dashboard))
+    if dashboard_state is not None:
+        lines.append(
+            render_dashboard(
+                dashboard_state,
+                trading_settings=typed_trading_settings,
+            )
+        )
     return "\n".join(lines)
 
 
@@ -153,6 +178,7 @@ class LiveSessionRunner:
         summary_every_snapshots: int | None = None,
         session_started_at: datetime | None = None,
         shadow_coordinator: object | None = None,
+        runtime_context_builder: LiveRuntimeContextBuilder | None = None,
     ) -> None:
         self.router = router
         self.execution = execution
@@ -164,6 +190,7 @@ class LiveSessionRunner:
         self.summary_every_snapshots = summary_every_snapshots
         self.session_started_at = session_started_at
         self.shadow_coordinator = shadow_coordinator
+        self.runtime_context_builder = runtime_context_builder
         self.stats = LiveSessionStats()
 
     def current_snapshots(self) -> tuple[MarketSnapshot, ...]:
@@ -188,14 +215,18 @@ class LiveSessionRunner:
                 reconnects=self.stats.reconnects,
             )
         queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+        market_limit_reached = False
+        user_limit_reached = False
 
         async def pump_market() -> None:
+            nonlocal market_limit_reached
             processed = 0
             try:
                 async for snapshot in self.market_snapshot_stream:
                     await queue.put(("market", snapshot))
                     processed += 1
                     if max_market_snapshots is not None and processed >= max_market_snapshots:
+                        market_limit_reached = True
                         break
             except asyncio.CancelledError:
                 raise
@@ -205,12 +236,14 @@ class LiveSessionRunner:
                 await queue.put(("done", "market"))
 
         async def pump_user() -> None:
+            nonlocal user_limit_reached
             processed = 0
             try:
                 async for event in self.user_event_stream:
                     await queue.put(("user", event))
                     processed += 1
                     if max_user_events is not None and processed >= max_user_events:
+                        user_limit_reached = True
                         break
             except asyncio.CancelledError:
                 raise
@@ -222,24 +255,76 @@ class LiveSessionRunner:
         market_task = asyncio.create_task(pump_market())
         user_task = asyncio.create_task(pump_user())
         done_streams = 0
+        market_stream_done = False
+        user_stream_done = False
 
         try:
             while done_streams < 2:
-                kind, payload = await queue.get()
+                if await _halt_if_data_health_breached(
+                    risk_manager=self.risk_manager,
+                    recorder=self.recorder,
+                ):
+                    break
+                poll_timeout = _data_health_poll_interval(self.risk_manager)
+                try:
+                    if poll_timeout is None:
+                        kind, payload = await queue.get()
+                    else:
+                        kind, payload = await asyncio.wait_for(queue.get(), timeout=poll_timeout)
+                except asyncio.TimeoutError:
+                    if _should_stop_after_limit(
+                        queue_empty=queue.empty(),
+                        market_limit_reached=market_limit_reached,
+                        user_limit_reached=user_limit_reached,
+                        market_stream_done=market_stream_done,
+                        user_stream_done=user_stream_done,
+                    ):
+                        break
+                    continue
                 if kind == "done":
+                    if payload == "market":
+                        market_stream_done = True
+                    elif payload == "user":
+                        user_stream_done = True
                     done_streams += 1
+                    if _should_stop_after_limit(
+                        queue_empty=queue.empty(),
+                        market_limit_reached=market_limit_reached,
+                        user_limit_reached=user_limit_reached,
+                        market_stream_done=market_stream_done,
+                        user_stream_done=user_stream_done,
+                    ):
+                        break
                     continue
                 if kind == "error":
+                    if not isinstance(payload, tuple) or len(payload) != 2:
+                        raise RuntimeError("Live session received malformed stream error payload")
                     stream_name, error = payload
-                    assert isinstance(stream_name, str)
-                    assert isinstance(error, Exception)
+                    if not isinstance(stream_name, str) or not isinstance(error, Exception):
+                        raise RuntimeError("Live session received malformed stream error payload")
                     raise LiveSessionStreamError(stream_name) from error
                 if kind == "market":
                     assert isinstance(payload, MarketSnapshot)
                     await self._handle_market_snapshot(payload)
+                    if _should_stop_after_limit(
+                        queue_empty=queue.empty(),
+                        market_limit_reached=market_limit_reached,
+                        user_limit_reached=user_limit_reached,
+                        market_stream_done=market_stream_done,
+                        user_stream_done=user_stream_done,
+                    ):
+                        break
                     continue
                 assert isinstance(payload, (UserOrderEvent, UserTradeEvent))
                 await self._handle_user_event(payload)
+                if _should_stop_after_limit(
+                    queue_empty=queue.empty(),
+                    market_limit_reached=market_limit_reached,
+                    user_limit_reached=user_limit_reached,
+                    market_stream_done=market_stream_done,
+                    user_stream_done=user_stream_done,
+                ):
+                    break
         finally:
             for task in (market_task, user_task):
                 task.cancel()
@@ -255,7 +340,14 @@ class LiveSessionRunner:
             shadow_coordinator=self.shadow_coordinator,
             snapshot=snapshot,
         )
-        submitted = await self.router.run_once(snapshot=snapshot)
+        runtime_context = None
+        if self.runtime_context_builder is not None:
+            runtime_context = self.runtime_context_builder(
+                snapshot=snapshot,
+                snapshots_by_market_id=dict(self.snapshots_by_market_id),
+                recorder=self.recorder,
+            )
+        submitted = await self.router.run_once(snapshot=snapshot, context=runtime_context)
         cancelled_orders = await self.execution.cancel_stale_orders()
         await _shadow_after_market_snapshot(
             shadow_coordinator=self.shadow_coordinator,
@@ -383,6 +475,9 @@ class LiveSessionRunner:
                 for order_id, fill_source in self.execution.tracked_order_ids_for_trade_event(event)
             }
             positions = self.execution.apply_user_trade_event(event)
+            state = getattr(self.risk_manager, "state", None)
+            if state is not None:
+                state.processed_trade_ids = tuple(sorted(self.execution.processed_trade_ids))
             await sync_live_execution_state(
                 risk_manager=self.risk_manager,
                 execution=self.execution,
@@ -460,6 +555,7 @@ async def supervise_live_session(
     recovery_scope: str = "full",
     session_started_at: datetime | None = None,
     shadow_coordinator: object | None = None,
+    runtime_context_builder: LiveRuntimeContextBuilder | None = None,
 ) -> LiveSessionStats:
     current_snapshots = list(initial_snapshots or await market_data.bootstrap_snapshots())
     if current_snapshots:
@@ -504,6 +600,7 @@ async def supervise_live_session(
             summary_every_snapshots=summary_every_snapshots,
             session_started_at=run_started_at,
             shadow_coordinator=shadow_coordinator,
+            runtime_context_builder=runtime_context_builder,
         )
 
         stream_error: LiveSessionStreamError | None = None
@@ -519,6 +616,14 @@ async def supervise_live_session(
 
         aggregate = _merge_stats(aggregate, cycle_stats)
         current_snapshots = list(_merge_snapshots(primary=runner.current_snapshots(), fallback=current_snapshots))
+        if _data_health_halt_reason(risk_manager) is not None:
+            return aggregate
+        if _any_limit_reached(
+            stats=aggregate,
+            max_market_snapshots=max_market_snapshots,
+            max_user_events=max_user_events,
+        ):
+            return aggregate
         if _limits_satisfied(
             stats=aggregate,
             max_market_snapshots=max_market_snapshots,
@@ -562,6 +667,8 @@ async def supervise_live_session(
                 recorder=recorder,
             )
         )
+        if _data_health_halt_reason(risk_manager) is not None:
+            return aggregate
         include_initial = False
 
 
@@ -585,12 +692,14 @@ async def _refresh_snapshots(
     try:
         refreshed = await market_data.bootstrap_snapshots()
     except Exception as exc:
-        _record_data_failure(risk_manager, reason=f"{type(exc).__name__}: {exc}")
+        halt_triggered = _record_data_failure(risk_manager, reason=f"{type(exc).__name__}: {exc}")
         await _record_supervisor_event(
             recorder=recorder,
             event_type="market_data.failure",
             payload={"error": f"{type(exc).__name__}: {exc}"},
         )
+        if halt_triggered:
+            await _record_runtime_halt_event(recorder=recorder, risk_manager=risk_manager)
         if not fallback_snapshots:
             raise
         return tuple(fallback_snapshots)
@@ -619,16 +728,17 @@ async def _record_supervisor_event(
     await recorder.record(event_type=event_type, payload=payload)
 
 
-def _record_data_success(risk_manager: RiskManager, timestamp) -> None:
+def _record_data_success(risk_manager: RiskManager, timestamp: datetime) -> None:
     callback = getattr(risk_manager, "record_data_success", None)
     if callable(callback):
         callback(timestamp)
 
 
-def _record_data_failure(risk_manager: RiskManager, *, reason: str) -> None:
+def _record_data_failure(risk_manager: RiskManager, *, reason: str) -> bool:
     callback = getattr(risk_manager, "record_data_failure", None)
     if callable(callback):
-        callback(reason=reason)
+        return bool(callback(reason=reason))
+    return False
 
 
 def _remaining_limit(limit: int | None, processed: int) -> int | None:
@@ -649,6 +759,40 @@ def _limits_satisfied(
     market_done = max_market_snapshots is None or stats.market_snapshots_processed >= max_market_snapshots
     user_done = max_user_events is None or stats.user_events_processed >= max_user_events
     return market_done and user_done
+
+
+def _should_stop_after_limit(
+    *,
+    queue_empty: bool,
+    market_limit_reached: bool,
+    user_limit_reached: bool,
+    market_stream_done: bool,
+    user_stream_done: bool,
+) -> bool:
+    if not queue_empty:
+        return False
+    if market_limit_reached and market_stream_done:
+        return True
+    if user_limit_reached and user_stream_done:
+        return True
+    return False
+
+
+def _any_limit_reached(
+    *,
+    stats: LiveSessionStats,
+    max_market_snapshots: int | None,
+    max_user_events: int | None,
+) -> bool:
+    market_reached = (
+        max_market_snapshots is not None
+        and stats.market_snapshots_processed >= max_market_snapshots
+    )
+    user_reached = (
+        max_user_events is not None
+        and stats.user_events_processed >= max_user_events
+    )
+    return market_reached or user_reached
 
 
 def _merge_stats(left: LiveSessionStats, right: LiveSessionStats) -> LiveSessionStats:
@@ -688,6 +832,7 @@ async def run_crypto_live_session(
     max_user_events: int | None = None,
     gamma_tag_id: int = CRYPTO_GAMMA_TAG_ID,
     summary_every_snapshots: int | None = 50,
+    underlying_state_path: str | None = None,
 ) -> dict[str, object]:
     settings = load_settings_from_directory(config_dir)
     if settings.app.mode != RuntimeMode.LIVE:
@@ -695,6 +840,11 @@ async def run_crypto_live_session(
 
     registry = build_default_registry()
     strategies = registry.build_enabled(settings=settings)
+    enabled_strategy_ids = {
+        strategy_id
+        for category_config in settings.category_configs.values()
+        for strategy_id in category_config.enabled_strategies
+    }
     crypto_config = settings.category_configs.get(Category.CRYPTO)
     snapshot_selector = build_snapshot_selector(
         crypto_config.markets if crypto_config is not None else None
@@ -708,9 +858,31 @@ async def run_crypto_live_session(
     execution = build_execution_adapter(settings=settings)
     if not isinstance(execution, PolymarketLiveExecutionAdapter):
         raise TypeError("Live session runner requires PolymarketLiveExecutionAdapter")
+    execution.restore_processed_trade_ids(risk_manager.state.processed_trade_ids)
 
     recorder = LiveRuntimeRecorder(event_path=recorder_path, metrics_path=metrics_path)
     session_started_at = datetime.now(tz=UTC)
+    runtime_context_builder = None
+    if "crypto.phase2" in enabled_strategy_ids:
+        if underlying_state_path is None:
+            raise ValueError(
+                "run_crypto_live_session requires underlying_state_path when crypto.phase2 is enabled"
+            )
+        phase2_context_builder = CryptoPhase2PaperContextBuilder(
+            underlying_state_path=underlying_state_path,
+            apply_series_filter=True,
+        )
+        def runtime_context_builder(
+            *,
+            snapshot: MarketSnapshot,
+            snapshots_by_market_id: Mapping[str, MarketSnapshot],
+            recorder: EventRecorder | None,
+        ) -> Mapping[str, object]:
+            del snapshot
+            return phase2_context_builder.build_context(
+                snapshot_cache=tuple(snapshots_by_market_id.values()),
+                recorder=cast(LiveRuntimeRecorder, recorder),
+            )
     await recorder.record(
         event_type="live.session_started",
         payload={
@@ -737,11 +909,13 @@ async def run_crypto_live_session(
         try:
             seed_snapshots = await market_data.bootstrap_snapshots()
         except Exception as exc:
-            _record_data_failure(risk_manager, reason=f"{type(exc).__name__}: {exc}")
+            halt_triggered = _record_data_failure(risk_manager, reason=f"{type(exc).__name__}: {exc}")
             await recorder.record(
                 event_type="market_data.failure",
                 payload={"error": f"{type(exc).__name__}: {exc}"},
             )
+            if halt_triggered:
+                await _record_runtime_halt_event(recorder=recorder, risk_manager=risk_manager)
             raise
         if seed_snapshots:
             _record_data_success(risk_manager, max(snapshot.timestamp for snapshot in seed_snapshots))
@@ -767,6 +941,7 @@ async def run_crypto_live_session(
             summary_every_snapshots=summary_every_snapshots,
             recovery_scope=settings.polymarket.live_recovery_scope,
             session_started_at=session_started_at,
+            runtime_context_builder=runtime_context_builder,
         )
     dashboard = risk_manager.dashboard_state()
     return {
@@ -781,10 +956,11 @@ async def run_crypto_live_session(
         "events_recorded": len(recorder.events),
         "metrics": recorder.metrics.to_dict(),
         "dashboard": dashboard,
+        "trading_settings": settings.trading,
     }
 
 
-def _note_snapshot(*, recorder: EventRecorder | None, timestamp) -> None:
+def _note_snapshot(*, recorder: EventRecorder | None, timestamp: datetime) -> None:
     note_snapshot = getattr(recorder, "note_snapshot", None)
     if callable(note_snapshot):
         note_snapshot(timestamp=timestamp, payload={"updated_at": timestamp.isoformat()})
@@ -880,6 +1056,71 @@ def _consecutive_data_failures(risk_manager: RiskManager) -> int:
     if not callable(dashboard):
         return 0
     return int(getattr(dashboard(), "consecutive_data_failures", 0))
+
+
+def _data_health_poll_interval(risk_manager: RiskManager) -> float | None:
+    settings = getattr(risk_manager, "settings", None)
+    timeout = getattr(settings, "kill_switch_on_stale_data_seconds", None)
+    if timeout is None:
+        return None
+    timeout_seconds = float(timeout)
+    if timeout_seconds <= 0:
+        return None
+    return min(1.0, timeout_seconds)
+
+
+def _data_health_halt_reason(risk_manager: RiskManager) -> HaltReason | None:
+    dashboard = getattr(risk_manager, "dashboard_state", None)
+    if not callable(dashboard):
+        return None
+    snapshot = dashboard()
+    if getattr(snapshot, "status", None) != RuntimeStatus.HALTED:
+        return None
+    reason = getattr(snapshot, "halt_reason", HaltReason.NONE)
+    if reason not in {HaltReason.STALE_DATA, HaltReason.DATA_SOURCE_FAILURE}:
+        return None
+    return reason
+
+
+async def _halt_if_data_health_breached(
+    *,
+    risk_manager: RiskManager,
+    recorder: EventRecorder | None,
+) -> bool:
+    callback = getattr(risk_manager, "enforce_data_freshness", None)
+    halt_triggered = bool(callback()) if callable(callback) else False
+    if halt_triggered:
+        await _record_runtime_halt_event(recorder=recorder, risk_manager=risk_manager)
+    return _data_health_halt_reason(risk_manager) is not None
+
+
+async def _record_runtime_halt_event(
+    *,
+    recorder: EventRecorder | None,
+    risk_manager: RiskManager,
+) -> None:
+    if recorder is None:
+        return
+    dashboard = getattr(risk_manager, "dashboard_state", None)
+    if not callable(dashboard):
+        return
+    snapshot = dashboard()
+    if getattr(snapshot, "status", None) != RuntimeStatus.HALTED:
+        return
+    await recorder.record(
+        event_type="runtime.halted",
+        payload={
+            "halt_reason": snapshot.halt_reason.value,
+            "halt_message": snapshot.halt_message or "",
+            "last_data_success_at": (
+                snapshot.last_data_success_at.isoformat()
+                if snapshot.last_data_success_at is not None
+                else ""
+            ),
+            "last_data_error": snapshot.last_data_error or "",
+            "consecutive_data_failures": snapshot.consecutive_data_failures,
+        },
+    )
 
 
 async def _shadow_before_market_snapshot(

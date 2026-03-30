@@ -89,6 +89,41 @@ def test_route_execution_prefers_taker_for_urgent_repricing_trade() -> None:
     assert decision.quote_ttl_seconds == 30
 
 
+def test_build_order_intent_can_use_gtc_for_taker_validation_profile() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(
+        market_id="btc-above-short",
+        best_bid_yes=0.41,
+        best_ask_yes=0.42,
+        best_bid_no=0.58,
+        best_ask_no=0.59,
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+    )
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+    )
+
+    intent = build_order_intent(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        decision=decision,
+        default_notional=5.0,
+        taker_time_in_force="GTC",
+    )
+
+    assert decision.route == "taker"
+    assert intent is not None
+    assert intent.time_in_force == "GTC"
+
+
 def test_route_execution_maker_price_does_not_cross_one_tick_spread() -> None:
     fair_value = _fair_value("resolution_no")
     snapshot = _snapshot(
@@ -357,7 +392,7 @@ def test_route_execution_prefers_taker_for_high_edge_liquidity_trade_when_spread
     assert decision.quote_ttl_seconds == 15
 
 
-def test_route_execution_avoids_taker_when_entry_premium_is_too_high() -> None:
+def test_route_execution_falls_back_to_maker_when_repricing_taker_is_too_expensive() -> None:
     fair_value = _fair_value("repricing_yes")
     snapshot = _snapshot(
         market_id="eth-dip-rich-ask",
@@ -383,9 +418,9 @@ def test_route_execution_avoids_taker_when_entry_premium_is_too_high() -> None:
     )
 
     assert classification.signal_type == "repricing_edge"
-    assert decision.route == "skip"
-    assert decision.target_price is None
-    assert decision.rationale_tags == ("repricing_taker_too_expensive",)
+    assert decision.route == "maker"
+    assert decision.target_price == 0.13
+    assert decision.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
 
 
 def test_build_order_intent_uses_maker_route_and_no_token_for_buy_no() -> None:
@@ -425,6 +460,9 @@ def test_build_order_intent_uses_maker_route_and_no_token_for_buy_no() -> None:
     assert intent.token_id == "eth-dip-800-no"
     assert intent.time_in_force == "GTC"
     assert intent.quote_ttl_seconds == 180
+    assert intent.exposure_group_id == "crypto:eth-dip-ladder"
+    assert intent.thesis_group_id == "crypto:eth:dip"
+    assert intent.underlying_group_id == "crypto:eth"
 
 
 def _fair_value(case_key: str) -> FairValueEstimate:

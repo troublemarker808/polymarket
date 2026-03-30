@@ -34,6 +34,7 @@ class PaperExecutionMetrics:
     fill_shares_for_mid: float = 0.0
     total_fill_price_vs_mid_bps_weighted: float = 0.0
     updated_at: str | None = None
+    _counted_canceled_order_ids: set[str] = field(default_factory=set, repr=False)
 
     def note_snapshot(self, timestamp: datetime) -> None:
         self.processed_snapshots += 1
@@ -63,7 +64,11 @@ class PaperExecutionMetrics:
         elif event_type == "order.expired":
             self.orders_expired += 1
         elif event_type == "order.canceled":
-            self.orders_canceled += 1
+            order_id = str(payload.get("order_id", "")).strip()
+            if not order_id or order_id not in self._counted_canceled_order_ids:
+                self.orders_canceled += 1
+                if order_id:
+                    self._counted_canceled_order_ids.add(order_id)
         elif event_type == "trade.closed":
             self.trades_closed += 1
         elif event_type == "market_data.failure":
@@ -152,7 +157,7 @@ class PaperExecutionMetrics:
             json.dump(self.to_dict(), handle, ensure_ascii=True, indent=2)
 
     def _record_fill_metrics(self, *, event_type: str, payload: dict[str, object]) -> None:
-        fill_shares_delta = float(payload.get("fill_shares_delta", 0.0) or 0.0)
+        fill_shares_delta = _coerce_float(payload.get("fill_shares_delta"), default=0.0)
         if fill_shares_delta > 0:
             self.filled_shares_total += fill_shares_delta
             fill_source = str(payload.get("fill_source", "")).strip().lower()
@@ -164,15 +169,28 @@ class PaperExecutionMetrics:
         fill_age_ms = payload.get("fill_age_ms")
         if event_type == "order.filled" and fill_age_ms is not None:
             self.fill_count_for_latency += 1
-            self.total_fill_age_ms += float(fill_age_ms)
+            self.total_fill_age_ms += _coerce_float(fill_age_ms, default=0.0)
 
         mid_price = payload.get("mid_price")
         average_fill_price = payload.get("average_fill_price")
         if mid_price is None or average_fill_price is None or fill_shares_delta <= 0:
             return
-        mid = float(mid_price)
-        fill = float(average_fill_price)
+        mid = _coerce_float(mid_price, default=0.0)
+        fill = _coerce_float(average_fill_price, default=0.0)
         if mid <= 0:
             return
         self.fill_shares_for_mid += fill_shares_delta
         self.total_fill_price_vs_mid_bps_weighted += (((fill - mid) / mid) * 10000) * fill_shares_delta
+
+
+def _coerce_float(value: object | None, *, default: float) -> float:
+    if value is None or value == "":
+        return default
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, (int, float, str, bytes, bytearray)):
+        return float(value)
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return default

@@ -43,10 +43,10 @@ class PolymarketLiveMarketDataAdapter:
             max_pages=self.max_pages,
             tag_id=self.tag_id,
         )
-        if self.clob_enricher is not None:
-            snapshots = await self.clob_enricher.enrich_snapshots(snapshots)
         if self.snapshot_selector is not None:
             snapshots = list(self.snapshot_selector(tuple(snapshots)))
+        if self.clob_enricher is not None:
+            snapshots = await self.clob_enricher.enrich_snapshots(snapshots)
         return snapshots
 
     async def stream_snapshots(self) -> AsyncIterator[MarketSnapshot]:

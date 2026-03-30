@@ -79,11 +79,16 @@ class ClobPublicClient:
             return []
 
         client = await self._ensure_client()
-        response = await client.post(
-            "/books",
-            json=[{"token_id": token_id} for token_id in token_ids],
-        )
-        response.raise_for_status()
+        try:
+            response = await client.post(
+                "/books",
+                json=[{"token_id": token_id} for token_id in token_ids],
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 400 and len(token_ids) > 1:
+                return await self._fetch_order_books_individually(token_ids)
+            raise
         payload = response.json()
         if not isinstance(payload, list):
             raise ValueError("CLOB /books response was not a list")
@@ -92,6 +97,17 @@ class ClobPublicClient:
         for item in payload:
             if isinstance(item, dict):
                 books.append(parse_clob_order_book(item))
+        return books
+
+    async def _fetch_order_books_individually(self, token_ids: list[str]) -> list[ClobOrderBook]:
+        books: list[ClobOrderBook] = []
+        for token_id in token_ids:
+            try:
+                books.append(await self.fetch_order_book(token_id))
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 400:
+                    continue
+                raise
         return books
 
     async def _ensure_client(self) -> httpx.AsyncClient:

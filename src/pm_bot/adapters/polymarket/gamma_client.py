@@ -18,6 +18,9 @@ import httpx
 from pm_bot.core.types import Category, MarketSnapshot
 
 GAMMA_BASE_URL = "https://gamma-api.polymarket.com"
+HttpQueryScalar = str | int | float | bool | None
+HttpQueryValue = HttpQueryScalar | Sequence[HttpQueryScalar]
+HttpQueryParams = dict[str, HttpQueryValue]
 
 _SPORTS_TAGS = {
     "sports",
@@ -91,8 +94,8 @@ class GammaMarketsClient:
         offset: int = 0,
         tag_id: int | None = None,
     ) -> list[dict[str, Any]]:
-        client = await self._ensure_client()
-        params: dict[str, object] = {
+        await self._ensure_client()
+        params: HttpQueryParams = {
             "active": str(active).lower(),
             "closed": str(closed).lower(),
             "limit": limit,
@@ -108,7 +111,7 @@ class GammaMarketsClient:
         return [event for event in payload if isinstance(event, dict)]
 
     async def fetch_market_by_slug(self, slug: str) -> list[MarketSnapshot]:
-        client = await self._ensure_client()
+        await self._ensure_client()
         payload = await self._get_json("/markets", params={"slug": slug})
         if not isinstance(payload, list):
             raise ValueError("Gamma /markets response was not a list")
@@ -167,7 +170,7 @@ class GammaMarketsClient:
         self,
         path: str,
         *,
-        params: dict[str, object],
+        params: HttpQueryParams,
     ) -> Any:
         client = await self._ensure_client()
         attempts = self.max_retries + 1

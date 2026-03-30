@@ -14,6 +14,27 @@ from pm_bot.strategies.weather.phase1.pricing import (
     estimate_strip_consistency,
     estimate_threshold_probability,
 )
+from pm_bot.strategies.weather.phase1.reports import (
+    format_weather_market_selection_report,
+    format_weather_run_scorecard_report,
+    format_weather_settlement_audit_report,
+    generate_weather_market_selection_report,
+    generate_weather_run_scorecard_report,
+    generate_weather_settlement_audit_report,
+)
+from pm_bot.strategies.weather.phase1.final_report import (
+    format_weather_final_scorecard,
+    generate_weather_final_scorecard,
+)
+from pm_bot.strategies.weather.phase1.learning_report import (
+    build_weather_learning_report,
+    format_weather_learning_report,
+)
+from pm_bot.strategies.weather.phase1.tuning_plan import (
+    build_weather_candidate_preset_registry,
+    build_weather_tuning_plan,
+    format_weather_tuning_plan,
+)
 from pm_bot.strategies.weather.phase1.attribution import build_weather_attribution_rows
 from pm_bot.strategies.weather.phase1.replay import (
     compute_weather_phase1_fair_values,
@@ -30,11 +51,24 @@ __all__ = [
     "build_forecast_distribution",
     "build_weather_peer_probability_map",
     "build_weather_attribution_rows",
+    "build_weather_candidate_preset_registry",
+    "build_weather_learning_report",
+    "build_weather_tuning_plan",
     "classify_weather_market",
     "compute_weather_phase1_fair_values",
     "estimate_strip_consistency",
     "estimate_threshold_probability",
+    "format_weather_market_selection_report",
+    "format_weather_final_scorecard",
+    "format_weather_learning_report",
+    "format_weather_tuning_plan",
+    "format_weather_run_scorecard_report",
+    "format_weather_settlement_audit_report",
     "fuse_weather_fair_value",
+    "generate_weather_market_selection_report",
+    "generate_weather_final_scorecard",
+    "generate_weather_run_scorecard_report",
+    "generate_weather_settlement_audit_report",
     "ingest_forecast_runs",
     "load_model_skill_store",
     "normalize_weather_market",
