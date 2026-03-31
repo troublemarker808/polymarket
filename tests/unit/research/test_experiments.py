@@ -218,6 +218,8 @@ def test_run_fixed_window_experiments_promotes_mined_windows_when_event_log_is_a
     assert tuple(split.source_name for split in report.dataset_splits) == ("window-01", "window-02", "window-03")
     assert all(split.score is not None for split in report.dataset_splits)
     assert all(Path(split.source_snapshot_path).exists() for split in report.dataset_splits)
+    assert all(split.expiry_bucket for split in report.dataset_splits)
+    assert all(split.btc_family_labels for split in report.dataset_splits)
 
 
 def test_pick_validation_winner_rejects_candidate_that_only_reduces_activity() -> None:

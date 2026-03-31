@@ -756,7 +756,7 @@ def _follow_up_experiments(*, classification: str, metrics: dict[str, Any]) -> t
         )
     if _is_zero_activity_alpha_bound(metrics):
         return (
-            "Run mine-fixed-windows on the latest long paper-session snapshot and event captures, then promote only fill-bearing windows into the fixed-window experiment set.",
+            "Run mine-fixed-windows on the latest long paper-session snapshot and event captures, then promote only fill-bearing windows with strong edge_after_cost_proxy/fill_density into the fixed-window experiment set.",
             "Compare ETH and BTC ladders separately so overpriced yearly strips do not drown out shorter-lived repricing windows.",
             "Do not spend more iterations on maker TTL or taker premium until at least one replay window shows non-zero useful submissions under the current fair-value stack.",
         )

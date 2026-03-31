@@ -81,6 +81,11 @@ def test_mine_fixed_windows_writes_ranked_window_artifacts(tmp_path: Path) -> No
         assert Path(window.event_path).exists()
         assert window.snapshot_count == 4
         assert window.score > 0
+        assert window.edge_after_cost_proxy != 0.0
+        assert window.fill_density >= 0.0
+        assert window.rejection_quality_penalty >= 0.0
+        assert window.expiry_bucket
+        assert window.btc_family_labels
 
 
 def test_mine_fixed_windows_prefers_fill_bearing_windows_over_expiry_only(tmp_path: Path) -> None:
@@ -145,3 +150,51 @@ def test_mine_fixed_windows_prefers_fill_bearing_windows_over_expiry_only(tmp_pa
 
     assert report.mined_windows[0].labels[0] == "fill-bearing"
     assert report.mined_windows[0].score > report.mined_windows[1].score
+    assert report.mined_windows[0].edge_after_cost_proxy > report.mined_windows[1].edge_after_cost_proxy
+
+
+def test_mine_fixed_windows_skips_invalid_event_timestamps(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "capture.jsonl"
+    event_path = tmp_path / "events.jsonl"
+    output_dir = tmp_path / "windows"
+    _write_snapshots(snapshot_path)
+    event_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "updated_at": "not-a-timestamp",
+                            "reason": "bad-payload",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_type": "order.rejected",
+                        "payload": {
+                            "updated_at": "2026-03-23T12:06:20Z",
+                            "reason": "daily order hard limit reached",
+                        },
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = asyncio.run(
+        mine_fixed_windows(
+            snapshot_path=snapshot_path,
+            event_path=event_path,
+            output_dir=output_dir,
+            window_snapshots=4,
+            top_windows=1,
+        )
+    )
+
+    assert len(report.mined_windows) == 1
+    window = report.mined_windows[0]
+    assert window.event_counts["order.rejected"] == 1
+    assert "order.filled" not in window.event_counts

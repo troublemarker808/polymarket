@@ -131,6 +131,7 @@ def test_generate_autoresearch_report_classifies_zero_activity_as_alpha_bound(tm
     assert report.experiment_matrix[0].name == "Mine eventful fixed windows"
     assert report.experiment_matrix[1].name == "Recalibrate ladder fair value"
     assert "mine-fixed-windows" in report.next_follow_up_experiments[0]
+    assert "edge_after_cost_proxy/fill_density" in report.next_follow_up_experiments[0]
 
 
 def test_generate_autoresearch_report_excludes_recovered_live_noise_from_effective_baseline(

@@ -24,6 +24,17 @@ _WEIGHTS = {
     "order.submitted": 2.0,
 }
 _EVENTFUL_TYPES = frozenset(_WEIGHTS)
+_QUALITY_REJECTION_REASONS = frozenset(
+    {
+        "daily order hard limit reached",
+        "daily order soft limit reached",
+        "max concurrent positions reached",
+        "market already has a pending order",
+        "max open orders reached",
+        "stale quote",
+        "price out of band",
+    }
+)
 
 
 @dataclass(slots=True, frozen=True)
@@ -38,6 +49,11 @@ class MinedWindow:
     event_path: str
     event_counts: dict[str, int]
     rejection_reasons: tuple[tuple[str, int], ...]
+    edge_after_cost_proxy: float
+    fill_density: float
+    rejection_quality_penalty: float
+    btc_family_labels: tuple[str, ...]
+    expiry_bucket: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -57,6 +73,14 @@ class _EventRecord:
     timestamp: datetime
     payload: dict[str, Any]
     raw: dict[str, Any]
+
+
+@dataclass(slots=True, frozen=True)
+class _WindowScore:
+    total: float
+    edge_after_cost_proxy: float
+    fill_density: float
+    rejection_quality_penalty: float
 
 
 async def mine_fixed_windows(
@@ -111,22 +135,22 @@ async def mine_fixed_windows_from_snapshots(
         start = max(0, end - window_snapshots)
         windows_by_bounds[(start, end)] = None
 
-    ranked_windows: list[tuple[float, int, int, list[_EventRecord]]] = []
+    ranked_windows: list[tuple[float, int, int, list[_EventRecord], _WindowScore]] = []
     for start, end in windows_by_bounds:
         start_at = snapshots[start].timestamp
         end_at = snapshots[end - 1].timestamp
         left = bisect_left(event_times, start_at)
         right = bisect_right(event_times, end_at)
         window_events = events[left:right]
-        score = _window_score(window_events)
-        if score <= 0:
+        scored = _window_score(window_events)
+        if scored.total <= 0:
             continue
-        ranked_windows.append((score, start, end, window_events))
+        ranked_windows.append((scored.total, start, end, window_events, scored))
     ranked_windows.sort(key=lambda item: (-item[0], snapshots[item[1]].timestamp, item[1]))
 
     selected: list[MinedWindow] = []
     selected_bounds: list[tuple[int, int]] = []
-    for score, start, end, window_events in ranked_windows:
+    for score, start, end, window_events, scored in ranked_windows:
         bounds = (start, end)
         if any(_overlap_ratio(bounds, existing) > 0.5 for existing in selected_bounds):
             continue
@@ -136,6 +160,7 @@ async def mine_fixed_windows_from_snapshots(
             events=window_events,
             output_dir=output_root,
             score=score,
+            score_breakdown=scored,
         )
         selected.append(mined)
         selected_bounds.append(bounds)
@@ -164,6 +189,19 @@ def format_window_mining_report(report: WindowMiningReport) -> str:
             f"window_snapshot_count={report.window_snapshot_count}",
             f"windows_found={len(report.mined_windows)}",
             f"window_scores={','.join(f'{window.name}:{window.score:.2f}' for window in report.mined_windows)}",
+            "window_profitability="
+            + ",".join(
+                (
+                    f"{window.name}:edge_proxy={window.edge_after_cost_proxy:.4f}:"
+                    f"fill_density={window.fill_density:.4f}:reject_penalty={window.rejection_quality_penalty:.4f}"
+                )
+                for window in report.mined_windows
+            ),
+            "window_contexts="
+            + ",".join(
+                f"{window.name}:family={'+'.join(window.btc_family_labels)}:expiry={window.expiry_bucket}"
+                for window in report.mined_windows
+            ),
             f"summary_path={report.summary_path}",
         ]
     )
@@ -192,6 +230,14 @@ def write_window_mining_report(report: WindowMiningReport, path: str | Path) -> 
             f"- {window.name}: score={window.score:.2f}, labels={','.join(window.labels)}, "
             f"snapshots={window.snapshot_count}, window={window.start_at.isoformat()} -> {window.end_at.isoformat()}"
         )
+        lines.append(
+            "  profitability: "
+            f"edge_after_cost_proxy={window.edge_after_cost_proxy:.4f}, "
+            f"fill_density={window.fill_density:.4f}, "
+            f"rejection_quality_penalty={window.rejection_quality_penalty:.4f}"
+        )
+        lines.append(f"  btc_family_labels: {','.join(window.btc_family_labels)}")
+        lines.append(f"  expiry_bucket: {window.expiry_bucket}")
         lines.append(f"  snapshot_path: {window.snapshot_path}")
         lines.append(f"  event_path: {window.event_path}")
         counts = ",".join(f"{key}:{value}" for key, value in sorted(window.event_counts.items()))
@@ -237,14 +283,17 @@ def _event_timestamp(payload: dict[str, Any]) -> datetime | None:
         value = payload.get(key)
         if value in (None, ""):
             continue
-        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            continue
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
     return None
 
 
-def _window_score(events: list[_EventRecord]) -> float:
+def _window_score(events: list[_EventRecord]) -> _WindowScore:
     total = 0.0
     counts = Counter(record.event_type for record in events)
     for record in events:
@@ -267,7 +316,43 @@ def _window_score(events: list[_EventRecord]) -> float:
     )
     if only_expiry_like:
         total -= 10.0
-    return total
+    filled = counts.get("order.filled", 0) + counts.get("order.partially_filled", 0)
+    closed = counts.get("trade.closed", 0)
+    rejected = counts.get("order.rejected", 0)
+    expired = counts.get("order.expired", 0)
+    canceled = counts.get("order.canceled", 0)
+    closed_trade_net_pnl = sum(
+        float(record.payload.get("net_pnl", 0.0) or 0.0)
+        for record in events
+        if record.event_type == "trade.closed"
+    )
+    edge_after_cost_proxy = (
+        closed_trade_net_pnl
+        + (0.15 * float(filled))
+        + (0.05 * float(closed))
+        - (0.08 * float(rejected))
+        - (0.04 * float(expired))
+        - (0.03 * float(canceled))
+    )
+    fill_density = (float(filled + closed) / float(max(1, len(events)))) if events else 0.0
+    quality_rejections = sum(
+        1
+        for record in events
+        if record.event_type == "order.rejected"
+        and str(record.payload.get("reason", "")).strip().lower() in _QUALITY_REJECTION_REASONS
+    )
+    rejection_quality_penalty = (float(quality_rejections) / float(max(1, rejected))) if rejected > 0 else 0.0
+    profitability_boost = (
+        (45.0 * edge_after_cost_proxy)
+        + (10.0 * fill_density)
+        - (6.0 * rejection_quality_penalty)
+    )
+    return _WindowScore(
+        total=total + profitability_boost,
+        edge_after_cost_proxy=edge_after_cost_proxy,
+        fill_density=fill_density,
+        rejection_quality_penalty=rejection_quality_penalty,
+    )
 
 
 def _labels_for_window(events: list[_EventRecord]) -> tuple[str, ...]:
@@ -298,6 +383,7 @@ def _write_window_artifacts(
     events: list[_EventRecord],
     output_dir: Path,
     score: float,
+    score_breakdown: _WindowScore,
 ) -> MinedWindow:
     name = f"window-{rank:02d}"
     snapshot_output = output_dir / f"{name}.snapshots.jsonl"
@@ -316,6 +402,8 @@ def _write_window_artifacts(
         for record in events
         if record.event_type == "order.rejected" and record.payload.get("reason")
     )
+    btc_family_labels = _btc_family_labels(snapshots)
+    expiry_bucket = _dominant_expiry_bucket(snapshots)
     return MinedWindow(
         name=name,
         score=score,
@@ -327,7 +415,65 @@ def _write_window_artifacts(
         event_path=str(event_output),
         event_counts=dict(sorted(event_counts.items())),
         rejection_reasons=tuple(sorted(rejection_reasons.items(), key=lambda item: (-item[1], item[0]))),
+        edge_after_cost_proxy=score_breakdown.edge_after_cost_proxy,
+        fill_density=score_breakdown.fill_density,
+        rejection_quality_penalty=score_breakdown.rejection_quality_penalty,
+        btc_family_labels=btc_family_labels,
+        expiry_bucket=expiry_bucket,
     )
+
+
+def _btc_family_labels(snapshots: Sequence[MarketSnapshot]) -> tuple[str, ...]:
+    families = Counter(_snapshot_btc_family(snapshot) for snapshot in snapshots)
+    ranked = [item for item, _ in sorted(families.items(), key=lambda kv: (-kv[1], kv[0])) if item]
+    if not ranked:
+        return ("unknown",)
+    return tuple(ranked[:2])
+
+
+def _snapshot_btc_family(snapshot: MarketSnapshot) -> str:
+    metadata = snapshot.metadata
+    family = str(metadata.get("event_family", "")).strip().lower()
+    if family:
+        return family
+    tag_slugs = str(metadata.get("tag_slugs", "")).strip().lower()
+    slug = snapshot.slug.lower()
+    if "bitcoin" in tag_slugs or "btc" in tag_slugs or "bitcoin" in slug or "btc" in slug:
+        if "yearly" in tag_slugs:
+            return "btc-yearly"
+        if "monthly" in tag_slugs:
+            return "btc-monthly"
+        event_slug = str(metadata.get("event_slug", "")).strip().lower()
+        if "price" in event_slug and "hit" in event_slug:
+            return "btc-price-hit"
+        return "btc-generic"
+    return "unknown"
+
+
+def _dominant_expiry_bucket(snapshots: Sequence[MarketSnapshot]) -> str:
+    buckets = Counter(_expiry_bucket(snapshot) for snapshot in snapshots)
+    if not buckets:
+        return "unknown"
+    return max(sorted(buckets), key=lambda item: (buckets[item], item))
+
+
+def _expiry_bucket(snapshot: MarketSnapshot) -> str:
+    if snapshot.resolution_time is None:
+        return "no-resolution"
+    delta_days = (snapshot.resolution_time - snapshot.timestamp).total_seconds() / 86400.0
+    if delta_days < 0:
+        return "expired"
+    if delta_days <= 2:
+        return "lt_2d"
+    if delta_days <= 14:
+        return "2d_14d"
+    if delta_days <= 60:
+        return "14d_60d"
+    if delta_days <= 180:
+        return "60d_180d"
+    if delta_days <= 400:
+        return "180d_400d"
+    return "gt_400d"
 
 
 def _overlap_ratio(left: tuple[int, int], right: tuple[int, int]) -> float:

@@ -35,6 +35,8 @@ class DatasetSplit:
     score: float | None
     source_snapshot_path: str
     source_event_path: str | None
+    btc_family_labels: tuple[str, ...]
+    expiry_bucket: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -480,6 +482,8 @@ def _chronological_prepared_splits(
                     score=None,
                     source_snapshot_path=str(Path(snapshot_path)),
                     source_event_path=(str(Path(event_path)) if event_path is not None else None),
+                    btc_family_labels=("unknown",),
+                    expiry_bucket="unknown",
                 ),
                 snapshots=split_snapshots,
             )
@@ -503,6 +507,8 @@ def _mined_prepared_splits(*, mining_report: WindowMiningReport) -> tuple[_Prepa
                     score=window.score,
                     source_snapshot_path=window.snapshot_path,
                     source_event_path=window.event_path,
+                    btc_family_labels=window.btc_family_labels,
+                    expiry_bucket=window.expiry_bucket,
                 ),
                 snapshots=split_snapshots,
             )
@@ -520,6 +526,8 @@ def _dataset_split_metadata(
     score: float | None,
     source_snapshot_path: str,
     source_event_path: str | None,
+    btc_family_labels: tuple[str, ...],
+    expiry_bucket: str,
 ) -> DatasetSplit:
     return DatasetSplit(
         name=name,
@@ -532,6 +540,8 @@ def _dataset_split_metadata(
         score=score,
         source_snapshot_path=source_snapshot_path,
         source_event_path=source_event_path,
+        btc_family_labels=btc_family_labels,
+        expiry_bucket=expiry_bucket,
     )
 
 
@@ -849,7 +859,8 @@ def _render_fixed_window_report(report: FixedWindowExperimentReport) -> str:
     for split in report.dataset_splits:
         lines.append(
             f"- {split.name}: {split.snapshot_count} snapshots ({_format_dt(split.started_at)} -> {_format_dt(split.ended_at)}), "
-            f"source={split.source}, source_name={split.source_name}, score={_format_optional_score(split.score)}, labels={','.join(split.labels) or 'none'}"
+            f"source={split.source}, source_name={split.source_name}, score={_format_optional_score(split.score)}, labels={','.join(split.labels) or 'none'}, "
+            f"btc_family={'+'.join(split.btc_family_labels) or 'unknown'}, expiry_bucket={split.expiry_bucket}"
         )
         lines.append(f"  source_snapshot_path: {split.source_snapshot_path}")
         lines.append(f"  source_event_path: {split.source_event_path or ''}")
@@ -1023,6 +1034,7 @@ def _format_split_sources(splits: tuple[DatasetSplit, ...]) -> str:
     if not splits:
         return ""
     return ",".join(
-        f"{split.name}:{split.source}:{split.source_name}:{_format_optional_score(split.score)}:{'+'.join(split.labels) or 'none'}"
+        f"{split.name}:{split.source}:{split.source_name}:{_format_optional_score(split.score)}:"
+        f"{'+'.join(split.labels) or 'none'}:{'+'.join(split.btc_family_labels) or 'unknown'}:{split.expiry_bucket}"
         for split in splits
     )

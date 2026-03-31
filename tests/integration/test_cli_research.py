@@ -278,6 +278,66 @@ def test_cli_fixed_window_experiments_supports_phase2_with_underlying_states(tmp
     assert (output_dir / "summary.md").exists()
 
 
+def test_cli_mine_fixed_windows_is_deterministic_on_same_fixture(tmp_path: Path) -> None:
+    snapshot_path = tmp_path / "snapshots.jsonl"
+    event_path = tmp_path / "events.jsonl"
+    output_dir = tmp_path / "mined"
+    snapshot_path.write_text(
+        "\n".join(
+            [
+                "{\"event_type\":\"market.snapshot\",\"payload\":{\"market_id\":\"m1\",\"token_id\":\"m1-yes\",\"slug\":\"will-bitcoin-dip-1\",\"category\":\"crypto\",\"timestamp\":\"2026-03-23T12:00:00Z\",\"resolution_time\":\"2026-06-01T00:00:00Z\",\"best_bid_yes\":0.40,\"best_ask_yes\":0.42,\"best_bid_no\":0.58,\"best_ask_no\":0.60,\"metadata\":{\"tag_slugs\":\"bitcoin,price\"}}}",
+                "{\"event_type\":\"market.snapshot\",\"payload\":{\"market_id\":\"m2\",\"token_id\":\"m2-yes\",\"slug\":\"will-bitcoin-dip-2\",\"category\":\"crypto\",\"timestamp\":\"2026-03-23T12:01:00Z\",\"resolution_time\":\"2026-06-01T00:00:00Z\",\"best_bid_yes\":0.40,\"best_ask_yes\":0.42,\"best_bid_no\":0.58,\"best_ask_no\":0.60,\"metadata\":{\"tag_slugs\":\"bitcoin,price\"}}}",
+                "{\"event_type\":\"market.snapshot\",\"payload\":{\"market_id\":\"m3\",\"token_id\":\"m3-yes\",\"slug\":\"will-bitcoin-dip-3\",\"category\":\"crypto\",\"timestamp\":\"2026-03-23T12:02:00Z\",\"resolution_time\":\"2026-06-01T00:00:00Z\",\"best_bid_yes\":0.40,\"best_ask_yes\":0.42,\"best_bid_no\":0.58,\"best_ask_no\":0.60,\"metadata\":{\"tag_slugs\":\"bitcoin,price\"}}}",
+                "{\"event_type\":\"market.snapshot\",\"payload\":{\"market_id\":\"m4\",\"token_id\":\"m4-yes\",\"slug\":\"will-bitcoin-dip-4\",\"category\":\"crypto\",\"timestamp\":\"2026-03-23T12:03:00Z\",\"resolution_time\":\"2026-06-01T00:00:00Z\",\"best_bid_yes\":0.40,\"best_ask_yes\":0.42,\"best_bid_no\":0.58,\"best_ask_no\":0.60,\"metadata\":{\"tag_slugs\":\"bitcoin,price\"}}}",
+                "{\"event_type\":\"market.snapshot\",\"payload\":{\"market_id\":\"m5\",\"token_id\":\"m5-yes\",\"slug\":\"will-bitcoin-dip-5\",\"category\":\"crypto\",\"timestamp\":\"2026-03-23T12:04:00Z\",\"resolution_time\":\"2026-06-01T00:00:00Z\",\"best_bid_yes\":0.40,\"best_ask_yes\":0.42,\"best_bid_no\":0.58,\"best_ask_no\":0.60,\"metadata\":{\"tag_slugs\":\"bitcoin,price\"}}}",
+                "{\"event_type\":\"market.snapshot\",\"payload\":{\"market_id\":\"m6\",\"token_id\":\"m6-yes\",\"slug\":\"will-bitcoin-dip-6\",\"category\":\"crypto\",\"timestamp\":\"2026-03-23T12:05:00Z\",\"resolution_time\":\"2026-06-01T00:00:00Z\",\"best_bid_yes\":0.40,\"best_ask_yes\":0.42,\"best_bid_no\":0.58,\"best_ask_no\":0.60,\"metadata\":{\"tag_slugs\":\"bitcoin,price\"}}}"
+            ]
+        ),
+        encoding="utf-8",
+    )
+    event_path.write_text(
+        "\n".join(
+            [
+                "{\"event_type\":\"order.filled\",\"payload\":{\"updated_at\":\"2026-03-23T12:02:30Z\"}}",
+                "{\"event_type\":\"trade.closed\",\"payload\":{\"updated_at\":\"2026-03-23T12:02:40Z\",\"net_pnl\":0.15}}",
+                "{\"event_type\":\"order.rejected\",\"payload\":{\"updated_at\":\"2026-03-23T12:04:10Z\",\"reason\":\"daily order hard limit reached\"}}"
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    first = _run_cli(
+        "mine-fixed-windows",
+        "--snapshot-path",
+        str(snapshot_path),
+        "--event-path",
+        str(event_path),
+        "--output-dir",
+        str(output_dir),
+        "--window-snapshots",
+        "4",
+        "--top-windows",
+        "2",
+    )
+    second = _run_cli(
+        "mine-fixed-windows",
+        "--snapshot-path",
+        str(snapshot_path),
+        "--event-path",
+        str(event_path),
+        "--output-dir",
+        str(output_dir),
+        "--window-snapshots",
+        "4",
+        "--top-windows",
+        "2",
+    )
+
+    assert first.stdout == second.stdout
+    assert "windows_found=2" in first.stdout
+    assert "window_scores=" in first.stdout
+
+
 def test_cli_crypto_phase2_suite_runs_end_to_end(tmp_path: Path) -> None:
     output_dir = tmp_path / "crypto-phase2-suite"
 
