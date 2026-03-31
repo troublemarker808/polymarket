@@ -85,3 +85,25 @@ class CryptoExecutionFeedback:
     repeated_expiration_rate: float
     repeated_stop_out_rate: float
     recommended_route_bias: str
+
+
+@dataclass(slots=True, frozen=True)
+class CryptoDynamicEligibilityGate:
+    family_key: str
+    sample_count: int
+    min_net_edge_bps: float
+    taker_max_entry_premium_bps: float
+    repricing_taker_max_entry_premium_bps: float
+    reason_tag: str
+
+
+@dataclass(slots=True, frozen=True)
+class CryptoRoutePolicyState:
+    route_key: str
+    sample_count: int
+    route_bias: str
+    aggressiveness_adjustment: float
+    taker_urgency_adjustment: float
+    taker_premium_adjustment_bps: float
+    updated_at: datetime
+    cooldown_until: datetime

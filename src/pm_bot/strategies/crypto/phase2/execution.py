@@ -60,6 +60,7 @@ def evaluate_trade_eligibility(
     max_spread_bps: float = 250.0,
     min_liquidity_score: float = 0.0,
     min_contract_price: float = 0.05,
+    min_net_edge_reason: str = "insufficient_net_edge",
 ) -> CryptoTradeEligibility:
     net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
     market_spread_bps = spread_cost_bps(snapshot=snapshot, side=classification.side)
@@ -70,7 +71,7 @@ def evaluate_trade_eligibility(
     if fair_value.confidence < min_confidence:
         return _ineligible(fair_value.market_id, net_edge_bps, market_spread_bps, "low_confidence")
     if net_edge_bps < min_net_edge_bps:
-        return _ineligible(fair_value.market_id, net_edge_bps, market_spread_bps, "insufficient_net_edge")
+        return _ineligible(fair_value.market_id, net_edge_bps, market_spread_bps, min_net_edge_reason)
     if market_spread_bps > max_spread_bps:
         return _ineligible(fair_value.market_id, net_edge_bps, market_spread_bps, "spread_too_wide")
     if snapshot.liquidity_score < min_liquidity_score:
@@ -108,6 +109,7 @@ def route_execution(
     resolution_maker_quote_ttl_seconds: int = 180,
     repricing_fallback_quote_ttl_seconds: int | None = None,
     maker_aggressiveness: float = 1.0,
+    route_policy_bias: str = "stable",
 ) -> CryptoExecutionDecision:
     if not eligibility.eligible:
         return CryptoExecutionDecision(
@@ -136,14 +138,35 @@ def route_execution(
     effective_taker_entry_premium_bps = taker_entry_premium_bps + max(0.0, taker_slippage_guard_bps)
     taker_remaining_edge_bps = net_edge_bps - effective_taker_entry_premium_bps
 
+    effective_taker_urgency_threshold = taker_urgency_threshold
+    effective_maker_aggressiveness = maker_aggressiveness
+    effective_taker_max_entry_premium_bps = taker_max_entry_premium_bps
+    effective_repricing_taker_max_entry_premium_bps = repricing_taker_max_entry_premium_bps
+    adaptation_tag: str | None = None
+    if route_policy_bias == "more_passive":
+        effective_taker_urgency_threshold = min(0.95, taker_urgency_threshold + 0.06)
+        effective_maker_aggressiveness = max(0.5, maker_aggressiveness * 0.85)
+        effective_taker_max_entry_premium_bps = max(60.0, taker_max_entry_premium_bps - 80.0)
+        effective_repricing_taker_max_entry_premium_bps = max(50.0, repricing_taker_max_entry_premium_bps - 40.0)
+        adaptation_tag = "route_adapted_more_passive"
+    elif route_policy_bias == "more_aggressive":
+        effective_taker_urgency_threshold = max(0.5, taker_urgency_threshold - 0.06)
+        effective_maker_aggressiveness = min(2.0, maker_aggressiveness * 1.2)
+        effective_taker_max_entry_premium_bps = min(1200.0, taker_max_entry_premium_bps + 80.0)
+        effective_repricing_taker_max_entry_premium_bps = min(300.0, repricing_taker_max_entry_premium_bps + 40.0)
+        adaptation_tag = "route_adapted_more_aggressive"
+
     if (
         allow_taker_routes
         and
         classification.signal_type == "repricing_edge"
-        and classification.urgency_score >= taker_urgency_threshold
-        and effective_taker_entry_premium_bps <= repricing_taker_max_entry_premium_bps
+        and classification.urgency_score >= effective_taker_urgency_threshold
+        and effective_taker_entry_premium_bps <= effective_repricing_taker_max_entry_premium_bps
         and taker_remaining_edge_bps >= taker_min_net_edge_after_premium_bps
     ):
+        tags = [classification.signal_type, "taker"]
+        if adaptation_tag:
+            tags.append(adaptation_tag)
         return CryptoExecutionDecision(
             market_id=fair_value.market_id,
             route="taker",
@@ -151,21 +174,21 @@ def route_execution(
             target_price=_taker_price(snapshot=snapshot, side=classification.side, fair_probability=fair_value.fair_probability),
             quote_ttl_seconds=30,
             urgency_score=classification.urgency_score,
-            rationale_tags=(classification.signal_type, "taker"),
+            rationale_tags=tuple(tags),
         )
     repricing_taker_too_expensive = (
         allow_taker_routes
         and
         classification.signal_type == "repricing_edge"
-        and classification.urgency_score >= taker_urgency_threshold
-        and effective_taker_entry_premium_bps > repricing_taker_max_entry_premium_bps
+        and classification.urgency_score >= effective_taker_urgency_threshold
+        and effective_taker_entry_premium_bps > effective_repricing_taker_max_entry_premium_bps
     )
     repricing_taker_edge_buffer_too_thin = (
         allow_taker_routes
         and
         classification.signal_type == "repricing_edge"
-        and classification.urgency_score >= taker_urgency_threshold
-        and effective_taker_entry_premium_bps <= taker_max_entry_premium_bps
+        and classification.urgency_score >= effective_taker_urgency_threshold
+        and effective_taker_entry_premium_bps <= effective_taker_max_entry_premium_bps
         and taker_remaining_edge_bps < taker_min_net_edge_after_premium_bps
     )
 
@@ -175,9 +198,12 @@ def route_execution(
         classification.signal_type in {"liquidity_edge", "resolution_edge"}
         and net_edge_bps >= high_edge_taker_min_edge_bps
         and eligibility.market_spread_bps <= high_edge_taker_max_spread_bps
-        and effective_taker_entry_premium_bps <= taker_max_entry_premium_bps
+        and effective_taker_entry_premium_bps <= effective_taker_max_entry_premium_bps
         and taker_remaining_edge_bps >= taker_min_net_edge_after_premium_bps
     ):
+        tags = [classification.signal_type, "high_edge_taker"]
+        if adaptation_tag:
+            tags.append(adaptation_tag)
         return CryptoExecutionDecision(
             market_id=fair_value.market_id,
             route="taker",
@@ -185,7 +211,7 @@ def route_execution(
             target_price=_taker_price(snapshot=snapshot, side=classification.side, fair_probability=fair_value.fair_probability),
             quote_ttl_seconds=15,
             urgency_score=classification.urgency_score,
-            rationale_tags=(classification.signal_type, "high_edge_taker"),
+            rationale_tags=tuple(tags),
         )
 
     if classification.signal_type == "resolution_edge" and net_edge_bps < max(maker_min_edge_bps, resolution_maker_min_edge_bps):
@@ -224,11 +250,13 @@ def route_execution(
                 observed_probability=observed_probability,
                 fair_probability=fair_value.fair_probability,
                 net_edge_bps=net_edge_bps,
-                maker_aggressiveness=maker_aggressiveness,
+                maker_aggressiveness=effective_maker_aggressiveness,
             ),
             quote_ttl_seconds=maker_quote_ttl,
             urgency_score=classification.urgency_score,
-            rationale_tags=maker_rationale_tags,
+            rationale_tags=(
+                maker_rationale_tags + ((adaptation_tag,) if adaptation_tag else ())
+            ),
         )
 
     return CryptoExecutionDecision(

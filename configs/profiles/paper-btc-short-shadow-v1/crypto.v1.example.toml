@@ -65,6 +65,21 @@ single_active_market_per_thesis = true
 max_no_fill_entry_attempts_per_market = 2
 time_stop_force_ioc_after_expiries = 1
 skip_selective_wide_spread_markets = true
+dynamic_gates_enabled = true
+dynamic_gate_min_samples = 3
+dynamic_min_net_edge_floor_bps = 60.0
+dynamic_min_net_edge_ceiling_bps = 220.0
+dynamic_taker_max_entry_premium_floor_bps = 120.0
+dynamic_taker_max_entry_premium_ceiling_bps = 900.0
+dynamic_repricing_taker_max_entry_premium_floor_bps = 60.0
+dynamic_repricing_taker_max_entry_premium_ceiling_bps = 180.0
+quality_sizing_enabled = true
+quality_sizing_min_multiplier = 0.75
+quality_sizing_max_multiplier = 1.15
+quality_sizing_edge_reference_bps = 700.0
+quality_sizing_confidence_weight = 0.45
+quality_sizing_edge_weight = 0.35
+quality_sizing_route_feedback_weight = 0.20
 
 [strategy.phase2.preset_registry.btc_dip_short_shadow]
 match = { underlying = "BTC", event_family = "dip" }

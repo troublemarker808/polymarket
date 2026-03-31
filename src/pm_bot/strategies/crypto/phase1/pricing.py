@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from math import exp
 
 from pm_bot.strategies.crypto.phase1.models import (
@@ -11,8 +12,17 @@ from pm_bot.strategies.crypto.phase1.models import (
     CryptoLadderSeries,
     CryptoMarketDefinition,
     CryptoPricingInputs,
+    CryptoResidualModelConfig,
     CryptoSurfaceEstimate,
 )
+
+
+@dataclass(slots=True, frozen=True)
+class CryptoResidualCorrectionResult:
+    bucket_key: str
+    correction_bps: float
+    applied: bool
+    diagnostic_tag: str
 
 
 def estimate_barrier_probability(
@@ -106,6 +116,58 @@ def build_peer_probability_map(
     }
 
 
+def build_residual_bucket_key(inputs: CryptoPricingInputs) -> str:
+    return f"{inputs.market.underlying}:{inputs.market.event_family}:{_expiry_bucket_from_days(inputs.time_to_expiry_days)}"
+
+
+def resolve_residual_correction(
+    *,
+    inputs: CryptoPricingInputs,
+    confidence: float,
+    model_config: CryptoResidualModelConfig | None,
+) -> CryptoResidualCorrectionResult:
+    bucket_key = build_residual_bucket_key(inputs)
+    if model_config is None or not model_config.enabled:
+        return CryptoResidualCorrectionResult(
+            bucket_key=bucket_key,
+            correction_bps=0.0,
+            applied=False,
+            diagnostic_tag="residual_disabled",
+        )
+    if confidence < model_config.min_confidence:
+        return CryptoResidualCorrectionResult(
+            bucket_key=bucket_key,
+            correction_bps=0.0,
+            applied=False,
+            diagnostic_tag="residual_confidence_gate",
+        )
+    raw_corrections = dict(model_config.corrections)
+    if bucket_key not in raw_corrections:
+        return CryptoResidualCorrectionResult(
+            bucket_key=bucket_key,
+            correction_bps=0.0,
+            applied=False,
+            diagnostic_tag="residual_bucket_missing",
+        )
+    try:
+        correction_bps = float(raw_corrections[bucket_key])
+    except (TypeError, ValueError):
+        return CryptoResidualCorrectionResult(
+            bucket_key=bucket_key,
+            correction_bps=0.0,
+            applied=False,
+            diagnostic_tag="residual_payload_invalid",
+        )
+    clipped = max(-abs(model_config.max_abs_correction_bps), min(abs(model_config.max_abs_correction_bps), correction_bps))
+    diagnostic = "residual_applied" if clipped == correction_bps else "residual_clipped"
+    return CryptoResidualCorrectionResult(
+        bucket_key=bucket_key,
+        correction_bps=clipped,
+        applied=abs(clipped) > 0.0,
+        diagnostic_tag=diagnostic if abs(clipped) > 0.0 else "residual_zero",
+    )
+
+
 def _project_probability(
     *,
     observed_probability: float,
@@ -120,3 +182,17 @@ def _project_probability(
     if upper_bound is not None and observed_probability > upper_bound:
         return upper_bound
     return observed_probability
+
+
+def _expiry_bucket_from_days(days: float) -> str:
+    if days < 0:
+        return "expired"
+    if days <= 2:
+        return "lt_2d"
+    if days <= 14:
+        return "2d_14d"
+    if days <= 60:
+        return "14d_60d"
+    if days <= 180:
+        return "60d_180d"
+    return "gt_180d"

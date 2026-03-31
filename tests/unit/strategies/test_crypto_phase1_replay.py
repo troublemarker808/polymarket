@@ -43,6 +43,7 @@ def test_compute_crypto_phase1_fair_values_returns_enriched_estimates_for_suppor
     assert tuple(item.market_id for item in fair_values) == ("eth-dip-1000", "eth-dip-1500", "eth-dip-800")
     assert all(item.model_id == "crypto.phase1.fused" for item in fair_values)
     assert all("net_edge_bps" in item.supporting_values for item in fair_values)
+    assert all("residual_diagnostic_tag" in item.supporting_values for item in fair_values)
 
 
 def test_compute_crypto_phase1_fair_values_uses_locked_baseline_by_default() -> None:

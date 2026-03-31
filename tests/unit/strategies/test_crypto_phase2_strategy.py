@@ -7,6 +7,7 @@ from pm_bot.core.research_types import FairValueEstimate
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide
 from pm_bot.runtime.state import DashboardState, HaltReason, PendingOrderState, PositionState, RuntimeStatus
 from pm_bot.strategies.crypto.phase2 import (
+    CryptoDynamicEligibilityGate,
     CryptoExecutionFeedback,
     CryptoPhase2Strategy,
     build_position_intent,
@@ -205,6 +206,63 @@ def test_crypto_phase2_strategy_skips_selective_wide_spread_entries_when_configu
             },
         }
     ]
+
+
+def test_crypto_phase2_strategy_emits_cost_regime_skip_reason_when_dynamic_gate_tightens() -> None:
+    strategy = CryptoPhase2Strategy({"min_net_edge_bps": 75.0})
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-1000",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = FairValueEstimate(
+        market_id="eth-dip-1000",
+        category=Category.CRYPTO,
+        fair_probability=0.14,
+        confidence=0.78,
+        half_life_seconds=3600,
+        observed_probability=0.10,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model", "surface_consistency"),
+        supporting_values={"net_edge_bps": 180.0, "gross_edge_bps": 400.0},
+    )
+    runtime_events: list[dict[str, object]] = []
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+                "execution_feedback": CryptoExecutionFeedback(
+                    maker_fill_rate=0.1,
+                    taker_shortfall_bps=25.0,
+                    repeated_expiration_rate=0.0,
+                    repeated_stop_out_rate=0.6,
+                    recommended_route_bias="more_passive",
+                ),
+                "dynamic_eligibility_gates": {
+                    "ETH:dip": CryptoDynamicEligibilityGate(
+                        family_key="ETH:dip",
+                        sample_count=6,
+                        min_net_edge_bps=260.0,
+                        taker_max_entry_premium_bps=300.0,
+                        repricing_taker_max_entry_premium_bps=80.0,
+                        reason_tag="dynamic_more_passive",
+                    )
+                },
+                "_strategy_runtime_events": runtime_events,
+            },
+        )
+    )
+
+    assert signals == []
+    assert runtime_events[-1]["event_type"] == "strategy.skipped"
+    assert runtime_events[-1]["payload"]["reason"] == "entry_not_actionable"
+    assert runtime_events[-1]["payload"]["eligibility_reason"] == "cost_regime_min_net_edge"
 
 
 def test_crypto_phase2_strategy_generates_exit_signal_for_existing_position() -> None:
@@ -1391,7 +1449,7 @@ def test_crypto_phase2_strategy_skips_entry_when_market_is_blocked() -> None:
     assert signals == []
 
 
-def test_crypto_phase2_strategy_scales_down_notional_when_feedback_is_more_passive() -> None:
+def test_crypto_phase2_strategy_does_not_expand_notional_when_feedback_is_more_passive() -> None:
     strategy = CryptoPhase2Strategy({"default_notional": 5.0})
     snapshot = _snapshot(
         timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
@@ -1422,9 +1480,9 @@ def test_crypto_phase2_strategy_scales_down_notional_when_feedback_is_more_passi
 
     assert len(signals) == 1
     signal = signals[0]
-    assert signal.target_size == 3.75
+    assert signal.target_size <= 5.0
     assert signal.diagnostics["execution_feedback_bias"] == "more_passive"
-    assert signal.diagnostics["execution_feedback_notional"] == 3.75
+    assert signal.diagnostics["quality_sizing_status"] == "quality_sizing_applied"
 
 
 def test_crypto_phase2_strategy_becomes_more_aggressive_when_feedback_says_so() -> None:
@@ -1459,8 +1517,123 @@ def test_crypto_phase2_strategy_becomes_more_aggressive_when_feedback_says_so() 
     assert len(signals) == 1
     signal = signals[0]
     assert signal.quote_ttl_seconds == 30
-    assert signal.target_size == 5.75
+    assert signal.target_size > 5.0
     assert signal.diagnostics["execution_feedback_bias"] == "more_aggressive"
+
+
+def test_crypto_phase2_strategy_expands_notional_for_high_quality_signal_within_bounds() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "default_notional": 5.0,
+            "quality_sizing_min_multiplier": 0.80,
+            "quality_sizing_max_multiplier": 1.20,
+            "quality_sizing_edge_reference_bps": 600.0,
+            "quality_sizing_confidence_weight": 0.0,
+            "quality_sizing_edge_weight": 1.0,
+            "quality_sizing_route_feedback_weight": 0.0,
+        }
+    )
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-1000",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+                "execution_feedback": CryptoExecutionFeedback(
+                    maker_fill_rate=1.0,
+                    taker_shortfall_bps=0.0,
+                    repeated_expiration_rate=0.0,
+                    repeated_stop_out_rate=0.0,
+                    recommended_route_bias="stable",
+                ),
+            },
+        )
+    )
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.target_size > 5.0
+    assert signal.target_size <= 6.0
+    assert signal.diagnostics["quality_sizing_multiplier"] <= 1.2
+
+
+def test_crypto_phase2_strategy_shrinks_notional_for_low_quality_signal_without_zeroing() -> None:
+    strategy = CryptoPhase2Strategy(
+            {
+                "default_notional": 5.0,
+                "min_net_edge_bps": 20.0,
+                "maker_min_edge_bps": 20.0,
+                "quality_sizing_min_multiplier": 0.80,
+                "quality_sizing_max_multiplier": 1.20,
+                "quality_sizing_edge_reference_bps": 1000.0,
+            "quality_sizing_confidence_weight": 0.0,
+            "quality_sizing_edge_weight": 1.0,
+            "quality_sizing_route_feedback_weight": 0.0,
+        }
+    )
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-1500",
+        best_bid_yes=0.33,
+        best_ask_yes=0.35,
+        best_bid_no=0.65,
+        best_ask_no=0.67,
+    )
+    fair_value = _fair_value("skip_low_edge")
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1500": fair_value},
+                "execution_feedback": CryptoExecutionFeedback(
+                    maker_fill_rate=0.0,
+                    taker_shortfall_bps=200.0,
+                    repeated_expiration_rate=1.0,
+                    repeated_stop_out_rate=1.0,
+                    recommended_route_bias="more_passive",
+                ),
+            },
+        )
+    )
+    assert len(signals) == 1
+    signal = signals[0]
+    assert 0.0 < signal.target_size < 5.0
+    assert signal.diagnostics["quality_sizing_multiplier"] >= 0.8
+
+
+def test_crypto_phase2_strategy_falls_back_to_base_notional_when_quality_components_missing() -> None:
+    strategy = CryptoPhase2Strategy({"default_notional": 5.0})
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-1000",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+            },
+        )
+    )
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.target_size == 5.0
+    assert signal.diagnostics["quality_sizing_status"] == "quality_components_missing"
 
 
 def test_crypto_phase2_strategy_applies_family_preset_registry() -> None:

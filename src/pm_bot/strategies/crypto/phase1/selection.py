@@ -319,7 +319,7 @@ def generate_crypto_market_selection_report_from_snapshots(
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
 ) -> CryptoMarketSelectionReport:
-    baseline_preset, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+    baseline_preset, resolved_barrier_model_config, resolved_fusion_model_config, resolved_residual_model_config = resolve_crypto_calibration_model_configs(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
     )
@@ -332,6 +332,7 @@ def generate_crypto_market_selection_report_from_snapshots(
         underlying_states=underlying_states,
         barrier_model_config=resolved_barrier_model_config,
         fusion_model_config=resolved_fusion_model_config,
+        residual_model_config=resolved_residual_model_config,
     )
     fair_values_by_market_id = {item.market_id: item for item in fair_values}
     event_counts_by_market_id = _event_counts_by_market_id(event_path=event_path, events=events)

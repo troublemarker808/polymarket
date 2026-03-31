@@ -23,6 +23,7 @@ from pm_bot.strategies.crypto.phase1.models import (
     CryptoBarrierModelConfig,
     CryptoFusionModelConfig,
     CryptoMarketDefinition,
+    CryptoResidualModelConfig,
     CryptoUnderlyingState,
 )
 from pm_bot.strategies.crypto.phase1.pricing import observed_mid_probability
@@ -54,6 +55,7 @@ class CryptoCalibrationMarketRow:
     sign_aligned: bool
     selection_miss: bool
     confidence: float
+    residual_diagnostic_tag: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -137,10 +139,12 @@ def generate_crypto_calibration_report(
     output_dir: str | Path | None = None,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
+    residual_model_config: CryptoResidualModelConfig | None = None,
 ) -> CryptoCalibrationReport:
-    baseline_preset, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+    baseline_preset, resolved_barrier_model_config, resolved_fusion_model_config, resolved_residual_model_config = resolve_crypto_calibration_model_configs(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
+        residual_model_config=residual_model_config,
     )
     dataset_specs = {
         "train": Path(train_snapshot_path),
@@ -157,6 +161,7 @@ def generate_crypto_calibration_report(
             underlying_states=underlying_states,
             barrier_model_config=resolved_barrier_model_config,
             fusion_model_config=resolved_fusion_model_config,
+            residual_model_config=resolved_residual_model_config,
         )
         all_rows.extend(rows)
         dataset_reports.append(_build_dataset_report(dataset=dataset, snapshot_path=snapshot_path, rows=rows))
@@ -185,6 +190,8 @@ def generate_crypto_calibration_report(
             "barrier_probability_ceiling",
             "fusion_barrier_weight",
             "fusion_surface_weight",
+            "residual_min_confidence",
+            "residual_max_abs_correction_bps",
             "min_net_edge_bps",
             "maker_min_edge_bps",
         ),
@@ -215,6 +222,7 @@ def build_crypto_calibration_rows(
     underlying_states: dict[str, CryptoUnderlyingState],
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
+    residual_model_config: CryptoResidualModelConfig | None = None,
 ) -> tuple[CryptoCalibrationMarketRow, ...]:
     snapshots = load_market_snapshots(snapshot_path)
     normalized_by_market_id: dict[str, CryptoMarketDefinition] = {}
@@ -266,6 +274,7 @@ def build_crypto_calibration_rows(
                     underlying_states=underlying_states,
                     barrier_model_config=barrier_model_config,
                     fusion_model_config=fusion_model_config,
+                    residual_model_config=residual_model_config,
                 )
                 fair_value_by_market_id.update({item.market_id: item for item in fair_values})
 
@@ -323,6 +332,7 @@ def build_crypto_calibration_rows(
                 sign_aligned=sign_aligned,
                 selection_miss=selection_miss,
                 confidence=fair_value.confidence,
+                residual_diagnostic_tag=str(fair_value.supporting_values.get("residual_diagnostic_tag", "")),
             )
         )
     return tuple(rows)

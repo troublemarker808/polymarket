@@ -31,16 +31,26 @@ from pm_bot.strategies.crypto.phase1.selection import (
 )
 from pm_bot.strategies.crypto.phase2.execution import classify_crypto_signal
 from pm_bot.strategies.crypto.phase2.management import (
+    build_route_policy_key,
     build_position_intent,
     summarize_execution_feedback_from_events,
+    update_route_policy_state,
     update_reentry_state,
 )
-from pm_bot.strategies.crypto.phase2.models import CryptoExitDecision, CryptoPositionIntent, CryptoReentryState
+from pm_bot.strategies.crypto.phase2.models import (
+    CryptoDynamicEligibilityGate,
+    CryptoExecutionFeedback,
+    CryptoExitDecision,
+    CryptoPositionIntent,
+    CryptoReentryState,
+    CryptoRoutePolicyState,
+)
 
 
 _LOCKED_BASELINE = get_locked_crypto_calibration_baseline_preset()
 WORKING_BARRIER_MODEL_CONFIG = _LOCKED_BASELINE.barrier_model_config
 WORKING_FUSION_MODEL_CONFIG = _LOCKED_BASELINE.fusion_model_config
+_DYNAMIC_GATE_MIN_SAMPLES = 3
 
 
 class CryptoPhase2PaperContextBuilder:
@@ -85,6 +95,7 @@ class CryptoPhase2PaperContextBuilder:
         )
         self.position_intents_by_market_id: dict[str, CryptoPositionIntent] = {}
         self.reentry_state_by_market_id: dict[str, CryptoReentryState] = {}
+        self.route_policy_state_by_key: dict[str, CryptoRoutePolicyState] = {}
         self._processed_event_count = 0
 
     def build_context(
@@ -136,6 +147,46 @@ class CryptoPhase2PaperContextBuilder:
             for event in recorder.events[-64:]
             if isinstance(event, dict)
         )
+        market_family_by_market_id = _market_family_by_market_id(snapshots)
+        pending_orders = _pending_orders_from_events(recent_events)
+        execution_feedback = summarize_execution_feedback_from_events(
+            recent_events=recent_events,
+            pending_orders=pending_orders,
+        )
+        execution_feedback_by_family = _execution_feedback_by_family(
+            recent_events=recent_events,
+            pending_orders=pending_orders,
+            market_family_by_market_id=market_family_by_market_id,
+        )
+        sample_counts_by_family = _sample_counts_by_family(
+            recent_events=recent_events,
+            market_family_by_market_id=market_family_by_market_id,
+        )
+        dynamic_eligibility_gates = _dynamic_gates_by_family(
+            execution_feedback_by_family=execution_feedback_by_family,
+            sample_counts_by_family=sample_counts_by_family,
+        )
+        signal_type_by_market_id = _signal_type_by_market_id(fair_values_by_market_id)
+        execution_feedback_by_route_key = _execution_feedback_by_route_key(
+            recent_events=recent_events,
+            pending_orders=pending_orders,
+            market_family_by_market_id=market_family_by_market_id,
+            signal_type_by_market_id=signal_type_by_market_id,
+        )
+        sample_counts_by_route_key = _sample_counts_by_route_key(
+            recent_events=recent_events,
+            market_family_by_market_id=market_family_by_market_id,
+            signal_type_by_market_id=signal_type_by_market_id,
+        )
+        now = snapshots[-1].timestamp if snapshots else datetime.now(tz=timezone.utc)
+        for route_key, feedback in execution_feedback_by_route_key.items():
+            self.route_policy_state_by_key[route_key] = update_route_policy_state(
+                route_key=route_key,
+                previous=self.route_policy_state_by_key.get(route_key),
+                feedback=feedback,
+                sample_count=sample_counts_by_route_key.get(route_key, 0),
+                as_of=now,
+            )
         return {
             "fair_values_by_market_id": fair_values_by_market_id,
             "position_intents_by_market_id": dict(self.position_intents_by_market_id),
@@ -146,10 +197,10 @@ class CryptoPhase2PaperContextBuilder:
             "blocked_market_reasons": blocked_market_reasons,
             "market_selection_actions": market_selection_actions,
             "market_selection_reasons": market_selection_reasons,
-            "execution_feedback": summarize_execution_feedback_from_events(
-                recent_events=recent_events,
-                pending_orders=_pending_orders_from_events(recent_events),
-            ),
+            "execution_feedback": execution_feedback,
+            "execution_feedback_by_family": execution_feedback_by_family,
+            "dynamic_eligibility_gates": dynamic_eligibility_gates,
+            "route_policy_state_by_key": dict(self.route_policy_state_by_key),
         }
 
 
@@ -282,3 +333,221 @@ def _pending_orders_from_events(
             signal_edge_bps=_optional_float(payload.get("signal_edge_bps")),
         )
     return tuple(orders_by_id.values())
+
+
+def _market_family_by_market_id(
+    snapshots: Sequence[MarketSnapshot],
+) -> dict[str, str]:
+    families: dict[str, str] = {}
+    for snapshot in snapshots:
+        family_key = _market_family_key(snapshot)
+        if family_key is None:
+            continue
+        families[snapshot.market_id] = family_key
+    return families
+
+
+def _execution_feedback_by_family(
+    *,
+    recent_events: Sequence[dict[str, object]],
+    pending_orders: Sequence[PendingOrderState],
+    market_family_by_market_id: dict[str, str],
+) -> dict[str, CryptoExecutionFeedback]:
+    events_by_family: dict[str, list[dict[str, object]]] = {}
+    pending_by_family: dict[str, list[PendingOrderState]] = {}
+    for event in recent_events:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        market_id = str(payload.get("market_id", "")).strip()
+        family_key = market_family_by_market_id.get(market_id)
+        if not family_key:
+            continue
+        events_by_family.setdefault(family_key, []).append(event)
+    for order in pending_orders:
+        family_key = market_family_by_market_id.get(order.market_id)
+        if not family_key:
+            continue
+        pending_by_family.setdefault(family_key, []).append(order)
+    feedback_by_family: dict[str, CryptoExecutionFeedback] = {}
+    for family_key in sorted(set(events_by_family) | set(pending_by_family)):
+        feedback_by_family[family_key] = summarize_execution_feedback_from_events(
+            recent_events=tuple(events_by_family.get(family_key, ())),
+            pending_orders=tuple(pending_by_family.get(family_key, ())),
+        )
+    return feedback_by_family
+
+
+def _dynamic_gates_by_family(
+    *,
+    execution_feedback_by_family: dict[str, CryptoExecutionFeedback],
+    sample_counts_by_family: dict[str, int],
+) -> dict[str, CryptoDynamicEligibilityGate]:
+    gates: dict[str, CryptoDynamicEligibilityGate] = {}
+    for family_key, feedback in execution_feedback_by_family.items():
+        sample_count = max(0, sample_counts_by_family.get(family_key, 0))
+        if sample_count < _DYNAMIC_GATE_MIN_SAMPLES:
+            gates[family_key] = CryptoDynamicEligibilityGate(
+                family_key=family_key,
+                sample_count=sample_count,
+                min_net_edge_bps=75.0,
+                taker_max_entry_premium_bps=750.0,
+                repricing_taker_max_entry_premium_bps=90.0,
+                reason_tag="dynamic_insufficient_samples",
+            )
+            continue
+        if feedback.recommended_route_bias == "more_passive":
+            gates[family_key] = CryptoDynamicEligibilityGate(
+                family_key=family_key,
+                sample_count=sample_count,
+                min_net_edge_bps=125.0,
+                taker_max_entry_premium_bps=500.0,
+                repricing_taker_max_entry_premium_bps=80.0,
+                reason_tag="dynamic_more_passive",
+            )
+        elif feedback.recommended_route_bias == "more_aggressive":
+            gates[family_key] = CryptoDynamicEligibilityGate(
+                family_key=family_key,
+                sample_count=sample_count,
+                min_net_edge_bps=65.0,
+                taker_max_entry_premium_bps=850.0,
+                repricing_taker_max_entry_premium_bps=110.0,
+                reason_tag="dynamic_more_aggressive",
+            )
+        else:
+            gates[family_key] = CryptoDynamicEligibilityGate(
+                family_key=family_key,
+                sample_count=sample_count,
+                min_net_edge_bps=75.0,
+                taker_max_entry_premium_bps=750.0,
+                repricing_taker_max_entry_premium_bps=90.0,
+                reason_tag="dynamic_stable",
+            )
+    return gates
+
+
+def _sample_counts_by_family(
+    *,
+    recent_events: Sequence[dict[str, object]],
+    market_family_by_market_id: dict[str, str],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    tracked_event_types = {"order.submitted", "order.filled", "order.expired", "order.rejected", "trade.closed"}
+    for event in recent_events:
+        event_type = str(event.get("event_type", "")).strip()
+        if event_type not in tracked_event_types:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        market_id = str(payload.get("market_id", "")).strip()
+        family_key = market_family_by_market_id.get(market_id)
+        if not family_key:
+            continue
+        counts[family_key] = counts.get(family_key, 0) + 1
+    return counts
+
+
+def _signal_type_by_market_id(
+    fair_values_by_market_id: dict[str, FairValueEstimate],
+) -> dict[str, str]:
+    signal_type: dict[str, str] = {}
+    for market_id, fair_value in fair_values_by_market_id.items():
+        signal_type[market_id] = classify_crypto_signal(fair_value=fair_value).signal_type
+    return signal_type
+
+
+def _execution_feedback_by_route_key(
+    *,
+    recent_events: Sequence[dict[str, object]],
+    pending_orders: Sequence[PendingOrderState],
+    market_family_by_market_id: dict[str, str],
+    signal_type_by_market_id: dict[str, str],
+) -> dict[str, CryptoExecutionFeedback]:
+    events_by_key: dict[str, list[dict[str, object]]] = {}
+    pending_by_key: dict[str, list[PendingOrderState]] = {}
+    for event in recent_events:
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        market_id = str(payload.get("market_id", "")).strip()
+        family_key = market_family_by_market_id.get(market_id)
+        signal_type = signal_type_by_market_id.get(market_id)
+        if not family_key or not signal_type:
+            continue
+        route_key = build_route_policy_key(
+            underlying=family_key.split(":")[0],
+            event_family=family_key.split(":")[1],
+            signal_type=signal_type,
+        )
+        events_by_key.setdefault(route_key, []).append(event)
+    for order in pending_orders:
+        family_key = market_family_by_market_id.get(order.market_id)
+        signal_type = signal_type_by_market_id.get(order.market_id)
+        if not family_key or not signal_type:
+            continue
+        route_key = build_route_policy_key(
+            underlying=family_key.split(":")[0],
+            event_family=family_key.split(":")[1],
+            signal_type=signal_type,
+        )
+        pending_by_key.setdefault(route_key, []).append(order)
+    result: dict[str, CryptoExecutionFeedback] = {}
+    for route_key in sorted(set(events_by_key) | set(pending_by_key)):
+        result[route_key] = summarize_execution_feedback_from_events(
+            recent_events=tuple(events_by_key.get(route_key, ())),
+            pending_orders=tuple(pending_by_key.get(route_key, ())),
+        )
+    return result
+
+
+def _sample_counts_by_route_key(
+    *,
+    recent_events: Sequence[dict[str, object]],
+    market_family_by_market_id: dict[str, str],
+    signal_type_by_market_id: dict[str, str],
+) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    tracked_event_types = {"order.submitted", "order.filled", "order.expired", "order.rejected", "trade.closed"}
+    for event in recent_events:
+        event_type = str(event.get("event_type", "")).strip()
+        if event_type not in tracked_event_types:
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        market_id = str(payload.get("market_id", "")).strip()
+        family_key = market_family_by_market_id.get(market_id)
+        signal_type = signal_type_by_market_id.get(market_id)
+        if not family_key or not signal_type:
+            continue
+        route_key = build_route_policy_key(
+            underlying=family_key.split(":")[0],
+            event_family=family_key.split(":")[1],
+            signal_type=signal_type,
+        )
+        counts[route_key] = counts.get(route_key, 0) + 1
+    return counts
+
+
+def _market_family_key(snapshot: MarketSnapshot) -> str | None:
+    text = " ".join(
+        (
+            str(snapshot.metadata.get("question", "")),
+            snapshot.slug,
+            str(snapshot.metadata.get("event_title", "")),
+        )
+    ).lower()
+    if "bitcoin" in text or "btc" in text:
+        underlying = "BTC"
+    elif "ethereum" in text or "eth" in text:
+        underlying = "ETH"
+    else:
+        return None
+    if any(token in text for token in ("dip", "drop", "fall", "below", "under")):
+        event_family = "dip"
+    elif any(token in text for token in ("reach", "hit", "above", "over")):
+        event_family = "reach"
+    else:
+        return None
+    return f"{underlying}:{event_family}"

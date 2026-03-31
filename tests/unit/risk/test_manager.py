@@ -60,6 +60,7 @@ def build_order(
     exposure_group_id: str | None = None,
     thesis_group_id: str | None = None,
     underlying_group_id: str | None = None,
+    notional: float | None = None,
 ) -> OrderIntent:
     return OrderIntent(
         strategy_id="crypto.surface",
@@ -72,6 +73,7 @@ def build_order(
         size=5.0,
         time_in_force="GTC",
         created_at=created_at or datetime.now(tz=timezone.utc),
+        notional=notional,
         quote_ttl_seconds=quote_ttl_seconds,
         signal_edge_bps=signal_edge_bps,
         exposure_group_id=exposure_group_id,
@@ -383,6 +385,56 @@ def test_risk_manager_rejects_order_when_underlying_group_notional_cap_is_breach
                 exposure_group_id="crypto:btc-dip-ladder-b",
                 thesis_group_id="crypto:btc:dip",
                 underlying_group_id="crypto:btc",
+            )
+        )
+    )
+
+    assert not rejected.approved
+    assert rejected.reason == "order exceeds underlying-group notional cap"
+
+
+def test_risk_manager_keeps_underlying_group_cap_authoritative_after_sizing_expansion() -> None:
+    import asyncio
+
+    manager = BasicRiskManager(
+        settings=RiskSettings(
+            max_daily_drawdown_pct=5.0,
+            max_consecutive_losses=5,
+            manual_resume_required=True,
+        ),
+        trading_settings=TradingSettings(
+            starting_equity=100.0,
+            default_order_notional=5.0,
+            max_order_notional=10.0,
+            max_notional_per_market=10.0,
+            max_notional_per_exposure_group=50.0,
+            max_notional_per_thesis_group=50.0,
+            max_notional_per_underlying_group=6.0,
+            max_notional_per_category=50.0,
+            max_total_gross_notional=100.0,
+            max_concurrent_positions=4,
+            daily_order_soft_limit=10,
+            daily_order_hard_limit=15,
+        ),
+    )
+    existing = build_order(
+        "m0",
+        exposure_group_id="crypto:btc-reach-ladder-a",
+        thesis_group_id="crypto:btc:reach",
+        underlying_group_id="crypto:btc",
+        notional=4.0,
+    )
+    existing.size = round(4.0 / 0.55, 6)
+    asyncio.run(manager.record_order_submission(existing, "o0"))
+
+    rejected = asyncio.run(
+        manager.review_order(
+            build_order(
+                "m1",
+                exposure_group_id="crypto:btc-dip-ladder-b",
+                thesis_group_id="crypto:btc:dip",
+                underlying_group_id="crypto:btc",
+                notional=3.0,
             )
         )
     )

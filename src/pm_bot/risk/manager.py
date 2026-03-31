@@ -113,7 +113,8 @@ class BasicRiskManager:
         if any(order.market_id == intent.market_id for order in self.state.pending_orders.values()):
             return self._reject_order(intent=intent, reason="market already has a pending order")
 
-        if order_notional - self.trading_settings.default_order_notional > _NOTIONAL_COMPARISON_EPSILON:
+        per_trade_notional_cap = self._per_trade_notional_cap()
+        if order_notional - per_trade_notional_cap > _NOTIONAL_COMPARISON_EPSILON:
             return self._reject_order(intent=intent, reason="order exceeds per-trade notional cap")
         if self.state.orders_today >= self.trading_settings.daily_order_hard_limit:
             return self._reject_order(intent=intent, reason="daily order hard limit reached")
@@ -606,6 +607,12 @@ class BasicRiskManager:
         if intent.price is None:
             return 0.0
         return intent.price * intent.size
+
+    def _per_trade_notional_cap(self) -> float:
+        configured_cap = self.trading_settings.max_order_notional
+        if configured_cap is not None:
+            return configured_cap
+        return self.trading_settings.default_order_notional
 
     @staticmethod
     def _exposure_group_id(exposure_group_id: str | None, market_id: str) -> str:

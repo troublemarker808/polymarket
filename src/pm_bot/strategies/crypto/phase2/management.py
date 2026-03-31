@@ -15,6 +15,7 @@ from pm_bot.strategies.crypto.phase2.models import (
     CryptoExitDecision,
     CryptoPositionIntent,
     CryptoReentryState,
+    CryptoRoutePolicyState,
     CryptoSignalClassification,
 )
 
@@ -334,6 +335,68 @@ def summarize_execution_feedback_from_events(
     return summarize_execution_feedback(
         pending_orders=pending_orders,
         closed_trades=tuple(closed_trades),
+    )
+
+
+def build_route_policy_key(*, underlying: str, event_family: str, signal_type: str) -> str:
+    return f"{underlying}:{event_family}:{signal_type}"
+
+
+def update_route_policy_state(
+    *,
+    route_key: str,
+    previous: CryptoRoutePolicyState | None,
+    feedback: CryptoExecutionFeedback,
+    sample_count: int,
+    as_of: datetime,
+    min_samples: int = 3,
+    cooldown_seconds: int = 120,
+) -> CryptoRoutePolicyState:
+    if previous is not None and as_of < previous.cooldown_until:
+        return previous
+    if sample_count < min_samples:
+        return CryptoRoutePolicyState(
+            route_key=route_key,
+            sample_count=sample_count,
+            route_bias="stable",
+            aggressiveness_adjustment=0.0,
+            taker_urgency_adjustment=0.0,
+            taker_premium_adjustment_bps=0.0,
+            updated_at=as_of,
+            cooldown_until=as_of,
+        )
+    route_bias = feedback.recommended_route_bias
+    if route_bias == "more_passive":
+        return CryptoRoutePolicyState(
+            route_key=route_key,
+            sample_count=sample_count,
+            route_bias=route_bias,
+            aggressiveness_adjustment=-0.15,
+            taker_urgency_adjustment=0.06,
+            taker_premium_adjustment_bps=-80.0,
+            updated_at=as_of,
+            cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
+        )
+    if route_bias == "more_aggressive":
+        return CryptoRoutePolicyState(
+            route_key=route_key,
+            sample_count=sample_count,
+            route_bias=route_bias,
+            aggressiveness_adjustment=0.20,
+            taker_urgency_adjustment=-0.06,
+            taker_premium_adjustment_bps=80.0,
+            updated_at=as_of,
+            cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
+        )
+    return CryptoRoutePolicyState(
+        route_key=route_key,
+        sample_count=sample_count,
+        route_bias="stable",
+        aggressiveness_adjustment=0.0,
+        taker_urgency_adjustment=0.0,
+        taker_premium_adjustment_bps=0.0,
+        updated_at=as_of,
+        cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
     )
 
 

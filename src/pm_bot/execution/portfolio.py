@@ -150,6 +150,54 @@ class PortfolioCapUtilization:
     by_thesis_group: tuple[ExposureGroupCapUtilization, ...]
     by_underlying_group: tuple[ExposureGroupCapUtilization, ...]
 
+    def remaining_notional_budget(
+        self,
+        *,
+        category: Category,
+        exposure_group_id: str | None = None,
+        thesis_group_id: str | None = None,
+        underlying_group_id: str | None = None,
+    ) -> float:
+        category_cap = next(
+            (entry.remaining_notional for entry in self.by_category if entry.category == category),
+            self.total_gross.remaining_notional,
+        )
+        budgets = [self.total_gross.remaining_notional, category_cap]
+        if exposure_group_id is not None:
+            budgets.append(
+                next(
+                    (
+                        entry.remaining_notional
+                        for entry in self.by_exposure_group
+                        if entry.category == category and entry.exposure_group_id == exposure_group_id
+                    ),
+                    self.total_gross.remaining_notional,
+                )
+            )
+        if thesis_group_id is not None:
+            budgets.append(
+                next(
+                    (
+                        entry.remaining_notional
+                        for entry in self.by_thesis_group
+                        if entry.category == category and entry.exposure_group_id == thesis_group_id
+                    ),
+                    self.total_gross.remaining_notional,
+                )
+            )
+        if underlying_group_id is not None:
+            budgets.append(
+                next(
+                    (
+                        entry.remaining_notional
+                        for entry in self.by_underlying_group
+                        if entry.category == category and entry.exposure_group_id == underlying_group_id
+                    ),
+                    self.total_gross.remaining_notional,
+                )
+            )
+        return max(0.0, min(budgets))
+
 
 def build_portfolio_state(
     *,

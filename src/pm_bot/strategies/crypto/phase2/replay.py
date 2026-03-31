@@ -110,7 +110,7 @@ async def run_crypto_phase2_replay_snapshots(
     snapshot_path: str | Path = "in-memory",
     strategy_overrides: dict[str, object] | None = None,
 ) -> tuple[FairValueEstimate, ...]:
-    _, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+    _, resolved_barrier_model_config, resolved_fusion_model_config, resolved_residual_model_config = resolve_crypto_calibration_model_configs(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
     )
@@ -121,6 +121,7 @@ async def run_crypto_phase2_replay_snapshots(
         adverse_selection_bps=adverse_selection_bps,
         barrier_model_config=resolved_barrier_model_config,
         fusion_model_config=resolved_fusion_model_config,
+        residual_model_config=resolved_residual_model_config,
     )
     result = await _run_crypto_phase2_loop_with_settings(
         snapshots=snapshots,

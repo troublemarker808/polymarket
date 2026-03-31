@@ -7,6 +7,7 @@ from pm_bot.strategies.crypto.phase1.inputs import build_pricing_inputs, build_u
 from pm_bot.strategies.crypto.phase1.models import CryptoBarrierModelConfig
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
 from pm_bot.strategies.crypto.phase1.pricing import (
+    build_residual_bucket_key,
     build_peer_probability_map,
     estimate_barrier_probability,
     estimate_surface_consistency,
@@ -104,3 +105,21 @@ def test_observed_mid_probability_and_peer_map_use_only_in_series_markets() -> N
 
     assert round(mid or 0.0, 3) == 0.255
     assert set(peer_map) == {"eth-dip-1500", "eth-dip-1000", "eth-dip-800"}
+
+
+def test_build_residual_bucket_key_uses_underlying_family_and_expiry_bucket() -> None:
+    snapshots = load_market_snapshots(FIXTURE_SNAPSHOTS)
+    market = normalize_crypto_market(snapshots[0])
+    assert market is not None
+    state = build_underlying_state(
+        underlying="ETH",
+        as_of=datetime.fromisoformat("2026-03-23T12:00:00+00:00"),
+        spot_price=1850.0,
+        realized_volatility=0.62,
+        implied_volatility=0.71,
+    )
+    inputs = build_pricing_inputs(market=market, underlying_state=state, as_of=snapshots[0].timestamp)
+
+    key = build_residual_bucket_key(inputs)
+
+    assert key.startswith("ETH:dip:")

@@ -24,9 +24,11 @@ from pm_bot.strategies.crypto.phase2.execution import (
 )
 from pm_bot.strategies.crypto.phase2.management import evaluate_exit, is_reentry_blocked
 from pm_bot.strategies.crypto.phase2.models import (
+    CryptoDynamicEligibilityGate,
     CryptoExecutionFeedback,
     CryptoPositionIntent,
     CryptoReentryState,
+    CryptoRoutePolicyState,
 )
 
 
@@ -115,6 +117,34 @@ class CryptoPhase2Config:
         )
         self.skip_selective_wide_spread_markets = bool(
             config.get("skip_selective_wide_spread_markets", False)
+        )
+        self.dynamic_gates_enabled = bool(config.get("dynamic_gates_enabled", True))
+        self.dynamic_gate_min_samples = int(config.get("dynamic_gate_min_samples", 3))
+        self.dynamic_min_net_edge_floor_bps = float(config.get("dynamic_min_net_edge_floor_bps", 50.0))
+        self.dynamic_min_net_edge_ceiling_bps = float(config.get("dynamic_min_net_edge_ceiling_bps", 300.0))
+        self.dynamic_taker_max_entry_premium_floor_bps = float(
+            config.get("dynamic_taker_max_entry_premium_floor_bps", 60.0)
+        )
+        self.dynamic_taker_max_entry_premium_ceiling_bps = float(
+            config.get("dynamic_taker_max_entry_premium_ceiling_bps", 1200.0)
+        )
+        self.dynamic_repricing_taker_max_entry_premium_floor_bps = float(
+            config.get("dynamic_repricing_taker_max_entry_premium_floor_bps", 50.0)
+        )
+        self.dynamic_repricing_taker_max_entry_premium_ceiling_bps = float(
+            config.get("dynamic_repricing_taker_max_entry_premium_ceiling_bps", 300.0)
+        )
+        self.route_adaptation_enabled = bool(config.get("route_adaptation_enabled", True))
+        self.route_adaptation_min_samples = int(config.get("route_adaptation_min_samples", 3))
+        self.route_adaptation_cooldown_seconds = float(config.get("route_adaptation_cooldown_seconds", 120.0))
+        self.quality_sizing_enabled = bool(config.get("quality_sizing_enabled", True))
+        self.quality_sizing_min_multiplier = float(config.get("quality_sizing_min_multiplier", 0.75))
+        self.quality_sizing_max_multiplier = float(config.get("quality_sizing_max_multiplier", 1.15))
+        self.quality_sizing_edge_reference_bps = float(config.get("quality_sizing_edge_reference_bps", 700.0))
+        self.quality_sizing_confidence_weight = float(config.get("quality_sizing_confidence_weight", 0.45))
+        self.quality_sizing_edge_weight = float(config.get("quality_sizing_edge_weight", 0.35))
+        self.quality_sizing_route_feedback_weight = float(
+            config.get("quality_sizing_route_feedback_weight", 0.20)
         )
         self.preset_rules = build_phase2_preset_rules(dict(config))
 
@@ -221,9 +251,25 @@ class CryptoPhase2Strategy:
         classification = classify_crypto_signal(fair_value=fair_value)
         execution_feedback = _execution_feedback(context)
         resolved_config = resolve_phase2_config_for_snapshot(base=self.config, snapshot=snapshot)
-        feedback_notional = _feedback_default_notional(
-            base_notional=resolved_config.default_notional,
-            feedback=execution_feedback,
+        dynamic_gate = _dynamic_eligibility_gate_for_snapshot(snapshot=snapshot, context=context)
+        dynamic_min_net_edge_bps = _effective_dynamic_min_net_edge_bps(
+            base_min_net_edge_bps=resolved_config.min_net_edge_bps,
+            gate=dynamic_gate,
+            config=resolved_config,
+        )
+        dynamic_min_net_edge_reason = _min_net_edge_reason_for_dynamic_gate(
+            base_min_net_edge_bps=resolved_config.min_net_edge_bps,
+            effective_min_net_edge_bps=dynamic_min_net_edge_bps,
+        )
+        dynamic_taker_max_entry_premium_bps = _effective_dynamic_taker_max_entry_premium_bps(
+            base_taker_max_entry_premium_bps=resolved_config.taker_max_entry_premium_bps,
+            gate=dynamic_gate,
+            config=resolved_config,
+        )
+        dynamic_repricing_taker_max_entry_premium_bps = _effective_dynamic_repricing_taker_max_entry_premium_bps(
+            base_repricing_taker_max_entry_premium_bps=resolved_config.repricing_taker_max_entry_premium_bps,
+            gate=dynamic_gate,
+            config=resolved_config,
         )
         selection_action = _selection_action_for_market(snapshot=snapshot, context=context)
         selection_reasons = _selection_reasons_for_market(snapshot=snapshot, context=context)
@@ -248,10 +294,11 @@ class CryptoPhase2Strategy:
             snapshot=snapshot,
             classification=classification,
             min_confidence=resolved_config.min_confidence,
-            min_net_edge_bps=resolved_config.min_net_edge_bps,
+            min_net_edge_bps=dynamic_min_net_edge_bps,
             max_spread_bps=resolved_config.max_spread_bps,
             min_liquidity_score=resolved_config.min_liquidity_score,
             min_contract_price=resolved_config.min_contract_price,
+            min_net_edge_reason=dynamic_min_net_edge_reason,
         )
         decision = route_execution(
             fair_value=fair_value,
@@ -267,8 +314,8 @@ class CryptoPhase2Strategy:
             resolution_maker_min_edge_bps=resolved_config.resolution_maker_min_edge_bps,
             high_edge_taker_min_edge_bps=resolved_config.high_edge_taker_min_edge_bps,
             high_edge_taker_max_spread_bps=resolved_config.high_edge_taker_max_spread_bps,
-            taker_max_entry_premium_bps=resolved_config.taker_max_entry_premium_bps,
-            repricing_taker_max_entry_premium_bps=resolved_config.repricing_taker_max_entry_premium_bps,
+            taker_max_entry_premium_bps=dynamic_taker_max_entry_premium_bps,
+            repricing_taker_max_entry_premium_bps=dynamic_repricing_taker_max_entry_premium_bps,
             taker_slippage_guard_bps=resolved_config.taker_slippage_guard_bps,
             taker_min_net_edge_after_premium_bps=resolved_config.taker_min_net_edge_after_premium_bps,
             maker_quote_ttl_seconds=_feedback_maker_quote_ttl_seconds(
@@ -287,6 +334,11 @@ class CryptoPhase2Strategy:
                 base_aggressiveness=resolved_config.maker_aggressiveness,
                 feedback=execution_feedback,
             ),
+            route_policy_bias=_route_policy_bias_for_snapshot(
+                snapshot=snapshot,
+                signal_type=classification.signal_type,
+                context=context,
+            ),
         )
         if decision.route == "skip" or decision.target_price is None:
             _record_runtime_skip(
@@ -301,19 +353,28 @@ class CryptoPhase2Strategy:
                     "signal_type": classification.signal_type,
                     "selection_action": selection_action,
                     "selection_reasons": list(selection_reasons),
+                    "dynamic_gate_reason": (dynamic_gate.reason_tag if dynamic_gate is not None else "dynamic_disabled"),
                 },
             )
             return []
+
+        quality_notional, quality_score, quality_multiplier, quality_status = _quality_weighted_default_notional(
+            base_notional=resolved_config.default_notional,
+            confidence=fair_value.confidence,
+            net_edge_bps=eligibility.net_edge_bps,
+            feedback=execution_feedback,
+            config=resolved_config,
+        )
 
         intent = build_order_intent(
             fair_value=fair_value,
             snapshot=snapshot,
             decision=decision,
-            default_notional=feedback_notional,
+            default_notional=quality_notional,
             taker_time_in_force=resolved_config.taker_time_in_force,
             strategy_id=self.strategy_id,
         )
-        target_size = intent.notional if intent is not None else feedback_notional
+        target_size = intent.notional if intent is not None else quality_notional
         refreshable_pending_order_exists = _has_refreshable_repricing_fallback_pending_order(
             snapshot=snapshot,
             dashboard=dashboard_state(context),
@@ -404,10 +465,17 @@ class CryptoPhase2Strategy:
                     "signal_type": classification.signal_type,
                     "execution_route": decision.route,
                     "execution_feedback_bias": execution_feedback.recommended_route_bias if execution_feedback is not None else "none",
-                    "execution_feedback_notional": feedback_notional,
+                    "execution_feedback_notional": quality_notional,
+                    "quality_sizing_score": quality_score,
+                    "quality_sizing_multiplier": quality_multiplier,
+                    "quality_sizing_status": quality_status,
                     "phase2_preset": resolved_config.preset_name,
                     "selection_action": selection_action,
                     "selection_reasons": list(selection_reasons),
+                    "dynamic_min_net_edge_bps": dynamic_min_net_edge_bps,
+                    "dynamic_taker_max_entry_premium_bps": dynamic_taker_max_entry_premium_bps,
+                    "dynamic_repricing_taker_max_entry_premium_bps": dynamic_repricing_taker_max_entry_premium_bps,
+                    "dynamic_gate_reason": (dynamic_gate.reason_tag if dynamic_gate is not None else "dynamic_disabled"),
                 },
             )
         ]
@@ -815,18 +883,138 @@ def _execution_feedback(context: Mapping[str, object]) -> CryptoExecutionFeedbac
     return None
 
 
-def _feedback_default_notional(
+def _dynamic_eligibility_gate_for_snapshot(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+) -> CryptoDynamicEligibilityGate | None:
+    payload = context.get("dynamic_eligibility_gates")
+    if not isinstance(payload, Mapping):
+        return None
+    family_key = _market_family_key(snapshot)
+    if family_key is None:
+        return None
+    gate = payload.get(family_key)
+    if isinstance(gate, CryptoDynamicEligibilityGate):
+        return gate
+    return None
+
+
+def _effective_dynamic_min_net_edge_bps(
+    *,
+    base_min_net_edge_bps: float,
+    gate: CryptoDynamicEligibilityGate | None,
+    config: CryptoPhase2Config,
+) -> float:
+    if not config.dynamic_gates_enabled or gate is None or gate.sample_count < config.dynamic_gate_min_samples:
+        return base_min_net_edge_bps
+    clipped = _clamp(
+        gate.min_net_edge_bps,
+        floor=config.dynamic_min_net_edge_floor_bps,
+        ceiling=config.dynamic_min_net_edge_ceiling_bps,
+    )
+    return clipped
+
+
+def _effective_dynamic_taker_max_entry_premium_bps(
+    *,
+    base_taker_max_entry_premium_bps: float,
+    gate: CryptoDynamicEligibilityGate | None,
+    config: CryptoPhase2Config,
+) -> float:
+    if not config.dynamic_gates_enabled or gate is None or gate.sample_count < config.dynamic_gate_min_samples:
+        return base_taker_max_entry_premium_bps
+    clipped = _clamp(
+        gate.taker_max_entry_premium_bps,
+        floor=config.dynamic_taker_max_entry_premium_floor_bps,
+        ceiling=config.dynamic_taker_max_entry_premium_ceiling_bps,
+    )
+    return clipped
+
+
+def _effective_dynamic_repricing_taker_max_entry_premium_bps(
+    *,
+    base_repricing_taker_max_entry_premium_bps: float,
+    gate: CryptoDynamicEligibilityGate | None,
+    config: CryptoPhase2Config,
+) -> float:
+    if not config.dynamic_gates_enabled or gate is None or gate.sample_count < config.dynamic_gate_min_samples:
+        return base_repricing_taker_max_entry_premium_bps
+    clipped = _clamp(
+        gate.repricing_taker_max_entry_premium_bps,
+        floor=config.dynamic_repricing_taker_max_entry_premium_floor_bps,
+        ceiling=config.dynamic_repricing_taker_max_entry_premium_ceiling_bps,
+    )
+    return clipped
+
+
+def _min_net_edge_reason_for_dynamic_gate(
+    *,
+    base_min_net_edge_bps: float,
+    effective_min_net_edge_bps: float,
+) -> str:
+    if effective_min_net_edge_bps > base_min_net_edge_bps:
+        return "cost_regime_min_net_edge"
+    return "insufficient_net_edge"
+
+
+def _quality_weighted_default_notional(
     *,
     base_notional: float,
+    confidence: float,
+    net_edge_bps: float,
     feedback: CryptoExecutionFeedback | None,
-) -> float:
+    config: CryptoPhase2Config,
+) -> tuple[float, float | None, float, str]:
+    if not config.quality_sizing_enabled:
+        return base_notional, None, 1.0, "quality_sizing_disabled"
     if feedback is None:
-        return base_notional
+        return base_notional, None, 1.0, "quality_components_missing"
+    confidence_component = _clamp(confidence, floor=0.0, ceiling=1.0)
+    edge_reference = max(1.0, config.quality_sizing_edge_reference_bps)
+    edge_component = _clamp(net_edge_bps / edge_reference, floor=0.0, ceiling=1.0)
+    route_feedback_component = _route_feedback_quality_component(feedback=feedback)
+    total_weight = (
+        config.quality_sizing_confidence_weight
+        + config.quality_sizing_edge_weight
+        + config.quality_sizing_route_feedback_weight
+    )
+    if total_weight <= 0:
+        return base_notional, None, 1.0, "invalid_quality_weights"
+    min_multiplier = min(config.quality_sizing_min_multiplier, config.quality_sizing_max_multiplier)
+    max_multiplier = max(config.quality_sizing_min_multiplier, config.quality_sizing_max_multiplier)
+    quality_score = (
+        confidence_component * config.quality_sizing_confidence_weight
+        + edge_component * config.quality_sizing_edge_weight
+        + route_feedback_component * config.quality_sizing_route_feedback_weight
+    ) / total_weight
+    multiplier_span = max_multiplier - min_multiplier
+    multiplier = min_multiplier + (quality_score * multiplier_span)
     if feedback.recommended_route_bias == "more_passive":
-        return round(base_notional * 0.75, 4)
-    if feedback.recommended_route_bias == "more_aggressive":
-        return round(base_notional * 1.15, 4)
-    return base_notional
+        multiplier = min(multiplier, 1.0)
+    elif feedback.recommended_route_bias == "more_aggressive":
+        multiplier = max(multiplier, 1.0)
+    multiplier = _clamp(
+        multiplier,
+        floor=min_multiplier,
+        ceiling=max_multiplier,
+    )
+    notional = round(base_notional * multiplier, 4)
+    return notional, round(quality_score, 4), round(multiplier, 4), "quality_sizing_applied"
+
+
+def _route_feedback_quality_component(*, feedback: CryptoExecutionFeedback) -> float:
+    maker_fill_component = _clamp(feedback.maker_fill_rate, floor=0.0, ceiling=1.0)
+    expiration_penalty = _clamp(feedback.repeated_expiration_rate, floor=0.0, ceiling=1.0)
+    stop_out_penalty = _clamp(feedback.repeated_stop_out_rate, floor=0.0, ceiling=1.0)
+    shortfall_penalty = _clamp(feedback.taker_shortfall_bps / 200.0, floor=0.0, ceiling=1.0)
+    quality = (
+        0.55 * maker_fill_component
+        + 0.20 * (1.0 - expiration_penalty)
+        + 0.20 * (1.0 - stop_out_penalty)
+        + 0.05 * (1.0 - shortfall_penalty)
+    )
+    return _clamp(quality, floor=0.0, ceiling=1.0)
 
 
 def _feedback_maker_aggressiveness(
@@ -883,6 +1071,52 @@ def _feedback_resolution_maker_quote_ttl_seconds(
     if feedback.recommended_route_bias == "more_aggressive":
         return max(30, int(round(base_ttl * 0.8)))
     return base_ttl
+
+
+def _clamp(value: float, *, floor: float, ceiling: float) -> float:
+    return max(floor, min(ceiling, value))
+
+
+def _market_family_key(snapshot: MarketSnapshot) -> str | None:
+    text = " ".join(
+        (
+            str(snapshot.metadata.get("question", "")),
+            snapshot.slug,
+            str(snapshot.metadata.get("event_title", "")),
+        )
+    ).lower()
+    if "bitcoin" in text or "btc" in text:
+        underlying = "BTC"
+    elif "ethereum" in text or "eth" in text:
+        underlying = "ETH"
+    else:
+        return None
+    if any(token in text for token in ("dip", "drop", "fall", "below", "under")):
+        event_family = "dip"
+    elif any(token in text for token in ("reach", "hit", "above", "over")):
+        event_family = "reach"
+    else:
+        return None
+    return f"{underlying}:{event_family}"
+
+
+def _route_policy_bias_for_snapshot(
+    *,
+    snapshot: MarketSnapshot,
+    signal_type: str,
+    context: Mapping[str, object],
+) -> str:
+    payload = context.get("route_policy_state_by_key")
+    if not isinstance(payload, Mapping):
+        return "stable"
+    family_key = _market_family_key(snapshot)
+    if family_key is None:
+        return "stable"
+    route_key = f"{family_key}:{signal_type}"
+    state = payload.get(route_key)
+    if isinstance(state, CryptoRoutePolicyState):
+        return state.route_bias
+    return "stable"
 
 
 def _is_repricing_maker_fallback(decision: Any) -> bool:

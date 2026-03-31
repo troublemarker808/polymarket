@@ -19,6 +19,7 @@ from pm_bot.strategies.crypto.phase1.models import (
     CryptoBarrierModelConfig,
     CryptoFusionModelConfig,
     CryptoMarketDefinition,
+    CryptoResidualModelConfig,
     CryptoUnderlyingState,
 )
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
@@ -78,10 +79,12 @@ def compute_crypto_phase1_fair_values(
     adverse_selection_bps: float = 10.0,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
+    residual_model_config: CryptoResidualModelConfig | None = None,
 ) -> tuple[FairValueEstimate, ...]:
-    _, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+    _, resolved_barrier_model_config, resolved_fusion_model_config, resolved_residual_model_config = resolve_crypto_calibration_model_configs(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
+        residual_model_config=residual_model_config,
     )
     snapshots = load_market_snapshots(snapshot_path)
     return compute_crypto_phase1_fair_values_from_snapshots(
@@ -91,6 +94,7 @@ def compute_crypto_phase1_fair_values(
         adverse_selection_bps=adverse_selection_bps,
         barrier_model_config=resolved_barrier_model_config,
         fusion_model_config=resolved_fusion_model_config,
+        residual_model_config=resolved_residual_model_config,
     )
 
 
@@ -102,10 +106,12 @@ def compute_crypto_phase1_fair_values_from_snapshots(
     adverse_selection_bps: float = 10.0,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
+    residual_model_config: CryptoResidualModelConfig | None = None,
 ) -> tuple[FairValueEstimate, ...]:
-    _, resolved_barrier_model_config, resolved_fusion_model_config = resolve_crypto_calibration_model_configs(
+    _, resolved_barrier_model_config, resolved_fusion_model_config, resolved_residual_model_config = resolve_crypto_calibration_model_configs(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
+        residual_model_config=residual_model_config,
     )
     latest_by_market: dict[str, MarketSnapshot] = {}
     for snapshot in snapshots:
@@ -175,6 +181,7 @@ def compute_crypto_phase1_fair_values_from_snapshots(
                 surface_estimate=surface,
                 observed_probability=observed_probability,
                 model_config=resolved_fusion_model_config,
+                residual_model_config=resolved_residual_model_config,
             )
             fair_estimate = to_fair_value_estimate(
                 inputs=pricing_inputs,

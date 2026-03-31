@@ -49,6 +49,7 @@ def test_generate_crypto_calibration_report_writes_artifacts(tmp_path: Path) -> 
     assert payload["locked_parameters"]
     assert "mean_barrier_miss_bps" in payload["datasets"][0]
     assert "selection_miss_count" in payload["datasets"][0]
+    assert "residual_diagnostic_tag" in payload["market_rows"][0]
 
 
 def test_format_crypto_calibration_report_contains_core_sections(tmp_path: Path) -> None:
@@ -148,9 +149,11 @@ def test_build_crypto_calibration_candidates_supports_refined_set() -> None:
 
 def test_locked_crypto_calibration_baseline_preset_matches_resolved_defaults() -> None:
     preset = get_locked_crypto_calibration_baseline_preset()
-    resolved_preset, barrier_model_config, fusion_model_config = resolve_crypto_calibration_model_configs()
+    resolved_preset, barrier_model_config, fusion_model_config, residual_model_config = resolve_crypto_calibration_model_configs()
 
     assert resolved_preset == preset
     assert preset.candidate_name == "btc-r1-s165-b35-s65"
     assert barrier_model_config == preset.barrier_model_config
     assert fusion_model_config == preset.fusion_model_config
+    assert residual_model_config == preset.residual_model_config
+    assert residual_model_config.enabled is False

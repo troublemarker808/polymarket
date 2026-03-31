@@ -8,12 +8,15 @@ from pm_bot.core.research_types import FairValueEstimate
 from pm_bot.core.types import Category, SignalSide
 from pm_bot.runtime.state import ClosedTrade, PendingOrderState, PositionState
 from pm_bot.strategies.crypto.phase2 import (
+    CryptoExecutionFeedback,
+    build_route_policy_key,
     build_position_intent,
     classify_crypto_signal,
     evaluate_exit,
     is_reentry_blocked,
     summarize_execution_feedback,
     summarize_execution_feedback_from_events,
+    update_route_policy_state,
     update_reentry_state,
 )
 
@@ -604,6 +607,70 @@ def test_summarize_execution_feedback_from_events_ignores_recovered_live_closed_
 
     assert feedback.repeated_stop_out_rate == 0.0
     assert feedback.recommended_route_bias == "stable"
+
+
+def test_update_route_policy_state_switches_to_more_aggressive_after_expiry_cluster() -> None:
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    route_key = build_route_policy_key(underlying="BTC", event_family="dip", signal_type="repricing_edge")
+    feedback = summarize_execution_feedback(
+        pending_orders=(
+            _pending_order("o1", ttl=60, matched_shares=0.0, status="expired"),
+            _pending_order("o2", ttl=60, matched_shares=0.0, status="expired"),
+            _pending_order("o3", ttl=60, matched_shares=0.0, status="expired"),
+        ),
+        closed_trades=(),
+    )
+
+    state = update_route_policy_state(
+        route_key=route_key,
+        previous=None,
+        feedback=feedback,
+        sample_count=4,
+        as_of=now,
+        min_samples=3,
+        cooldown_seconds=120,
+    )
+
+    assert state.route_bias == "more_aggressive"
+    assert state.taker_urgency_adjustment < 0.0
+    assert state.cooldown_until > now
+
+
+def test_update_route_policy_state_respects_cooldown_and_does_not_oscillate() -> None:
+    route_key = build_route_policy_key(underlying="BTC", event_family="dip", signal_type="repricing_edge")
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    first = update_route_policy_state(
+        route_key=route_key,
+        previous=None,
+        feedback=CryptoExecutionFeedback(
+            maker_fill_rate=0.0,
+            taker_shortfall_bps=0.0,
+            repeated_expiration_rate=1.0,
+            repeated_stop_out_rate=0.0,
+            recommended_route_bias="more_aggressive",
+        ),
+        sample_count=5,
+        as_of=now,
+        min_samples=3,
+        cooldown_seconds=120,
+    )
+    second = update_route_policy_state(
+        route_key=route_key,
+        previous=first,
+        feedback=CryptoExecutionFeedback(
+            maker_fill_rate=0.0,
+            taker_shortfall_bps=0.0,
+            repeated_expiration_rate=0.0,
+            repeated_stop_out_rate=1.0,
+            recommended_route_bias="more_passive",
+        ),
+        sample_count=5,
+        as_of=now + timedelta(seconds=30),
+        min_samples=3,
+        cooldown_seconds=120,
+    )
+
+    assert second.route_bias == "more_aggressive"
 
 
 def _fair_value(case_key: str) -> FairValueEstimate:

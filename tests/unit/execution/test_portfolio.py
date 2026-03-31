@@ -73,6 +73,15 @@ def test_build_portfolio_state_groups_open_and_pending_exposure() -> None:
     assert utilization.by_exposure_group[0].remaining_notional == 2.0
     assert utilization.by_thesis_group[0].remaining_notional == 5.0
     assert utilization.by_underlying_group[0].remaining_notional == 8.0
+    assert (
+        utilization.remaining_notional_budget(
+            category=Category.CRYPTO,
+            exposure_group_id="crypto:btc-reach-ladder",
+            thesis_group_id="crypto:btc:reach",
+            underlying_group_id="crypto:btc",
+        )
+        == 2.0
+    )
 
 
 def test_portfolio_state_from_dashboard_uses_dashboard_positions_and_orders() -> None:

@@ -39,6 +39,7 @@ class TradingSettings(BaseModel):
     default_quote_ttl_seconds: int = Field(ge=1, default=15)
     starting_equity: float = Field(ge=0, default=100.0)
     default_order_notional: float = Field(ge=0, default=5.0)
+    max_order_notional: float | None = Field(default=None, ge=0)
     paper_place_latency_ms: int = Field(ge=0, default=250)
     paper_cancel_latency_ms: int = Field(ge=0, default=250)
     paper_replace_latency_ms: int = Field(ge=0, default=250)

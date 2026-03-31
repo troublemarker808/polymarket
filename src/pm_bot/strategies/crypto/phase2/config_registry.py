@@ -63,6 +63,24 @@ class CryptoPhase2ResolvedConfig:
     single_active_market_per_thesis: bool
     max_no_fill_entry_attempts_per_market: int
     skip_selective_wide_spread_markets: bool
+    dynamic_gates_enabled: bool
+    dynamic_gate_min_samples: int
+    dynamic_min_net_edge_floor_bps: float
+    dynamic_min_net_edge_ceiling_bps: float
+    dynamic_taker_max_entry_premium_floor_bps: float
+    dynamic_taker_max_entry_premium_ceiling_bps: float
+    dynamic_repricing_taker_max_entry_premium_floor_bps: float
+    dynamic_repricing_taker_max_entry_premium_ceiling_bps: float
+    route_adaptation_enabled: bool
+    route_adaptation_min_samples: int
+    route_adaptation_cooldown_seconds: float
+    quality_sizing_enabled: bool
+    quality_sizing_min_multiplier: float
+    quality_sizing_max_multiplier: float
+    quality_sizing_edge_reference_bps: float
+    quality_sizing_confidence_weight: float
+    quality_sizing_edge_weight: float
+    quality_sizing_route_feedback_weight: float
 
 
 @dataclass(slots=True, frozen=True)
@@ -176,6 +194,24 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         single_active_market_per_thesis=base.single_active_market_per_thesis,
         max_no_fill_entry_attempts_per_market=base.max_no_fill_entry_attempts_per_market,
         skip_selective_wide_spread_markets=base.skip_selective_wide_spread_markets,
+        dynamic_gates_enabled=base.dynamic_gates_enabled,
+        dynamic_gate_min_samples=base.dynamic_gate_min_samples,
+        dynamic_min_net_edge_floor_bps=base.dynamic_min_net_edge_floor_bps,
+        dynamic_min_net_edge_ceiling_bps=base.dynamic_min_net_edge_ceiling_bps,
+        dynamic_taker_max_entry_premium_floor_bps=base.dynamic_taker_max_entry_premium_floor_bps,
+        dynamic_taker_max_entry_premium_ceiling_bps=base.dynamic_taker_max_entry_premium_ceiling_bps,
+        dynamic_repricing_taker_max_entry_premium_floor_bps=base.dynamic_repricing_taker_max_entry_premium_floor_bps,
+        dynamic_repricing_taker_max_entry_premium_ceiling_bps=base.dynamic_repricing_taker_max_entry_premium_ceiling_bps,
+        route_adaptation_enabled=base.route_adaptation_enabled,
+        route_adaptation_min_samples=base.route_adaptation_min_samples,
+        route_adaptation_cooldown_seconds=base.route_adaptation_cooldown_seconds,
+        quality_sizing_enabled=base.quality_sizing_enabled,
+        quality_sizing_min_multiplier=base.quality_sizing_min_multiplier,
+        quality_sizing_max_multiplier=base.quality_sizing_max_multiplier,
+        quality_sizing_edge_reference_bps=base.quality_sizing_edge_reference_bps,
+        quality_sizing_confidence_weight=base.quality_sizing_confidence_weight,
+        quality_sizing_edge_weight=base.quality_sizing_edge_weight,
+        quality_sizing_route_feedback_weight=base.quality_sizing_route_feedback_weight,
     )
 
 
@@ -200,11 +236,19 @@ def _apply_overrides(
             "max_no_fill_entry_attempts_per_market",
             "max_loss_trades_per_market",
             "max_loss_trades_per_exposure_group",
+            "dynamic_gate_min_samples",
+            "route_adaptation_min_samples",
         }:
             allowed[field_name] = int(cast(Any, raw_value))
         elif field_name == "taker_time_in_force":
             allowed[field_name] = str(cast(Any, raw_value)).upper()
-        elif field_name in {"single_active_market_per_thesis", "skip_selective_wide_spread_markets"}:
+        elif field_name in {
+            "single_active_market_per_thesis",
+            "skip_selective_wide_spread_markets",
+            "dynamic_gates_enabled",
+            "route_adaptation_enabled",
+            "quality_sizing_enabled",
+        }:
             allowed[field_name] = bool(cast(Any, raw_value))
         elif field_name in {"execution_max_holding_seconds", "time_stop_max_remaining_edge_bps"}:
             allowed[field_name] = None if raw_value in (None, "") else float(cast(Any, raw_value))

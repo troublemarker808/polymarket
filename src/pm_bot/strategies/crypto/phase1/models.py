@@ -89,6 +89,10 @@ class CryptoFusedFairValue:
     barrier_probability: float
     surface_probability: float | None
     rationale_tags: tuple[str, ...]
+    residual_bucket_key: str
+    residual_correction_bps: float
+    residual_applied: bool
+    residual_diagnostic_tag: str
 
 
 @dataclass(slots=True, frozen=True)
@@ -97,3 +101,11 @@ class CryptoFusionModelConfig:
     surface_weight: float = 0.35
     probability_floor: float = 0.01
     probability_ceiling: float = 0.99
+
+
+@dataclass(slots=True, frozen=True)
+class CryptoResidualModelConfig:
+    enabled: bool = False
+    min_confidence: float = 0.6
+    max_abs_correction_bps: float = 120.0
+    corrections: tuple[tuple[str, object], ...] = ()

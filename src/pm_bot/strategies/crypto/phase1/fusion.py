@@ -9,8 +9,10 @@ from pm_bot.strategies.crypto.phase1.models import (
     CryptoFusedFairValue,
     CryptoFusionModelConfig,
     CryptoPricingInputs,
+    CryptoResidualModelConfig,
     CryptoSurfaceEstimate,
 )
+from pm_bot.strategies.crypto.phase1.pricing import resolve_residual_correction
 
 
 def fuse_crypto_fair_value(
@@ -20,6 +22,7 @@ def fuse_crypto_fair_value(
     surface_estimate: CryptoSurfaceEstimate | None = None,
     observed_probability: float | None = None,
     model_config: CryptoFusionModelConfig | None = None,
+    residual_model_config: CryptoResidualModelConfig | None = None,
 ) -> CryptoFusedFairValue:
     config = model_config or CryptoFusionModelConfig()
     rationale_tags: tuple[str, ...]
@@ -38,6 +41,13 @@ def fuse_crypto_fair_value(
         rationale_tags = ("barrier_model", "surface_consistency")
         confidence = _confidence_from_inputs(inputs=inputs, has_surface=True)
 
+    residual = resolve_residual_correction(
+        inputs=inputs,
+        confidence=confidence,
+        model_config=residual_model_config,
+    )
+    if residual.applied:
+        fair_probability += residual.correction_bps / 10000.0
     fair_probability = max(config.probability_floor, min(config.probability_ceiling, fair_probability))
     half_life_seconds = _half_life_seconds(inputs=inputs, observed_probability=observed_probability, fair_probability=fair_probability)
     return CryptoFusedFairValue(
@@ -47,6 +57,10 @@ def fuse_crypto_fair_value(
         barrier_probability=barrier_estimate.fair_probability,
         surface_probability=surface_probability,
         rationale_tags=rationale_tags,
+        residual_bucket_key=residual.bucket_key,
+        residual_correction_bps=residual.correction_bps,
+        residual_applied=residual.applied,
+        residual_diagnostic_tag=residual.diagnostic_tag,
     )
 
 
@@ -70,6 +84,10 @@ def to_fair_value_estimate(
             "surface_probability": fused.surface_probability,
             "distance_ratio": inputs.distance_ratio,
             "effective_horizon_days": inputs.effective_horizon_days,
+            "residual_bucket_key": fused.residual_bucket_key,
+            "residual_correction_bps": fused.residual_correction_bps,
+            "residual_applied": fused.residual_applied,
+            "residual_diagnostic_tag": fused.residual_diagnostic_tag,
         },
     )
 

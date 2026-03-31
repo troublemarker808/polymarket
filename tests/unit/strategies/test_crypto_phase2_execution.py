@@ -43,6 +43,23 @@ def test_evaluate_trade_eligibility_rejects_low_net_edge_case() -> None:
     assert eligibility.reason == "insufficient_net_edge"
 
 
+def test_evaluate_trade_eligibility_reports_cost_regime_gate_reason() -> None:
+    fair_value = _fair_value("skip_low_edge")
+    snapshot = _snapshot(market_id="eth-dip-cost-regime", best_bid_yes=0.33, best_ask_yes=0.35, best_bid_no=0.65, best_ask_no=0.67)
+    classification = classify_crypto_signal(fair_value=fair_value)
+
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        min_net_edge_bps=120.0,
+        min_net_edge_reason="cost_regime_min_net_edge",
+    )
+
+    assert not eligibility.eligible
+    assert eligibility.reason == "cost_regime_min_net_edge"
+
+
 def test_evaluate_trade_eligibility_rejects_ultra_tail_contract_price() -> None:
     fair_value = _fair_value("repricing_yes")
     snapshot = _snapshot(
@@ -87,6 +104,55 @@ def test_route_execution_prefers_taker_for_urgent_repricing_trade() -> None:
     assert decision.side == SignalSide.BUY_YES
     assert decision.target_price == 0.11
     assert decision.quote_ttl_seconds == 30
+
+
+def test_route_execution_adds_route_adaptation_tag_for_aggressive_bias() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(market_id="eth-dip-1000", best_bid_yes=0.10, best_ask_yes=0.11, best_bid_no=0.89, best_ask_no=0.90)
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+    )
+
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+        route_policy_bias="more_aggressive",
+    )
+
+    assert "route_adapted_more_aggressive" in decision.rationale_tags
+
+
+def test_route_execution_more_passive_bias_can_push_repricing_to_maker_fallback() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(
+        market_id="eth-dip-rich-ask",
+        best_bid_yes=0.12,
+        best_ask_yes=0.16,
+        best_bid_no=0.84,
+        best_ask_no=0.88,
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        max_spread_bps=1000.0,
+    )
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+        route_policy_bias="more_passive",
+    )
+
+    assert decision.route == "maker"
+    assert "route_adapted_more_passive" in decision.rationale_tags
 
 
 def test_build_order_intent_can_use_gtc_for_taker_validation_profile() -> None:

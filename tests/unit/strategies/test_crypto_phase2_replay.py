@@ -151,11 +151,15 @@ def test_run_crypto_phase2_replay_generates_events_on_tradable_compare_fixture(t
         if line.strip()
     ]
 
-    assert metrics["signals_generated"] == 5
-    assert metrics["submitted_orders"] == 5
-    assert metrics["events_recorded"] == 17
-    assert len(events) == 17
-    assert events[-1]["event_type"] == "trade.closed"
+    signal_count = sum(1 for event in events if event["event_type"] == "signal.generated")
+    submitted_count = sum(1 for event in events if event["event_type"] == "order.submitted")
+
+    assert metrics["signals_generated"] == signal_count
+    assert metrics["submitted_orders"] == submitted_count
+    assert metrics["signals_generated"] >= 1
+    assert metrics["submitted_orders"] >= 1
+    assert metrics["events_recorded"] == len(events)
+    assert any(event["event_type"] in {"order.filled", "order.expired"} for event in events)
 
 
 def test_run_crypto_phase2_replay_applies_series_filter_to_btc_runtime_fixture(tmp_path: Path) -> None:

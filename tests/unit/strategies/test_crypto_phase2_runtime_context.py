@@ -5,6 +5,7 @@ from pathlib import Path
 from pm_bot.research.engine import load_market_snapshots
 from pm_bot.storage.recorder import PaperRuntimeRecorder
 from pm_bot.strategies.crypto.phase2.runtime_context import CryptoPhase2PaperContextBuilder
+from pm_bot.strategies.crypto.phase2.models import CryptoExecutionFeedback
 
 
 def test_crypto_phase2_paper_context_builder_generates_fair_values_and_static_series_blocks() -> None:
@@ -158,3 +159,73 @@ def test_crypto_phase2_paper_context_builder_blocks_watch_only_series_from_runti
     assert "701495" in context["blocked_market_ids"]
     assert "execution_no_fill" in context["blocked_market_reasons"]["701495"]
     assert context["market_selection_actions"]["701495"] == "watch_market"
+
+
+def test_crypto_phase2_paper_context_builder_builds_dynamic_gates_with_sample_guard() -> None:
+    builder = CryptoPhase2PaperContextBuilder(
+        underlying_state_path=Path("tests/fixtures/crypto_phase2/runtime_underlying_states.json"),
+        apply_series_filter=False,
+    )
+    snapshots = load_market_snapshots(Path("tests/fixtures/crypto_phase2/btc_runtime_ladder_window.jsonl"))
+    recorder = PaperRuntimeRecorder()
+    recorder.events.extend(
+        [
+            {
+                "event_type": "order.submitted",
+                "payload": {
+                    "market_id": "1339768",
+                    "order_id": "paper-1",
+                    "strategy_id": "crypto.phase2",
+                    "updated_at": "2026-03-27T15:16:00+00:00",
+                },
+            },
+            {
+                "event_type": "order.expired",
+                "payload": {
+                    "market_id": "1339768",
+                    "order_id": "paper-1",
+                    "strategy_id": "crypto.phase2",
+                    "updated_at": "2026-03-27T15:17:00+00:00",
+                },
+            },
+            {
+                "event_type": "order.submitted",
+                "payload": {
+                    "market_id": "1339768",
+                    "order_id": "paper-2",
+                    "strategy_id": "crypto.phase2",
+                    "updated_at": "2026-03-27T15:18:00+00:00",
+                },
+            },
+            {
+                "event_type": "order.expired",
+                "payload": {
+                    "market_id": "1339768",
+                    "order_id": "paper-2",
+                    "strategy_id": "crypto.phase2",
+                    "updated_at": "2026-03-27T15:19:00+00:00",
+                },
+            },
+            {
+                "event_type": "order.submitted",
+                "payload": {
+                    "market_id": "1339768",
+                    "order_id": "paper-3",
+                    "strategy_id": "crypto.phase2",
+                    "updated_at": "2026-03-27T15:20:00+00:00",
+                },
+            },
+        ]
+    )
+
+    context = builder.build_context(snapshot_cache=snapshots, recorder=recorder)
+    gates = context["dynamic_eligibility_gates"]
+    assert "BTC:dip" in gates
+    assert gates["BTC:dip"].sample_count >= 3
+    assert gates["BTC:dip"].reason_tag in {"dynamic_more_aggressive", "dynamic_stable", "dynamic_more_passive"}
+
+    feedback_by_family = context["execution_feedback_by_family"]
+    assert "BTC:dip" in feedback_by_family
+    assert isinstance(feedback_by_family["BTC:dip"], CryptoExecutionFeedback)
+    route_policy_state_by_key = context["route_policy_state_by_key"]
+    assert any(key.startswith("BTC:dip:") for key in route_policy_state_by_key)
