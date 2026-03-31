@@ -8,14 +8,19 @@ from pathlib import Path
 import pytest
 
 from pm_bot.core.research_types import Phase1RunSummary
-from pm_bot.core.types import Category
+from pm_bot.core.types import Category, MarketSnapshot, SignalSide
 from pm_bot.research.engine import ResearchRunResult
 from pm_bot.research.phase1_artifacts import Phase1ArtifactPaths
 from pm_bot.research.phase1_runner import Phase1ReplayResult
 from pm_bot.runtime.state import DashboardState, HaltReason, RuntimeStatus
 from pm_bot.strategies.crypto.phase1.baseline import get_locked_crypto_calibration_baseline_preset
 from pm_bot.strategies.crypto.phase1.inputs import build_underlying_state
-from pm_bot.strategies.crypto.phase1.replay import compute_crypto_phase1_fair_values, run_crypto_phase1_replay
+from pm_bot.strategies.crypto.phase1.replay import (
+    _spread_cost_bps_for_side,
+    _trade_side_from_probabilities,
+    compute_crypto_phase1_fair_values,
+    run_crypto_phase1_replay,
+)
 
 
 FIXTURE_SNAPSHOTS = Path("tests/fixtures/crypto_phase1/ladder_snapshots.jsonl")
@@ -70,6 +75,25 @@ def test_compute_crypto_phase1_fair_values_uses_locked_baseline_by_default() -> 
     )
 
     assert default_fair_values == explicit_fair_values
+
+
+def test_spread_cost_bps_for_side_uses_buy_no_book_when_trade_flips_direction() -> None:
+    snapshot = MarketSnapshot(
+        market_id="btc-buy-no-side-aware",
+        token_id="token",
+        slug="bitcoin-above-68k-on-april-1",
+        category=Category.CRYPTO,
+        timestamp=datetime.fromisoformat("2026-03-27T15:15:00+00:00"),
+        resolution_time=datetime.fromisoformat("2026-04-01T00:00:00+00:00"),
+        best_bid_yes=0.58,
+        best_ask_yes=0.68,
+        best_bid_no=0.392,
+        best_ask_no=0.400,
+    )
+    side = _trade_side_from_probabilities(fair_probability=0.40, observed_probability=0.62)
+
+    assert side == SignalSide.BUY_NO
+    assert _spread_cost_bps_for_side(snapshot=snapshot, side=side) == pytest.approx(40.0)
 
 
 def test_run_crypto_phase1_replay_rewrites_attribution_artifact(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

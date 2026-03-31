@@ -410,6 +410,46 @@ def test_evaluate_exit_ignores_adverse_fill_reversal_when_remaining_edge_is_larg
     assert exit_decision.reason == "hold"
 
 
+def test_evaluate_exit_ignores_time_stop_when_remaining_edge_is_still_large() -> None:
+    fair_value = _fair_value("repricing_yes")
+    classification = classify_crypto_signal(fair_value=fair_value)
+    created_at = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="eth-dip-1000-yes",
+        created_at=created_at,
+        entry_fill_price=0.11,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="eth-dip-1000",
+        token_id="eth-dip-1000-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2.execution",
+        notional=5.0,
+        opened_at=created_at,
+        shares=45.0,
+        average_entry_price=0.11,
+        mark_price=0.12,
+    )
+
+    exit_decision = evaluate_exit(
+        fair_value=fair_value,
+        position=position,
+        intent=intent,
+        best_bid_yes=0.12,
+        best_bid_no=0.88,
+        as_of=created_at + timedelta(minutes=2),
+        execution_max_holding_seconds=60.0,
+        max_holding_multiplier=1.0,
+        time_stop_max_remaining_edge_bps=300.0,
+    )
+
+    assert not exit_decision.should_exit
+    assert exit_decision.reason == "hold"
+
+
 def test_evaluate_exit_holds_for_fresh_fill_even_when_adverse_reversal_would_trigger() -> None:
     fair_value = _fair_value("repricing_yes")
     classification = classify_crypto_signal(fair_value=fair_value)
@@ -540,6 +580,30 @@ def test_summarize_execution_feedback_from_events_recommends_more_aggressive_aft
     assert feedback.maker_fill_rate == 0.0
     assert feedback.repeated_expiration_rate == 1.0
     assert feedback.recommended_route_bias == "more_aggressive"
+
+
+def test_summarize_execution_feedback_from_events_ignores_recovered_live_closed_trades() -> None:
+    recent_events = (
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "token_id": "eth-dip-1000-yes",
+                "strategy_id": "recovered.live",
+                "realized_pnl": -0.5,
+                "fees_paid": 0.05,
+                "closed_at": "2026-03-28T00:01:00+00:00",
+            },
+        },
+    )
+
+    feedback = summarize_execution_feedback_from_events(
+        recent_events=recent_events,
+        pending_orders=(),
+    )
+
+    assert feedback.repeated_stop_out_rate == 0.0
+    assert feedback.recommended_route_bias == "stable"
 
 
 def _fair_value(case_key: str) -> FairValueEstimate:

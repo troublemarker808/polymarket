@@ -14,6 +14,10 @@ from pm_bot.core.types import MarketSnapshot
 @dataclass(slots=True, frozen=True)
 class MarketUniversePolicy:
     min_liquidity_score: float = 0.0
+    min_yes_mid_price: float | None = None
+    max_yes_mid_price: float | None = None
+    max_yes_spread_bps: float | None = None
+    max_tradeable_spread_bps: float | None = None
     asset_keywords: tuple[str, ...] = ()
     include_keywords: tuple[str, ...] = ()
     exclude_keywords: tuple[str, ...] = ()
@@ -26,6 +30,35 @@ class MarketUniversePolicy:
     min_markets_per_event: int = 1
 
 
+@dataclass(slots=True, frozen=True)
+class MarketUniverseDiagnostics:
+    total_snapshots: int
+    open_snapshots: int
+    after_liquidity_score: int
+    after_yes_mid_price: int
+    after_yes_spread: int
+    after_tradeable_spread: int
+    after_asset_keywords: int
+    after_include_keywords: int
+    after_exclude_keywords: int
+    after_expiry_bucket: int
+    after_event_slug: int
+    after_market_ids: int
+    grouped_event_count: int
+    selected_snapshots: int
+
+
+class _SnapshotSelector:
+    def __init__(self, policy: MarketUniversePolicy) -> None:
+        self.policy = policy
+        self.last_diagnostics: MarketUniverseDiagnostics | None = None
+
+    def __call__(self, snapshots: Sequence[MarketSnapshot]) -> list[MarketSnapshot]:
+        selected, diagnostics = evaluate_market_snapshots(snapshots=snapshots, policy=self.policy)
+        self.last_diagnostics = diagnostics
+        return selected
+
+
 def build_snapshot_selector(
     markets_config: Mapping[str, object] | None,
 ) -> Callable[[Sequence[MarketSnapshot]], list[MarketSnapshot]] | None:
@@ -34,17 +67,17 @@ def build_snapshot_selector(
     policy = _policy_from_config(markets_config)
     if policy is None:
         return None
-    return lambda snapshots: select_market_snapshots(snapshots=snapshots, policy=policy)
+    return _SnapshotSelector(policy)
 
 
-def select_market_snapshots(
+def evaluate_market_snapshots(
     *,
     snapshots: Sequence[MarketSnapshot],
     policy: MarketUniversePolicy,
-) -> list[MarketSnapshot]:
-    candidates = list(snapshots)
-    if not candidates:
-        return []
+) -> tuple[list[MarketSnapshot], MarketUniverseDiagnostics]:
+    total_snapshots = len(snapshots)
+    candidates = [snapshot for snapshot in snapshots if _snapshot_is_open(snapshot)]
+    open_snapshots = len(candidates)
 
     if policy.min_liquidity_score > 0:
         liquidity_filtered = [
@@ -52,14 +85,45 @@ def select_market_snapshots(
         ]
         if liquidity_filtered:
             candidates = liquidity_filtered
+    after_liquidity_score = len(candidates)
+
+    if policy.min_yes_mid_price is not None:
+        candidates = [
+            snapshot
+            for snapshot in candidates
+            if (_snapshot_yes_mid_price(snapshot) or 0.0) >= policy.min_yes_mid_price
+        ]
+    if policy.max_yes_mid_price is not None:
+        candidates = [
+            snapshot
+            for snapshot in candidates
+            if (_snapshot_yes_mid_price(snapshot) or 1.0) <= policy.max_yes_mid_price
+        ]
+    after_yes_mid_price = len(candidates)
+
+    if policy.max_yes_spread_bps is not None:
+        candidates = [
+            snapshot
+            for snapshot in candidates
+            if (_snapshot_yes_spread_bps(snapshot) or float("inf")) <= policy.max_yes_spread_bps
+        ]
+    after_yes_spread = len(candidates)
+
+    if policy.max_tradeable_spread_bps is not None:
+        candidates = [
+            snapshot
+            for snapshot in candidates
+            if (_snapshot_tradeable_spread_bps(snapshot) or float("inf")) <= policy.max_tradeable_spread_bps
+        ]
+    after_tradeable_spread = len(candidates)
 
     if policy.asset_keywords:
-        asset_filtered = [
+        candidates = [
             snapshot
             for snapshot in candidates
             if _snapshot_matches_assets(snapshot=snapshot, asset_keywords=policy.asset_keywords)
         ]
-        candidates = asset_filtered
+    after_asset_keywords = len(candidates)
 
     if policy.include_keywords:
         candidates = [
@@ -70,6 +134,7 @@ def select_market_snapshots(
                 include_keywords=policy.include_keywords,
             )
         ]
+    after_include_keywords = len(candidates)
 
     if policy.exclude_keywords:
         candidates = [
@@ -80,31 +145,69 @@ def select_market_snapshots(
                 exclude_keywords=policy.exclude_keywords,
             )
         ]
+    after_exclude_keywords = len(candidates)
 
     if policy.expiries:
-        expiry_filtered = [
+        candidates = [
             snapshot
             for snapshot in candidates
             if _snapshot_matches_expiry_buckets(snapshot=snapshot, expiries=policy.expiries)
         ]
-        candidates = expiry_filtered
+    after_expiry_bucket = len(candidates)
 
     if policy.event_slugs:
-        event_filtered = [
+        candidates = [
             snapshot
             for snapshot in candidates
             if _snapshot_matches_event_slugs(snapshot=snapshot, event_slugs=policy.event_slugs)
         ]
-        candidates = event_filtered
+    after_event_slug = len(candidates)
 
     if policy.market_ids:
         allowed_market_ids = set(policy.market_ids)
-        market_id_filtered = [
+        candidates = [
             snapshot
             for snapshot in candidates
             if snapshot.market_id in allowed_market_ids
         ]
-        candidates = market_id_filtered
+    after_market_ids = len(candidates)
+
+    selected = _select_grouped_candidates(candidates=candidates, policy=policy)
+    diagnostics = MarketUniverseDiagnostics(
+        total_snapshots=total_snapshots,
+        open_snapshots=open_snapshots,
+        after_liquidity_score=after_liquidity_score,
+        after_yes_mid_price=after_yes_mid_price,
+        after_yes_spread=after_yes_spread,
+        after_tradeable_spread=after_tradeable_spread,
+        after_asset_keywords=after_asset_keywords,
+        after_include_keywords=after_include_keywords,
+        after_exclude_keywords=after_exclude_keywords,
+        after_expiry_bucket=after_expiry_bucket,
+        after_event_slug=after_event_slug,
+        after_market_ids=after_market_ids,
+        grouped_event_count=len(_group_snapshots(candidates)),
+        selected_snapshots=len(selected),
+    )
+    return selected, diagnostics
+
+
+def select_market_snapshots(
+    *,
+    snapshots: Sequence[MarketSnapshot],
+    policy: MarketUniversePolicy,
+) -> list[MarketSnapshot]:
+    selected, _ = evaluate_market_snapshots(snapshots=snapshots, policy=policy)
+    return selected
+
+
+def _select_grouped_candidates(
+    *,
+    candidates: Sequence[MarketSnapshot],
+    policy: MarketUniversePolicy,
+) -> list[MarketSnapshot]:
+    if not candidates:
+        return []
 
     preferred_market_positions = {
         market_id: index
@@ -128,6 +231,7 @@ def select_market_snapshots(
                 event_snapshots,
                 key=lambda snapshot: (
                     preferred_market_positions.get(snapshot.market_id, len(preferred_market_positions)),
+                    _snapshot_spread_rank(snapshot),
                     -snapshot.liquidity_score,
                     snapshot.slug,
                     snapshot.market_id,
@@ -173,8 +277,18 @@ def select_market_snapshots(
     return selected
 
 
+def _snapshot_is_open(snapshot: MarketSnapshot) -> bool:
+    if snapshot.resolution_time is None:
+        return True
+    return snapshot.resolution_time.astimezone(UTC) > snapshot.timestamp.astimezone(UTC)
+
+
 def _policy_from_config(markets_config: Mapping[str, object]) -> MarketUniversePolicy | None:
     min_liquidity_score = _parse_optional_float(markets_config.get("min_liquidity_score")) or 0.0
+    min_yes_mid_price = _parse_optional_float(markets_config.get("min_yes_mid_price"))
+    max_yes_mid_price = _parse_optional_float(markets_config.get("max_yes_mid_price"))
+    max_yes_spread_bps = _parse_optional_float(markets_config.get("max_yes_spread_bps"))
+    max_tradeable_spread_bps = _parse_optional_float(markets_config.get("max_tradeable_spread_bps"))
     max_active_markets = _parse_optional_int(markets_config.get("max_active_markets"))
     max_markets_per_event = _parse_optional_int(markets_config.get("max_markets_per_event"))
     min_markets_per_event = _parse_optional_int(markets_config.get("min_markets_per_event")) or 1
@@ -224,6 +338,10 @@ def _policy_from_config(markets_config: Mapping[str, object]) -> MarketUniverseP
     )
     if (
         min_liquidity_score <= 0
+        and min_yes_mid_price is None
+        and max_yes_mid_price is None
+        and max_yes_spread_bps is None
+        and max_tradeable_spread_bps is None
         and max_active_markets is None
         and max_markets_per_event is None
         and min_markets_per_event <= 1
@@ -238,6 +356,10 @@ def _policy_from_config(markets_config: Mapping[str, object]) -> MarketUniverseP
         return None
     return MarketUniversePolicy(
         min_liquidity_score=min_liquidity_score,
+        min_yes_mid_price=min_yes_mid_price,
+        max_yes_mid_price=max_yes_mid_price,
+        max_yes_spread_bps=max_yes_spread_bps,
+        max_tradeable_spread_bps=max_tradeable_spread_bps,
         asset_keywords=asset_keywords,
         include_keywords=include_keywords,
         exclude_keywords=exclude_keywords,
@@ -261,6 +383,37 @@ def _group_snapshots(snapshots: Sequence[MarketSnapshot]) -> dict[str, list[Mark
         )
         grouped[event_key].append(snapshot)
     return grouped
+
+
+def _snapshot_yes_mid_price(snapshot: MarketSnapshot) -> float | None:
+    if snapshot.best_bid_yes is not None and snapshot.best_ask_yes is not None:
+        return (snapshot.best_bid_yes + snapshot.best_ask_yes) / 2.0
+    if snapshot.last_traded_price is not None:
+        return snapshot.last_traded_price
+    return None
+
+
+def _snapshot_yes_spread_bps(snapshot: MarketSnapshot) -> float | None:
+    if snapshot.best_bid_yes is None or snapshot.best_ask_yes is None:
+        return None
+    return max(0.0, (snapshot.best_ask_yes - snapshot.best_bid_yes) * 10000.0)
+
+
+def _snapshot_no_spread_bps(snapshot: MarketSnapshot) -> float | None:
+    if snapshot.best_bid_no is None or snapshot.best_ask_no is None:
+        return None
+    return max(0.0, (snapshot.best_ask_no - snapshot.best_bid_no) * 10000.0)
+
+
+def _snapshot_tradeable_spread_bps(snapshot: MarketSnapshot) -> float | None:
+    spreads = [
+        spread
+        for spread in (_snapshot_yes_spread_bps(snapshot), _snapshot_no_spread_bps(snapshot))
+        if spread is not None
+    ]
+    if not spreads:
+        return None
+    return min(spreads)
 
 
 def _snapshot_matches_assets(
@@ -366,6 +519,23 @@ def _snapshot_tokens(snapshot: MarketSnapshot) -> set[str]:
         normalized = str(raw_part).lower()
         tokens.update(token for token in re.split(r"[^a-z0-9]+", normalized) if token)
     return tokens
+
+
+def _snapshot_spread_rank(snapshot: MarketSnapshot) -> float:
+    yes_spread = (
+        max(0.0, snapshot.best_ask_yes - snapshot.best_bid_yes)
+        if snapshot.best_bid_yes is not None and snapshot.best_ask_yes is not None
+        else None
+    )
+    no_spread = (
+        max(0.0, snapshot.best_ask_no - snapshot.best_bid_no)
+        if snapshot.best_bid_no is not None and snapshot.best_ask_no is not None
+        else None
+    )
+    spreads = [spread for spread in (yes_spread, no_spread) if spread is not None]
+    if not spreads:
+        return float("inf")
+    return min(spreads)
 
 
 def _parse_string_list(raw_value: object) -> tuple[str, ...]:

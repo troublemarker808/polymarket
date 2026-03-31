@@ -94,14 +94,19 @@ def route_execution(
     snapshot: MarketSnapshot,
     classification: CryptoSignalClassification,
     eligibility: CryptoTradeEligibility,
+    allow_taker_routes: bool = True,
     taker_urgency_threshold: float = 0.72,
     maker_min_edge_bps: float = 100.0,
     resolution_maker_min_edge_bps: float = 150.0,
     high_edge_taker_min_edge_bps: float = 2000.0,
     high_edge_taker_max_spread_bps: float = 250.0,
     taker_max_entry_premium_bps: float = 750.0,
+    repricing_taker_max_entry_premium_bps: float = 750.0,
+    taker_slippage_guard_bps: float = 0.0,
+    taker_min_net_edge_after_premium_bps: float = 150.0,
     maker_quote_ttl_seconds: int = 60,
     resolution_maker_quote_ttl_seconds: int = 180,
+    repricing_fallback_quote_ttl_seconds: int | None = None,
     maker_aggressiveness: float = 1.0,
 ) -> CryptoExecutionDecision:
     if not eligibility.eligible:
@@ -122,12 +127,22 @@ def route_execution(
         if classification.signal_type == "resolution_edge"
         else maker_quote_ttl_seconds
     )
+    repricing_fallback_ttl_seconds = (
+        repricing_fallback_quote_ttl_seconds
+        if repricing_fallback_quote_ttl_seconds is not None
+        else quote_ttl_seconds
+    )
     taker_entry_premium_bps = _taker_entry_premium_bps(snapshot=snapshot, side=classification.side)
+    effective_taker_entry_premium_bps = taker_entry_premium_bps + max(0.0, taker_slippage_guard_bps)
+    taker_remaining_edge_bps = net_edge_bps - effective_taker_entry_premium_bps
 
     if (
+        allow_taker_routes
+        and
         classification.signal_type == "repricing_edge"
         and classification.urgency_score >= taker_urgency_threshold
-        and taker_entry_premium_bps <= taker_max_entry_premium_bps
+        and effective_taker_entry_premium_bps <= repricing_taker_max_entry_premium_bps
+        and taker_remaining_edge_bps >= taker_min_net_edge_after_premium_bps
     ):
         return CryptoExecutionDecision(
             market_id=fair_value.market_id,
@@ -139,16 +154,29 @@ def route_execution(
             rationale_tags=(classification.signal_type, "taker"),
         )
     repricing_taker_too_expensive = (
+        allow_taker_routes
+        and
         classification.signal_type == "repricing_edge"
         and classification.urgency_score >= taker_urgency_threshold
-        and taker_entry_premium_bps > taker_max_entry_premium_bps
+        and effective_taker_entry_premium_bps > repricing_taker_max_entry_premium_bps
+    )
+    repricing_taker_edge_buffer_too_thin = (
+        allow_taker_routes
+        and
+        classification.signal_type == "repricing_edge"
+        and classification.urgency_score >= taker_urgency_threshold
+        and effective_taker_entry_premium_bps <= taker_max_entry_premium_bps
+        and taker_remaining_edge_bps < taker_min_net_edge_after_premium_bps
     )
 
     if (
+        allow_taker_routes
+        and
         classification.signal_type in {"liquidity_edge", "resolution_edge"}
         and net_edge_bps >= high_edge_taker_min_edge_bps
         and eligibility.market_spread_bps <= high_edge_taker_max_spread_bps
-        and taker_entry_premium_bps <= taker_max_entry_premium_bps
+        and effective_taker_entry_premium_bps <= taker_max_entry_premium_bps
+        and taker_remaining_edge_bps >= taker_min_net_edge_after_premium_bps
     ):
         return CryptoExecutionDecision(
             market_id=fair_value.market_id,
@@ -172,6 +200,20 @@ def route_execution(
         )
 
     if net_edge_bps >= maker_min_edge_bps:
+        maker_rationale_tags = (
+            ("repricing_taker_too_expensive", "maker_fallback")
+            if repricing_taker_too_expensive
+            else (
+                ("repricing_taker_edge_buffer_too_thin", "maker_fallback")
+                if repricing_taker_edge_buffer_too_thin
+                else (classification.signal_type, "maker")
+            )
+        )
+        maker_quote_ttl = (
+            repricing_fallback_ttl_seconds
+            if maker_rationale_tags[1] == "maker_fallback"
+            else quote_ttl_seconds
+        )
         return CryptoExecutionDecision(
             market_id=fair_value.market_id,
             route="maker",
@@ -184,13 +226,9 @@ def route_execution(
                 net_edge_bps=net_edge_bps,
                 maker_aggressiveness=maker_aggressiveness,
             ),
-            quote_ttl_seconds=quote_ttl_seconds,
+            quote_ttl_seconds=maker_quote_ttl,
             urgency_score=classification.urgency_score,
-            rationale_tags=(
-                ("repricing_taker_too_expensive", "maker_fallback")
-                if repricing_taker_too_expensive
-                else (classification.signal_type, "maker")
-            ),
+            rationale_tags=maker_rationale_tags,
         )
 
     return CryptoExecutionDecision(

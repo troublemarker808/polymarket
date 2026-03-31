@@ -8,10 +8,10 @@ from typing import Any
 from pm_bot.core.research_types import FairValueEstimate
 from pm_bot.core.types import Category, MarketSnapshot, SignalSide, StrategySignal
 from pm_bot.execution.exposure_keys import derive_exposure_keys
-from pm_bot.runtime.state import PendingOrderState, PositionState
+from pm_bot.runtime.state import DashboardState, PendingOrderState, PositionState
 from datetime import datetime, timezone
 
-from pm_bot.strategies.common import current_position, dashboard_state, has_pending_order, parse_float, recent_runtime_events
+from pm_bot.strategies.common import current_position, dashboard_state, parse_float, recent_runtime_events
 from pm_bot.strategies.crypto.phase2.config_registry import (
     build_phase2_preset_rules,
     resolve_phase2_config_for_snapshot,
@@ -43,9 +43,19 @@ class CryptoPhase2Config:
         self.high_edge_taker_min_edge_bps = float(config.get("high_edge_taker_min_edge_bps", 2000.0))
         self.high_edge_taker_max_spread_bps = float(config.get("high_edge_taker_max_spread_bps", 250.0))
         self.taker_max_entry_premium_bps = float(config.get("taker_max_entry_premium_bps", 750.0))
+        self.repricing_taker_max_entry_premium_bps = float(
+            config.get("repricing_taker_max_entry_premium_bps", self.taker_max_entry_premium_bps)
+        )
+        self.taker_slippage_guard_bps = float(config.get("taker_slippage_guard_bps", 0.0))
+        self.taker_min_net_edge_after_premium_bps = float(
+            config.get("taker_min_net_edge_after_premium_bps", 150.0)
+        )
         self.taker_time_in_force = str(config.get("taker_time_in_force", "IOC")).upper()
         self.maker_quote_ttl_seconds = int(config.get("maker_quote_ttl_seconds", 60))
         self.resolution_maker_quote_ttl_seconds = int(config.get("resolution_maker_quote_ttl_seconds", 180))
+        self.repricing_fallback_quote_ttl_seconds = int(
+            config.get("repricing_fallback_quote_ttl_seconds", self.maker_quote_ttl_seconds)
+        )
         self.maker_aggressiveness = float(config.get("maker_aggressiveness", 1.0))
         self.default_notional = float(config.get("default_notional", 5.0))
         self.exit_edge_bps = float(config.get("exit_edge_bps", 75.0))
@@ -66,14 +76,34 @@ class CryptoPhase2Config:
         self.adverse_fill_max_remaining_edge_bps = float(
             config.get("adverse_fill_max_remaining_edge_bps", 150.0)
         )
+        raw_time_stop_max_remaining_edge_bps = config.get("time_stop_max_remaining_edge_bps")
+        self.time_stop_max_remaining_edge_bps = (
+            None
+            if raw_time_stop_max_remaining_edge_bps in (None, "")
+            else float(raw_time_stop_max_remaining_edge_bps)
+        )
         self.max_holding_multiplier = float(config.get("max_holding_multiplier", 2.0))
         self.exit_repost_cooldown_seconds = float(config.get("exit_repost_cooldown_seconds", 30.0))
         self.entry_repost_cooldown_seconds = float(config.get("entry_repost_cooldown_seconds", 120.0))
+        self.repricing_fallback_entry_repost_cooldown_seconds = float(
+            config.get("repricing_fallback_entry_repost_cooldown_seconds", self.entry_repost_cooldown_seconds)
+        )
         self.entry_failure_cooldown_seconds = float(
             config.get("entry_failure_cooldown_seconds", self.entry_repost_cooldown_seconds)
         )
+        self.entry_market_cooldown_seconds = float(
+            config.get("entry_market_cooldown_seconds", self.entry_failure_cooldown_seconds)
+        )
+        self.repricing_fallback_entry_market_cooldown_seconds = float(
+            config.get("repricing_fallback_entry_market_cooldown_seconds", self.entry_market_cooldown_seconds)
+        )
         self.exit_failure_cooldown_seconds = float(
             config.get("exit_failure_cooldown_seconds", self.exit_repost_cooldown_seconds)
+        )
+        self.loss_reentry_cooldown_seconds = float(config.get("loss_reentry_cooldown_seconds", 300.0))
+        self.max_loss_trades_per_market = int(config.get("max_loss_trades_per_market", 0))
+        self.max_loss_trades_per_exposure_group = int(
+            config.get("max_loss_trades_per_exposure_group", 0)
         )
         self.time_stop_force_ioc_after_expiries = int(config.get("time_stop_force_ioc_after_expiries", 2))
         self.thesis_entry_cooldown_seconds = float(
@@ -82,6 +112,9 @@ class CryptoPhase2Config:
         self.single_active_market_per_thesis = bool(config.get("single_active_market_per_thesis", True))
         self.max_no_fill_entry_attempts_per_market = int(
             config.get("max_no_fill_entry_attempts_per_market", 2)
+        )
+        self.skip_selective_wide_spread_markets = bool(
+            config.get("skip_selective_wide_spread_markets", False)
         )
         self.preset_rules = build_phase2_preset_rules(dict(config))
 
@@ -115,13 +148,45 @@ class CryptoPhase2Strategy:
                 position=position,
                 context=context,
             )
-        if has_pending_order(snapshot=snapshot, dashboard=dashboard):
+        if _market_pending_orders_block_entry(snapshot=snapshot, dashboard=dashboard, context=context):
             _record_runtime_skip(context=context, snapshot=snapshot, reason="pending_order_exists")
             return []
 
         reentry_state = _reentry_state_for_market(snapshot=snapshot, context=context)
         if is_reentry_blocked(state=reentry_state, as_of=snapshot.timestamp):
             _record_runtime_skip(context=context, snapshot=snapshot, reason="reentry_blocked")
+            return []
+        if _recent_negative_trade_closed(
+            snapshot=snapshot,
+            context=context,
+            cooldown_seconds=self.config.loss_reentry_cooldown_seconds,
+        ):
+            _record_runtime_skip(context=context, snapshot=snapshot, reason="loss_reentry_cooldown_active")
+            return []
+        if _market_loss_quarantined(
+            snapshot=snapshot,
+            context=context,
+            max_loss_trades=self.config.max_loss_trades_per_market,
+        ):
+            _record_runtime_skip(context=context, snapshot=snapshot, reason="market_loss_quarantined")
+            return []
+        if _exposure_group_recent_negative_trade_closed(
+            snapshot=snapshot,
+            context=context,
+            cooldown_seconds=self.config.loss_reentry_cooldown_seconds,
+        ):
+            _record_runtime_skip(
+                context=context,
+                snapshot=snapshot,
+                reason="exposure_group_loss_reentry_cooldown_active",
+            )
+            return []
+        if _exposure_group_loss_quarantined(
+            snapshot=snapshot,
+            context=context,
+            max_loss_trades=self.config.max_loss_trades_per_exposure_group,
+        ):
+            _record_runtime_skip(context=context, snapshot=snapshot, reason="exposure_group_loss_quarantined")
             return []
 
         if _market_is_blocked(snapshot=snapshot, context=context):
@@ -160,6 +225,24 @@ class CryptoPhase2Strategy:
             base_notional=resolved_config.default_notional,
             feedback=execution_feedback,
         )
+        selection_action = _selection_action_for_market(snapshot=snapshot, context=context)
+        selection_reasons = _selection_reasons_for_market(snapshot=snapshot, context=context)
+        if (
+            resolved_config.skip_selective_wide_spread_markets
+            and selection_action == "selective_market"
+            and _has_wide_spread_selection_reason(selection_reasons)
+        ):
+            _record_runtime_skip(
+                context=context,
+                snapshot=snapshot,
+                reason="selection_wide_spread_selective_blocked",
+                extra={
+                    "phase2_preset": resolved_config.preset_name,
+                    "selection_action": selection_action,
+                    "selection_reasons": list(selection_reasons),
+                },
+            )
+            return []
         eligibility = evaluate_trade_eligibility(
             fair_value=fair_value,
             snapshot=snapshot,
@@ -175,6 +258,7 @@ class CryptoPhase2Strategy:
             snapshot=snapshot,
             classification=classification,
             eligibility=eligibility,
+            allow_taker_routes=selection_action != "selective_market",
             taker_urgency_threshold=_feedback_taker_urgency_threshold(
                 base_threshold=resolved_config.taker_urgency_threshold,
                 feedback=execution_feedback,
@@ -184,12 +268,19 @@ class CryptoPhase2Strategy:
             high_edge_taker_min_edge_bps=resolved_config.high_edge_taker_min_edge_bps,
             high_edge_taker_max_spread_bps=resolved_config.high_edge_taker_max_spread_bps,
             taker_max_entry_premium_bps=resolved_config.taker_max_entry_premium_bps,
+            repricing_taker_max_entry_premium_bps=resolved_config.repricing_taker_max_entry_premium_bps,
+            taker_slippage_guard_bps=resolved_config.taker_slippage_guard_bps,
+            taker_min_net_edge_after_premium_bps=resolved_config.taker_min_net_edge_after_premium_bps,
             maker_quote_ttl_seconds=_feedback_maker_quote_ttl_seconds(
                 base_ttl=resolved_config.maker_quote_ttl_seconds,
                 feedback=execution_feedback,
             ),
             resolution_maker_quote_ttl_seconds=_feedback_resolution_maker_quote_ttl_seconds(
                 base_ttl=resolved_config.resolution_maker_quote_ttl_seconds,
+                feedback=execution_feedback,
+            ),
+            repricing_fallback_quote_ttl_seconds=_feedback_maker_quote_ttl_seconds(
+                base_ttl=resolved_config.repricing_fallback_quote_ttl_seconds,
                 feedback=execution_feedback,
             ),
             maker_aggressiveness=_feedback_maker_aggressiveness(
@@ -208,6 +299,8 @@ class CryptoPhase2Strategy:
                     "decision_rationale_tags": list(decision.rationale_tags),
                     "phase2_preset": resolved_config.preset_name,
                     "signal_type": classification.signal_type,
+                    "selection_action": selection_action,
+                    "selection_reasons": list(selection_reasons),
                 },
             )
             return []
@@ -221,12 +314,22 @@ class CryptoPhase2Strategy:
             strategy_id=self.strategy_id,
         )
         target_size = intent.notional if intent is not None else feedback_notional
+        refreshable_pending_order_exists = _has_refreshable_repricing_fallback_pending_order(
+            snapshot=snapshot,
+            dashboard=dashboard_state(context),
+            context=context,
+        )
+        entry_repost_cooldown_seconds = (
+            resolved_config.repricing_fallback_entry_repost_cooldown_seconds
+            if _is_repricing_maker_fallback(decision)
+            else resolved_config.entry_repost_cooldown_seconds
+        )
         if _recently_reposted_order(
             snapshot=snapshot,
             context=context,
             target_price=decision.target_price,
             side=decision.side,
-            cooldown_seconds=resolved_config.entry_repost_cooldown_seconds,
+            cooldown_seconds=entry_repost_cooldown_seconds,
             allowed_event_types={"order.expired", "order.canceled"},
         ):
             _record_runtime_skip(context=context, snapshot=snapshot, reason="entry_repost_cooldown_active")
@@ -239,11 +342,18 @@ class CryptoPhase2Strategy:
         ):
             _record_runtime_skip(context=context, snapshot=snapshot, reason="entry_failure_cooldown_active")
             return []
-        if _recent_entry_activity_for_market(
-            snapshot=snapshot,
-            context=context,
-            side=decision.side,
-            cooldown_seconds=resolved_config.entry_failure_cooldown_seconds,
+        if (
+            not refreshable_pending_order_exists
+            and _recent_entry_activity_for_market(
+                snapshot=snapshot,
+                context=context,
+                side=decision.side,
+                cooldown_seconds=(
+                    resolved_config.repricing_fallback_entry_market_cooldown_seconds
+                    if _is_repricing_maker_fallback(decision)
+                    else resolved_config.entry_market_cooldown_seconds
+                ),
+            )
         ):
             _record_runtime_skip(context=context, snapshot=snapshot, reason="entry_market_activity_lock_active")
             return []
@@ -254,6 +364,13 @@ class CryptoPhase2Strategy:
             max_attempts=resolved_config.max_no_fill_entry_attempts_per_market,
         ):
             _record_runtime_skip(context=context, snapshot=snapshot, reason="entry_market_no_fill_quarantined")
+            return []
+        if _exposure_group_conflict_active(
+            snapshot=snapshot,
+            context=context,
+            side=decision.side,
+        ):
+            _record_runtime_skip(context=context, snapshot=snapshot, reason="exposure_group_conflict_active")
             return []
         if _thesis_entry_locked(
             snapshot=snapshot,
@@ -289,8 +406,8 @@ class CryptoPhase2Strategy:
                     "execution_feedback_bias": execution_feedback.recommended_route_bias if execution_feedback is not None else "none",
                     "execution_feedback_notional": feedback_notional,
                     "phase2_preset": resolved_config.preset_name,
-                    "selection_action": _selection_action_for_market(snapshot=snapshot, context=context),
-                    "selection_reasons": list(_selection_reasons_for_market(snapshot=snapshot, context=context)),
+                    "selection_action": selection_action,
+                    "selection_reasons": list(selection_reasons),
                 },
             )
         ]
@@ -329,6 +446,7 @@ class CryptoPhase2Strategy:
             stop_loss_max_remaining_edge_bps=resolved_config.stop_loss_max_remaining_edge_bps,
             adverse_fill_exit_bps=resolved_config.adverse_fill_exit_bps,
             adverse_fill_max_remaining_edge_bps=resolved_config.adverse_fill_max_remaining_edge_bps,
+            time_stop_max_remaining_edge_bps=resolved_config.time_stop_max_remaining_edge_bps,
         )
         if not exit_decision.should_exit or exit_decision.exit_side is None or exit_decision.target_price is None:
             return []
@@ -343,8 +461,14 @@ class CryptoPhase2Strategy:
         )
         if exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop"}:
             if (
-                exit_decision.reason == "time_stop"
-                and exit_retry_count >= resolved_config.time_stop_force_ioc_after_expiries
+                _should_force_immediate_time_stop_exit(
+                    intent=intent,
+                    exit_reason=exit_decision.reason,
+                )
+                or (
+                    exit_decision.reason == "time_stop"
+                    and exit_retry_count >= resolved_config.time_stop_force_ioc_after_expiries
+                )
             ):
                 exit_price = exit_decision.target_price
                 time_in_force = "IOC"
@@ -534,6 +658,134 @@ def _selection_reasons_for_market(
     return ()
 
 
+def _has_wide_spread_selection_reason(reasons: Sequence[str]) -> bool:
+    return any(reason in {"wide_spread", "wide_runtime_spread"} for reason in reasons)
+
+
+def _recent_negative_trade_closed(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+    cooldown_seconds: float,
+) -> bool:
+    if cooldown_seconds <= 0:
+        return False
+    for event in reversed(recent_runtime_events(context)):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("market_id", "")) != snapshot.market_id:
+            continue
+        realized_pnl = parse_float(payload, "realized_pnl")
+        net_pnl = parse_float(payload, "net_pnl")
+        effective_pnl = net_pnl if net_pnl is not None else (realized_pnl or 0.0)
+        if effective_pnl >= 0:
+            return False
+        event_time = _event_timestamp(payload)
+        if event_time is None:
+            return False
+        return (snapshot.timestamp - event_time).total_seconds() < cooldown_seconds
+    return False
+
+
+def _market_loss_quarantined(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+    max_loss_trades: int,
+) -> bool:
+    if max_loss_trades <= 0:
+        return False
+    loss_trades = 0
+    for event in recent_runtime_events(context):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("market_id", "")) != snapshot.market_id:
+            continue
+        realized_pnl = parse_float(payload, "realized_pnl")
+        net_pnl = parse_float(payload, "net_pnl")
+        effective_pnl = net_pnl if net_pnl is not None else (realized_pnl or 0.0)
+        if effective_pnl < 0:
+            loss_trades += 1
+            if loss_trades >= max_loss_trades:
+                return True
+    return False
+
+
+def _exposure_group_recent_negative_trade_closed(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+    cooldown_seconds: float,
+) -> bool:
+    if cooldown_seconds <= 0:
+        return False
+    exposure_group_id = _snapshot_exposure_group_id(snapshot)
+    if exposure_group_id is None:
+        return False
+    for event in reversed(recent_runtime_events(context)):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("exposure_group_id", "")).strip() != exposure_group_id:
+            continue
+        realized_pnl = parse_float(payload, "realized_pnl")
+        net_pnl = parse_float(payload, "net_pnl")
+        effective_pnl = net_pnl if net_pnl is not None else (realized_pnl or 0.0)
+        if effective_pnl >= 0:
+            return False
+        event_time = _event_timestamp(payload)
+        if event_time is None:
+            return False
+        return (snapshot.timestamp - event_time).total_seconds() < cooldown_seconds
+    return False
+
+
+def _exposure_group_loss_quarantined(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+    max_loss_trades: int,
+) -> bool:
+    if max_loss_trades <= 0:
+        return False
+    exposure_group_id = _snapshot_exposure_group_id(snapshot)
+    if exposure_group_id is None:
+        return False
+    loss_trades = 0
+    for event in recent_runtime_events(context):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("exposure_group_id", "")).strip() != exposure_group_id:
+            continue
+        realized_pnl = parse_float(payload, "realized_pnl")
+        net_pnl = parse_float(payload, "net_pnl")
+        effective_pnl = net_pnl if net_pnl is not None else (realized_pnl or 0.0)
+        if effective_pnl < 0:
+            loss_trades += 1
+            if loss_trades >= max_loss_trades:
+                return True
+    return False
+
+
+def _should_force_immediate_time_stop_exit(
+    *,
+    intent: CryptoPositionIntent,
+    exit_reason: str,
+) -> bool:
+    return (
+        exit_reason == "time_stop"
+        and intent.signal_type == "repricing_edge"
+        and intent.entry_fill_source == "taker"
+    )
+
+
 def _record_runtime_skip(
     *,
     context: Mapping[str, object],
@@ -631,6 +883,113 @@ def _feedback_resolution_maker_quote_ttl_seconds(
     if feedback.recommended_route_bias == "more_aggressive":
         return max(30, int(round(base_ttl * 0.8)))
     return base_ttl
+
+
+def _is_repricing_maker_fallback(decision: Any) -> bool:
+    return (
+        getattr(decision, "route", None) == "maker"
+        and tuple(getattr(decision, "rationale_tags", ())) in {
+            ("repricing_taker_too_expensive", "maker_fallback"),
+            ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
+        }
+    )
+
+
+def _market_pending_orders_block_entry(
+    *,
+    snapshot: MarketSnapshot,
+    dashboard: DashboardState | None,
+    context: Mapping[str, object],
+) -> bool:
+    if dashboard is None:
+        return False
+    market_orders = tuple(
+        order
+        for order in dashboard.pending_orders
+        if order.market_id == snapshot.market_id
+    )
+    if not market_orders:
+        return False
+    return any(
+        not _pending_order_is_refreshable_repricing_fallback(
+            order=order,
+            snapshot=snapshot,
+            context=context,
+        )
+        for order in market_orders
+    )
+
+
+def _has_refreshable_repricing_fallback_pending_order(
+    *,
+    snapshot: MarketSnapshot,
+    dashboard: DashboardState | None,
+    context: Mapping[str, object],
+) -> bool:
+    if dashboard is None:
+        return False
+    return any(
+        _pending_order_is_refreshable_repricing_fallback(
+            order=order,
+            snapshot=snapshot,
+            context=context,
+        )
+        for order in dashboard.pending_orders
+        if order.market_id == snapshot.market_id
+    )
+
+
+def _pending_order_is_refreshable_repricing_fallback(
+    *,
+    order: PendingOrderState,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+) -> bool:
+    if order.market_id != snapshot.market_id:
+        return False
+    if order.strategy_id != CryptoPhase2Strategy.strategy_id:
+        return False
+    if str(order.time_in_force or "").upper() != "GTC":
+        return False
+    if order.matched_shares > 0:
+        return False
+    if not _pending_order_submission_has_rationale(
+        order_id=order.order_id,
+        context=context,
+        rationale_tags={
+            ("repricing_taker_too_expensive", "maker_fallback"),
+            ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
+        },
+    ):
+        return False
+    effective_ttl = order.quote_ttl_seconds if order.quote_ttl_seconds is not None else 0
+    maturity_seconds = max(1.0, float(effective_ttl) * 0.5)
+    age_seconds = max(
+        0.0,
+        (snapshot.timestamp - order.created_at.astimezone(timezone.utc)).total_seconds(),
+    )
+    return age_seconds >= maturity_seconds
+
+
+def _pending_order_submission_has_rationale(
+    *,
+    order_id: str,
+    context: Mapping[str, object],
+    rationale_tags: set[tuple[str, str]],
+) -> bool:
+    for event in reversed(recent_runtime_events(context)):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if event_type != "order.submitted" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("order_id", "")).strip() != order_id:
+            continue
+        raw_tags = payload.get("rationale_tags")
+        if not isinstance(raw_tags, Sequence) or isinstance(raw_tags, (str, bytes, bytearray)):
+            return False
+        normalized = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
+        return normalized in rationale_tags
+    return False
 
 
 def _pending_exit_order(
@@ -857,6 +1216,8 @@ def _thesis_entry_locked(
         for order in dashboard.pending_orders:
             if order.market_id == snapshot.market_id:
                 continue
+            if not _pending_order_still_locks_thesis(order=order, as_of=snapshot.timestamp):
+                continue
             if str(order.thesis_group_id or "").strip() == thesis_group_id:
                 return True
     if cooldown_seconds <= 0:
@@ -873,7 +1234,7 @@ def _thesis_entry_locked(
             continue
         if event_type in {"trade.closed", "position.closed"}:
             return False
-        if event_type not in {"signal.generated", "order.submitted", "order.filled", "order.rejected"}:
+        if event_type != "order.filled":
             continue
         event_time = _event_timestamp(payload) or _event_timestamp(event)
         if event_time is None:
@@ -882,6 +1243,22 @@ def _thesis_entry_locked(
             return True
         return False
     return False
+
+
+def _pending_order_still_locks_thesis(
+    *,
+    order: PendingOrderState,
+    as_of: datetime,
+) -> bool:
+    status = str(order.status or "").strip().lower()
+    if status and status not in {"pending", "partially_filled", "open", "live"}:
+        return False
+    if order.matched_shares > 0:
+        return True
+    if order.quote_ttl_seconds is None or order.quote_ttl_seconds <= 0:
+        return True
+    age_seconds = max(0.0, (as_of - order.updated_at).total_seconds())
+    return age_seconds <= (float(order.quote_ttl_seconds) + 2.0)
 
 
 def _market_no_fill_quarantined(
@@ -928,6 +1305,51 @@ def _market_no_fill_quarantined(
             seen_order_ids.add(order_id)
         no_fill_attempts += 1
         if no_fill_attempts >= max_attempts:
+            return True
+    return False
+
+
+def _exposure_group_conflict_active(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+    side: SignalSide,
+) -> bool:
+    exposure_group_id = _snapshot_exposure_group_id(snapshot)
+    thesis_group_id = _snapshot_thesis_group_id(snapshot, side=side)
+    if exposure_group_id is None or thesis_group_id is None:
+        return False
+    dashboard = dashboard_state(context)
+    if dashboard is not None:
+        for position in dashboard.open_positions:
+            if position.market_id == snapshot.market_id:
+                continue
+            if str(position.exposure_group_id or "").strip() != exposure_group_id:
+                continue
+            active_thesis = str(position.thesis_group_id or "").strip()
+            if active_thesis and active_thesis != thesis_group_id:
+                return True
+        for order in dashboard.pending_orders:
+            if order.market_id == snapshot.market_id:
+                continue
+            if str(order.exposure_group_id or "").strip() != exposure_group_id:
+                continue
+            active_thesis = str(order.thesis_group_id or "").strip()
+            if active_thesis and active_thesis != thesis_group_id:
+                return True
+    for event in reversed(recent_runtime_events(context)):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if not isinstance(event_type, str) or not isinstance(payload, Mapping):
+            continue
+        if event_type not in {"order.submitted", "order.filled"}:
+            continue
+        if str(payload.get("market_id", "")) == snapshot.market_id:
+            continue
+        if str(payload.get("exposure_group_id", "")).strip() != exposure_group_id:
+            continue
+        active_thesis = str(payload.get("thesis_group_id", "")).strip()
+        if active_thesis and active_thesis != thesis_group_id:
             return True
     return False
 
@@ -1022,6 +1444,14 @@ def _snapshot_thesis_group_id(
         if isinstance(raw_value, str) and raw_value.strip():
             return raw_value.strip()
     return derive_exposure_keys(snapshot, side=side).thesis_group_id
+
+
+def _snapshot_exposure_group_id(snapshot: MarketSnapshot) -> str | None:
+    for key in ("exposure_group_id", "exposure_group", "series_group"):
+        raw_value = snapshot.metadata.get(key)
+        if isinstance(raw_value, str) and raw_value.strip():
+            return raw_value.strip()
+    return derive_exposure_keys(snapshot).exposure_group_id
 
 
 def _matches_exit_side(payload: Mapping[str, object]) -> bool:

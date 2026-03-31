@@ -166,6 +166,8 @@ def _update_runtime_context_from_events(
         market_id = str(payload.get("market_id", ""))
         if not market_id:
             continue
+        if _is_recovered_live_event(payload):
+            continue
         fair_value = fair_values_by_market_id.get(market_id)
         if event.get("event_type") == "order.filled" and fair_value is not None and market_id not in position_intents_by_market_id:
             token_id = str(payload.get("token_id", ""))
@@ -220,6 +222,12 @@ def _optional_float(raw_value: object) -> float | None:
         return float(str(raw_value))
     except (TypeError, ValueError):
         return None
+
+
+def _is_recovered_live_event(payload: object) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("strategy_id", "")).strip() == "recovered.live"
 
 
 def _pending_orders_from_events(

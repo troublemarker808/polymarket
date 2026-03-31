@@ -131,3 +131,85 @@ def test_generate_autoresearch_report_classifies_zero_activity_as_alpha_bound(tm
     assert report.experiment_matrix[0].name == "Mine eventful fixed windows"
     assert report.experiment_matrix[1].name == "Recalibrate ladder fair value"
     assert "mine-fixed-windows" in report.next_follow_up_experiments[0]
+
+
+def test_generate_autoresearch_report_excludes_recovered_live_noise_from_effective_baseline(
+    tmp_path,
+) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "signals_generated": 2,
+                "orders_submitted": 1,
+                "orders_rejected": 0,
+                "orders_filled": 4,
+                "orders_partially_filled": 0,
+                "orders_expired": 0,
+                "orders_canceled": 0,
+                "trades_closed": 2,
+                "fill_rate": 4.0,
+                "cancel_rate": 0.0,
+                "avg_fill_price_vs_mid_bps": 12.0,
+                "market_data_failures": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    event_path = tmp_path / "events.jsonl"
+    event_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "order-1",
+                            "strategy_id": "crypto.phase2",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "order_id": "order-1",
+                            "strategy_id": "crypto.phase2",
+                            "fill_source": "taker",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "order_id": "legacy-1",
+                            "strategy_id": "recovered.live",
+                            "fill_source": "taker",
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "strategy_id": "recovered.live",
+                            "net_pnl": -1.5,
+                        },
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    report = generate_autoresearch_report(metrics_path=metrics_path, event_path=event_path)
+
+    assert report.classification == "execution-bound"
+    assert report.effective_orders_submitted == 1
+    assert report.effective_orders_filled == 1
+    assert report.effective_trades_closed == 0
+    assert report.effective_fill_rate == 1.0
+    assert report.effective_closed_trade_net_pnl == 0.0
+    assert report.recovered_closed_trade_count == 1
+    assert report.recovered_closed_trade_net_pnl == -1.5

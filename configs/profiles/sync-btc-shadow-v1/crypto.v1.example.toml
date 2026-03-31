@@ -3,11 +3,12 @@ enabled_strategies = ["crypto.phase2"]
 
 [markets]
 assets = ["BTC"]
-include_keywords = ["dip", "drop", "fall", "reach", "hit", "above", "below", "under", "over"]
-exclude_keywords = ["volatility", "realized", "dominance", "premium", "kimchi"]
+include_keywords = ["above", "below", "under", "over"]
+exclude_keywords = ["dip", "drop", "fall", "reach", "hit", "volatility", "realized", "dominance", "premium", "kimchi"]
 expiries = ["long"]
+discovery_max_pages = 6
 min_liquidity_score = 0.5
-max_active_markets = 4
+max_active_markets = 8
 max_markets_per_event = 1
 min_markets_per_event = 1
 
@@ -24,6 +25,7 @@ maker_aggressiveness = 1.5
 high_edge_taker_min_edge_bps = 125.0
 high_edge_taker_max_spread_bps = 160.0
 taker_max_entry_premium_bps = 1800.0
+taker_min_net_edge_after_premium_bps = 200.0
 maker_quote_ttl_seconds = 12
 resolution_maker_quote_ttl_seconds = 20
 default_notional = 5.0
@@ -39,18 +41,24 @@ stop_loss_min_ticks = 2
 stop_loss_max_remaining_edge_bps = 150.0
 adverse_fill_exit_bps = 75.0
 adverse_fill_max_remaining_edge_bps = 150.0
+time_stop_max_remaining_edge_bps = 300.0
 max_holding_multiplier = 1.0
 exit_repost_cooldown_seconds = 30.0
 entry_repost_cooldown_seconds = 30.0
 entry_failure_cooldown_seconds = 45.0
-thesis_entry_cooldown_seconds = 90.0
-max_no_fill_entry_attempts_per_market = 1
+entry_market_cooldown_seconds = 180.0
+loss_reentry_cooldown_seconds = 3600.0
+max_loss_trades_per_market = 1
+max_loss_trades_per_exposure_group = 1
+thesis_entry_cooldown_seconds = 30.0
+single_active_market_per_thesis = false
+max_no_fill_entry_attempts_per_market = 2
 time_stop_force_ioc_after_expiries = 2
 
 [strategy.phase2.preset_registry.btc_dip_shadow]
 match = { underlying = "BTC", event_family = "dip" }
-overrides = { taker_urgency_threshold = 0.58, maker_aggressiveness = 1.8, maker_quote_ttl_seconds = 8, high_edge_taker_min_edge_bps = 100.0, high_edge_taker_max_spread_bps = 180.0, taker_max_entry_premium_bps = 2500.0, max_no_fill_entry_attempts_per_market = 1 }
+overrides = { taker_urgency_threshold = 0.58, maker_aggressiveness = 1.8, maker_quote_ttl_seconds = 8, high_edge_taker_min_edge_bps = 100.0, high_edge_taker_max_spread_bps = 180.0, taker_max_entry_premium_bps = 2500.0, loss_reentry_cooldown_seconds = 3600.0, max_loss_trades_per_market = 1, max_loss_trades_per_exposure_group = 1, thesis_entry_cooldown_seconds = 30.0, single_active_market_per_thesis = false, max_no_fill_entry_attempts_per_market = 2, time_stop_max_remaining_edge_bps = 300.0 }
 
 [strategy.phase2.preset_registry.btc_reach_shadow]
 match = { underlying = "BTC", event_family = "reach" }
-overrides = { taker_urgency_threshold = 0.60, maker_aggressiveness = 1.7, maker_quote_ttl_seconds = 8, high_edge_taker_min_edge_bps = 100.0, high_edge_taker_max_spread_bps = 180.0, taker_max_entry_premium_bps = 2500.0, max_no_fill_entry_attempts_per_market = 1 }
+overrides = { taker_urgency_threshold = 0.60, maker_aggressiveness = 1.7, maker_quote_ttl_seconds = 8, high_edge_taker_min_edge_bps = 100.0, high_edge_taker_max_spread_bps = 180.0, taker_max_entry_premium_bps = 2500.0, loss_reentry_cooldown_seconds = 3600.0, max_loss_trades_per_market = 1, max_loss_trades_per_exposure_group = 1, thesis_entry_cooldown_seconds = 30.0, single_active_market_per_thesis = false, max_no_fill_entry_attempts_per_market = 2, time_stop_max_remaining_edge_bps = 300.0 }

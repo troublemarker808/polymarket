@@ -56,6 +56,9 @@ async def sync_paper_execution_state(
                     "realized_pnl": trade.realized_pnl,
                     "fees_paid": trade.fees_paid,
                     "net_pnl": trade.net_pnl,
+                    "exposure_group_id": trade.exposure_group_id,
+                    "thesis_group_id": trade.thesis_group_id,
+                    "underlying_group_id": trade.underlying_group_id,
                     "closed_at": trade.closed_at.isoformat(),
                 },
             )

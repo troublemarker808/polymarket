@@ -25,9 +25,13 @@ class CryptoPhase2ResolvedConfig:
     high_edge_taker_min_edge_bps: float
     high_edge_taker_max_spread_bps: float
     taker_max_entry_premium_bps: float
+    repricing_taker_max_entry_premium_bps: float
+    taker_slippage_guard_bps: float
+    taker_min_net_edge_after_premium_bps: float
     taker_time_in_force: str
     maker_quote_ttl_seconds: int
     resolution_maker_quote_ttl_seconds: int
+    repricing_fallback_quote_ttl_seconds: int
     maker_aggressiveness: float
     default_notional: float
     exit_edge_bps: float
@@ -42,15 +46,23 @@ class CryptoPhase2ResolvedConfig:
     stop_loss_max_remaining_edge_bps: float
     adverse_fill_exit_bps: float
     adverse_fill_max_remaining_edge_bps: float
+    time_stop_max_remaining_edge_bps: float | None
     max_holding_multiplier: float
     exit_repost_cooldown_seconds: float
     entry_repost_cooldown_seconds: float
+    repricing_fallback_entry_repost_cooldown_seconds: float
     entry_failure_cooldown_seconds: float
+    entry_market_cooldown_seconds: float
+    repricing_fallback_entry_market_cooldown_seconds: float
     exit_failure_cooldown_seconds: float
+    loss_reentry_cooldown_seconds: float
+    max_loss_trades_per_market: int
+    max_loss_trades_per_exposure_group: int
     time_stop_force_ioc_after_expiries: int
     thesis_entry_cooldown_seconds: float
     single_active_market_per_thesis: bool
     max_no_fill_entry_attempts_per_market: int
+    skip_selective_wide_spread_markets: bool
 
 
 @dataclass(slots=True, frozen=True)
@@ -126,9 +138,13 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         high_edge_taker_min_edge_bps=base.high_edge_taker_min_edge_bps,
         high_edge_taker_max_spread_bps=base.high_edge_taker_max_spread_bps,
         taker_max_entry_premium_bps=base.taker_max_entry_premium_bps,
+        repricing_taker_max_entry_premium_bps=base.repricing_taker_max_entry_premium_bps,
+        taker_slippage_guard_bps=base.taker_slippage_guard_bps,
+        taker_min_net_edge_after_premium_bps=base.taker_min_net_edge_after_premium_bps,
         taker_time_in_force=base.taker_time_in_force,
         maker_quote_ttl_seconds=base.maker_quote_ttl_seconds,
         resolution_maker_quote_ttl_seconds=base.resolution_maker_quote_ttl_seconds,
+        repricing_fallback_quote_ttl_seconds=base.repricing_fallback_quote_ttl_seconds,
         maker_aggressiveness=base.maker_aggressiveness,
         default_notional=base.default_notional,
         exit_edge_bps=base.exit_edge_bps,
@@ -143,15 +159,23 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         stop_loss_max_remaining_edge_bps=base.stop_loss_max_remaining_edge_bps,
         adverse_fill_exit_bps=base.adverse_fill_exit_bps,
         adverse_fill_max_remaining_edge_bps=base.adverse_fill_max_remaining_edge_bps,
+        time_stop_max_remaining_edge_bps=base.time_stop_max_remaining_edge_bps,
         max_holding_multiplier=base.max_holding_multiplier,
         exit_repost_cooldown_seconds=base.exit_repost_cooldown_seconds,
         entry_repost_cooldown_seconds=base.entry_repost_cooldown_seconds,
+        repricing_fallback_entry_repost_cooldown_seconds=base.repricing_fallback_entry_repost_cooldown_seconds,
         entry_failure_cooldown_seconds=base.entry_failure_cooldown_seconds,
+        entry_market_cooldown_seconds=base.entry_market_cooldown_seconds,
+        repricing_fallback_entry_market_cooldown_seconds=base.repricing_fallback_entry_market_cooldown_seconds,
         exit_failure_cooldown_seconds=base.exit_failure_cooldown_seconds,
+        loss_reentry_cooldown_seconds=base.loss_reentry_cooldown_seconds,
+        max_loss_trades_per_market=base.max_loss_trades_per_market,
+        max_loss_trades_per_exposure_group=base.max_loss_trades_per_exposure_group,
         time_stop_force_ioc_after_expiries=base.time_stop_force_ioc_after_expiries,
         thesis_entry_cooldown_seconds=base.thesis_entry_cooldown_seconds,
         single_active_market_per_thesis=base.single_active_market_per_thesis,
         max_no_fill_entry_attempts_per_market=base.max_no_fill_entry_attempts_per_market,
+        skip_selective_wide_spread_markets=base.skip_selective_wide_spread_markets,
     )
 
 
@@ -170,16 +194,19 @@ def _apply_overrides(
         if field_name in {
             "maker_quote_ttl_seconds",
             "resolution_maker_quote_ttl_seconds",
+            "repricing_fallback_quote_ttl_seconds",
             "stop_loss_min_ticks",
             "time_stop_force_ioc_after_expiries",
             "max_no_fill_entry_attempts_per_market",
+            "max_loss_trades_per_market",
+            "max_loss_trades_per_exposure_group",
         }:
             allowed[field_name] = int(cast(Any, raw_value))
         elif field_name == "taker_time_in_force":
             allowed[field_name] = str(cast(Any, raw_value)).upper()
-        elif field_name == "single_active_market_per_thesis":
+        elif field_name in {"single_active_market_per_thesis", "skip_selective_wide_spread_markets"}:
             allowed[field_name] = bool(cast(Any, raw_value))
-        elif field_name == "execution_max_holding_seconds":
+        elif field_name in {"execution_max_holding_seconds", "time_stop_max_remaining_edge_bps"}:
             allowed[field_name] = None if raw_value in (None, "") else float(cast(Any, raw_value))
         else:
             allowed[field_name] = float(cast(Any, raw_value))

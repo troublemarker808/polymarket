@@ -36,6 +36,7 @@ from pm_bot.runtime.live_reconcile import recover_live_state
 from pm_bot.runtime.market_universe import build_snapshot_selector
 from pm_bot.runtime.paper_sync import order_payload_from_match_event, sync_paper_execution_state
 from pm_bot.runtime.state import DashboardState, PositionState
+from pm_bot.runtime.underlying_state import resolve_underlying_state_path
 from pm_bot.storage.recorder import LiveRuntimeRecorder, PaperRuntimeRecorder
 from pm_bot.storage.runtime_state_store import JsonRuntimeStateStore
 from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
@@ -278,6 +279,13 @@ async def run_crypto_sync_session(
         for category_config in settings.category_configs.values()
         for strategy_id in category_config.enabled_strategies
     }
+    resolved_underlying_state_path: str | None = None
+    if "crypto.phase2" in enabled_strategy_ids:
+        if underlying_state_path is None:
+            raise ValueError(
+                "run_crypto_sync_session requires underlying_state_path when crypto.phase2 is enabled"
+            )
+        resolved_underlying_state_path = str(resolve_underlying_state_path(underlying_state_path))
     crypto_config = settings.category_configs.get(Category.CRYPTO)
     markets_config = dict(crypto_config.markets) if crypto_config is not None else None
     if markets_config is not None and selection_report_path is not None:
@@ -293,12 +301,12 @@ async def run_crypto_sync_session(
     if (
         "crypto.phase2" in enabled_strategy_ids
         and markets_config is not None
-        and underlying_state_path is not None
+        and resolved_underlying_state_path is not None
     ):
         min_barrier_distance_ratio = _parse_optional_float(markets_config.get("min_barrier_distance_ratio"))
         max_barrier_distance_ratio = _parse_optional_float(markets_config.get("max_barrier_distance_ratio"))
         if min_barrier_distance_ratio is not None or max_barrier_distance_ratio is not None:
-            underlying_states = load_underlying_states(underlying_state_path)
+            underlying_states = load_underlying_states(resolved_underlying_state_path)
             base_selector = snapshot_selector
 
             def snapshot_selector(snapshots: Sequence[MarketSnapshot]) -> list[MarketSnapshot]:
@@ -359,12 +367,8 @@ async def run_crypto_sync_session(
     )
     runtime_context_builder = None
     if "crypto.phase2" in enabled_strategy_ids:
-        if underlying_state_path is None:
-            raise ValueError(
-                "run_crypto_sync_session requires underlying_state_path when crypto.phase2 is enabled"
-            )
         phase2_context_builder = CryptoPhase2PaperContextBuilder(
-            underlying_state_path=underlying_state_path,
+            underlying_state_path=cast(str, resolved_underlying_state_path),
             apply_series_filter=True,
             selection_report_path=selection_report_path,
         )
@@ -381,6 +385,11 @@ async def run_crypto_sync_session(
             )
 
     session_started_at = datetime.now(tz=UTC)
+    active_strategy_ids = tuple(
+        str(getattr(strategy, "strategy_id", "")).strip()
+        for strategy in (() if cleanup_only_mode else strategies)
+        if str(getattr(strategy, "strategy_id", "")).strip()
+    )
     await live_recorder.record(
         event_type="live.session_started",
         payload={
@@ -389,6 +398,13 @@ async def run_crypto_sync_session(
             "recovery_scope": settings.polymarket.live_recovery_scope,
             "configured_signature_type": settings.polymarket.signature_type,
             "resolved_signature_type": live_execution.signature_type,
+            "cleanup_only_mode": cleanup_only_mode,
+            "strategies_enabled": bool(active_strategy_ids),
+            "enabled_strategy_ids": sorted(enabled_strategy_ids),
+            "active_strategy_ids": list(active_strategy_ids),
+            "starting_runtime_open_positions": len(starting_runtime_open_positions),
+            "starting_runtime_pending_orders": len(starting_runtime_pending_orders),
+            "resolved_underlying_state_path": resolved_underlying_state_path,
         },
     )
     await shadow_recorder.record(
@@ -396,6 +412,12 @@ async def run_crypto_sync_session(
         payload={
             "started_at": session_started_at.isoformat(),
             "mode": "sync_shadow",
+            "cleanup_only_mode": cleanup_only_mode,
+            "strategies_enabled": bool(active_strategy_ids),
+            "active_strategy_ids": list(active_strategy_ids),
+            "starting_runtime_open_positions": len(starting_runtime_open_positions),
+            "starting_runtime_pending_orders": len(starting_runtime_pending_orders),
+            "resolved_underlying_state_path": resolved_underlying_state_path,
         },
     )
 

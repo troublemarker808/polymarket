@@ -5,7 +5,11 @@ from pm_bot.core.settings import RiskSettings, TradingSettings
 from pm_bot.core.types import Category, MarketSnapshot, OrderAction, OrderIntent, SignalSide
 from pm_bot.execution.paper_adapter import PaperExecutionAdapter
 from pm_bot.risk.manager import BasicRiskManager
-from pm_bot.runtime.paper_session import PaperSessionRunner, format_dashboard_summary
+from pm_bot.runtime.paper_session import (
+    PaperSessionRunner,
+    _resolve_discovery_max_pages,
+    format_dashboard_summary,
+)
 from pm_bot.runtime.paper_sync import sync_paper_execution_state
 from pm_bot.runtime.state import DashboardState, HaltReason, PositionState, RuntimeStatus
 from pm_bot.storage.recorder import InMemoryRecorder
@@ -233,3 +237,12 @@ def test_paper_session_runner_halts_when_market_data_goes_stale() -> None:
     assert dashboard.halt_reason == HaltReason.STALE_DATA
     halted_event = next(event for event in recorder.events if event["event_type"] == "runtime.halted")
     assert halted_event["payload"]["halt_reason"] == "stale_data"
+
+
+def test_resolve_discovery_max_pages_uses_markets_override_when_larger() -> None:
+    resolved = _resolve_discovery_max_pages(
+        cli_max_pages=1,
+        markets_config={"discovery_max_pages": 8},
+    )
+
+    assert resolved == 8

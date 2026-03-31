@@ -55,6 +55,158 @@ def test_crypto_phase2_strategy_generates_entry_signal_from_phase1_fair_value() 
     assert signal.diagnostics["selection_reasons"] == ["tight_runtime_spread"]
 
 
+def test_crypto_phase2_strategy_forces_selective_market_entries_to_stay_passive() -> None:
+    strategy = CryptoPhase2Strategy({})
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-1000",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+                "market_selection_actions": {"eth-dip-1000": "selective_market"},
+                "market_selection_reasons": {"eth-dip-1000": ("wide_spread",)},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.target_price == 0.10
+    assert signal.time_in_force == "GTC"
+    assert signal.quote_ttl_seconds == 60
+    assert signal.rationale_tags == ("repricing_edge", "maker")
+    assert signal.diagnostics["selection_action"] == "selective_market"
+    assert signal.diagnostics["execution_route"] == "maker"
+
+
+def test_crypto_phase2_strategy_uses_dedicated_ttl_for_repricing_maker_fallback() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "maker_quote_ttl_seconds": 10,
+            "repricing_fallback_quote_ttl_seconds": 20,
+            "repricing_taker_max_entry_premium_bps": 90.0,
+        }
+    )
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-fallback-ttl",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-fallback-ttl": fair_value},
+                "market_selection_actions": {"eth-dip-fallback-ttl": "tradable_market"},
+                "market_selection_reasons": {"eth-dip-fallback-ttl": ("tight_runtime_spread",)},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.quote_ttl_seconds == 20
+    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+    assert signal.diagnostics["execution_route"] == "maker"
+
+
+def test_crypto_phase2_strategy_applies_taker_slippage_guard_before_repricing_taker_route() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "repricing_taker_max_entry_premium_bps": 90.0,
+            "taker_slippage_guard_bps": 20.0,
+        }
+    )
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-slippage-guard",
+        best_bid_yes=0.63,
+        best_ask_yes=0.64,
+        best_bid_no=0.36,
+        best_ask_no=0.37,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-slippage-guard": fair_value},
+                "market_selection_actions": {"eth-dip-slippage-guard": "tradable_market"},
+                "market_selection_reasons": {"eth-dip-slippage-guard": ("tight_runtime_spread",)},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+    assert signal.diagnostics["execution_route"] == "maker"
+
+
+def test_crypto_phase2_strategy_skips_selective_wide_spread_entries_when_configured() -> None:
+    strategy = CryptoPhase2Strategy({"skip_selective_wide_spread_markets": True})
+    snapshot = _snapshot(
+        timestamp=datetime(2026, 3, 28, 0, 0, tzinfo=UTC),
+        market_id="eth-dip-1000",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    runtime_events: list[dict[str, object]] = []
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+                "market_selection_actions": {"eth-dip-1000": "selective_market"},
+                "market_selection_reasons": {"eth-dip-1000": ("wide_spread",)},
+                "_strategy_runtime_events": runtime_events,
+            },
+        )
+    )
+
+    assert signals == []
+    assert runtime_events == [
+        {
+            "event_type": "strategy.skipped",
+            "payload": {
+                "strategy_id": "crypto.phase2",
+                "market_id": "eth-dip-1000",
+                "slug": "eth-dip-1000",
+                "reason": "selection_wide_spread_selective_blocked",
+                "updated_at": snapshot.timestamp.isoformat(),
+                "phase2_preset": "default",
+                "selection_action": "selective_market",
+                "selection_reasons": ["wide_spread"],
+            },
+        }
+    ]
+
+
 def test_crypto_phase2_strategy_generates_exit_signal_for_existing_position() -> None:
     strategy = CryptoPhase2Strategy({})
     now = datetime(2026, 3, 28, 0, 20, tzinfo=UTC)
@@ -482,6 +634,63 @@ def test_crypto_phase2_strategy_forces_ioc_after_repeated_time_stop_expiries() -
     assert signal.rationale_tags == ("time_stop",)
 
 
+def test_crypto_phase2_strategy_uses_immediate_ioc_for_taker_repricing_time_stop() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "execution_max_holding_seconds": 300.0,
+            "time_stop_force_ioc_after_expiries": 2,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 20, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-1000",
+        best_bid_yes=0.12,
+        best_ask_yes=0.14,
+        best_bid_no=0.86,
+        best_ask_no=0.88,
+    )
+    fair_value = _fair_value("repricing_yes")
+    classification = classify_crypto_signal(fair_value=fair_value)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="eth-dip-1000-yes",
+        created_at=now - timedelta(minutes=10),
+        entry_fill_price=0.11,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="eth-dip-1000",
+        token_id="eth-dip-1000-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        notional=5.0,
+        opened_at=now - timedelta(minutes=10),
+        shares=45.0,
+        average_entry_price=0.11,
+        mark_price=0.12,
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(position=position),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+                "position_intents_by_market_id": {"eth-dip-1000": intent},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.target_price == 0.12
+    assert signal.time_in_force == "IOC"
+    assert signal.quote_ttl_seconds is None
+    assert signal.rationale_tags == ("time_stop",)
+
+
 def test_crypto_phase2_strategy_counts_stale_exit_cancels_toward_ioc_escalation() -> None:
     strategy = CryptoPhase2Strategy({"time_stop_force_ioc_after_expiries": 2})
     now = datetime(2026, 3, 28, 0, 20, tzinfo=UTC)
@@ -707,6 +916,221 @@ def test_crypto_phase2_strategy_blocks_repeat_entry_after_recent_submission_same
     assert signals == []
 
 
+def test_crypto_phase2_strategy_blocks_same_market_reentry_after_recent_loss() -> None:
+    strategy = CryptoPhase2Strategy({"loss_reentry_cooldown_seconds": 1800.0})
+    now = datetime(2026, 3, 28, 0, 10, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-2027",
+        best_bid_yes=0.09,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.91,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"btc-reach-2027": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "market_id": "btc-reach-2027",
+                            "realized_pnl": -0.22,
+                            "net_pnl": -0.22,
+                            "closed_at": (now - timedelta(minutes=10)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_allows_same_market_reentry_after_loss_cooldown_expires() -> None:
+    strategy = CryptoPhase2Strategy({"loss_reentry_cooldown_seconds": 300.0})
+    now = datetime(2026, 3, 28, 0, 10, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-2027",
+        best_bid_yes=0.09,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.91,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"btc-reach-2027": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "market_id": "btc-reach-2027",
+                            "realized_pnl": -0.22,
+                            "net_pnl": -0.22,
+                            "closed_at": (now - timedelta(minutes=10)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+
+
+def test_crypto_phase2_strategy_quarantines_market_after_configured_loss_count() -> None:
+    strategy = CryptoPhase2Strategy({"max_loss_trades_per_market": 1, "loss_reentry_cooldown_seconds": 0.0})
+    now = datetime(2026, 3, 28, 1, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-2027",
+        best_bid_yes=0.09,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.91,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"btc-reach-2027": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "market_id": "btc-reach-2027",
+                            "realized_pnl": -0.12,
+                            "net_pnl": -0.12,
+                            "closed_at": (now - timedelta(minutes=40)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_blocks_sibling_market_after_recent_exposure_group_loss() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "loss_reentry_cooldown_seconds": 1800.0,
+            "max_loss_trades_per_market": 0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 10, tzinfo=UTC)
+    snapshot = MarketSnapshot(
+        market_id="btc-above-69000",
+        token_id="btc-above-69000-yes",
+        slug="will-the-price-of-bitcoin-be-above-69000-on-march-31",
+        category=Category.CRYPTO,
+        timestamp=now,
+        resolution_time=datetime(2026, 3, 31, 0, 0, tzinfo=UTC),
+        best_bid_yes=0.09,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.91,
+        tick_size=0.01,
+        liquidity_score=0.5,
+        metadata={
+            "event_slug": "btc-price-march-31",
+            "no_token_id": "btc-above-69000-no",
+        },
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"btc-above-69000": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "market_id": "btc-above-68000",
+                            "exposure_group_id": "crypto:btc-price-march-31",
+                            "realized_pnl": -0.18,
+                            "net_pnl": -0.18,
+                            "closed_at": (now - timedelta(minutes=10)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_quarantines_exposure_group_after_configured_loss_count() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "loss_reentry_cooldown_seconds": 0.0,
+            "max_loss_trades_per_exposure_group": 1,
+        }
+    )
+    now = datetime(2026, 3, 28, 1, 0, tzinfo=UTC)
+    snapshot = MarketSnapshot(
+        market_id="btc-above-69000",
+        token_id="btc-above-69000-yes",
+        slug="will-the-price-of-bitcoin-be-above-69000-on-march-31",
+        category=Category.CRYPTO,
+        timestamp=now,
+        resolution_time=datetime(2026, 3, 31, 0, 0, tzinfo=UTC),
+        best_bid_yes=0.09,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.91,
+        tick_size=0.01,
+        liquidity_score=0.5,
+        metadata={
+            "event_slug": "btc-price-march-31",
+            "no_token_id": "btc-above-69000-no",
+        },
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"btc-above-69000": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "market_id": "btc-above-68000",
+                            "exposure_group_id": "crypto:btc-price-march-31",
+                            "realized_pnl": -0.18,
+                            "net_pnl": -0.18,
+                            "closed_at": (now - timedelta(minutes=30)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert signals == []
 def test_crypto_phase2_strategy_blocks_sibling_market_when_same_thesis_position_exists() -> None:
     strategy = CryptoPhase2Strategy({"single_active_market_per_thesis": True})
     now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
@@ -1083,7 +1507,237 @@ def test_crypto_phase2_strategy_applies_family_preset_registry() -> None:
     assert signal.time_in_force == "GTC"
 
 
-def test_crypto_phase2_strategy_locks_same_bullish_thesis_across_dip_and_reach_markets() -> None:
+def test_crypto_phase2_strategy_uses_dedicated_entry_market_cooldown() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "entry_failure_cooldown_seconds": 30.0,
+            "entry_market_cooldown_seconds": 120.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-1000",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-1000": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "signal.generated",
+                        "payload": {
+                            "market_id": "eth-dip-1000",
+                            "side": SignalSide.BUY_YES.value,
+                            "generated_at": (now - timedelta(seconds=60)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_allows_fast_repost_for_repricing_maker_fallback() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "entry_repost_cooldown_seconds": 30.0,
+            "repricing_fallback_entry_repost_cooldown_seconds": 5.0,
+            "repricing_taker_max_entry_premium_bps": 90.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-fast-repost",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-fast-repost": fair_value},
+                "market_selection_actions": {"eth-dip-fast-repost": "tradable_market"},
+                "market_selection_reasons": {"eth-dip-fast-repost": ("tight_runtime_spread",)},
+                "recent_events": (
+                    {
+                        "event_type": "order.expired",
+                        "payload": {
+                            "market_id": "eth-dip-fast-repost",
+                            "side": SignalSide.BUY_YES.value,
+                            "limit_price": 0.10,
+                            "updated_at": (now - timedelta(seconds=10)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+
+
+def test_crypto_phase2_strategy_allows_faster_market_retry_for_repricing_maker_fallback() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "entry_market_cooldown_seconds": 120.0,
+            "repricing_fallback_entry_market_cooldown_seconds": 20.0,
+            "repricing_taker_max_entry_premium_bps": 90.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-fast-market-retry",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"eth-dip-fast-market-retry": fair_value},
+                "market_selection_actions": {"eth-dip-fast-market-retry": "tradable_market"},
+                "market_selection_reasons": {"eth-dip-fast-market-retry": ("tight_runtime_spread",)},
+                "recent_events": (
+                    {
+                        "event_type": "signal.generated",
+                        "payload": {
+                            "market_id": "eth-dip-fast-market-retry",
+                            "side": SignalSide.BUY_YES.value,
+                            "generated_at": (now - timedelta(seconds=60)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+
+
+def test_crypto_phase2_strategy_ignores_stale_pending_order_for_same_thesis_lock() -> None:
+    strategy = CryptoPhase2Strategy({"thesis_entry_cooldown_seconds": 120.0})
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-1200",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    stale_pending_order = PendingOrderState(
+        order_id="paper-stale",
+        market_id="eth-dip-1100",
+        token_id="eth-dip-1100-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        side=SignalSide.BUY_YES.value,
+        limit_price=0.10,
+        requested_shares=50.0,
+        requested_notional=5.0,
+        matched_shares=0.0,
+        matched_notional=0.0,
+        fees_paid=0.0,
+        status="pending",
+        created_at=now - timedelta(seconds=30),
+        updated_at=now - timedelta(seconds=30),
+        quote_ttl_seconds=10,
+        thesis_group_id="crypto:eth:dip",
+        exposure_group_id="crypto:eth-alt-dip-ladder",
+        underlying_group_id="crypto:eth",
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(pending_orders=(stale_pending_order,)),
+                "fair_values_by_market_id": {"eth-dip-1200": fair_value},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+
+
+def test_crypto_phase2_strategy_keeps_fresh_pending_order_lock_for_same_thesis() -> None:
+    strategy = CryptoPhase2Strategy({"thesis_entry_cooldown_seconds": 120.0})
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-1200",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    fresh_pending_order = PendingOrderState(
+        order_id="paper-fresh",
+        market_id="eth-dip-1100",
+        token_id="eth-dip-1100-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        side=SignalSide.BUY_YES.value,
+        limit_price=0.10,
+        requested_shares=50.0,
+        requested_notional=5.0,
+        matched_shares=0.0,
+        matched_notional=0.0,
+        fees_paid=0.0,
+        status="pending",
+        created_at=now - timedelta(seconds=5),
+        updated_at=now - timedelta(seconds=5),
+        quote_ttl_seconds=10,
+        thesis_group_id="crypto:eth:dip",
+        exposure_group_id="crypto:eth-alt-dip-ladder",
+        underlying_group_id="crypto:eth",
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(pending_orders=(fresh_pending_order,)),
+                "fair_values_by_market_id": {"eth-dip-1200": fair_value},
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_does_not_lock_same_bullish_thesis_on_unfilled_submission() -> None:
     strategy = CryptoPhase2Strategy({"thesis_entry_cooldown_seconds": 120.0})
     now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
     reach_snapshot = MarketSnapshot(
@@ -1131,6 +1785,274 @@ def test_crypto_phase2_strategy_locks_same_bullish_thesis_across_dip_and_reach_m
                             "side": SignalSide.BUY_NO.value,
                             "thesis_group_id": "crypto:btc:bullish",
                             "updated_at": (now - timedelta(seconds=30)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+
+
+def test_crypto_phase2_strategy_locks_same_bullish_thesis_after_fill() -> None:
+    strategy = CryptoPhase2Strategy({"thesis_entry_cooldown_seconds": 120.0})
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    reach_snapshot = MarketSnapshot(
+        market_id="reach-150k",
+        token_id="reach-yes",
+        slug="will-bitcoin-hit-150k-by-december-31-2026",
+        category=Category.CRYPTO,
+        timestamp=now,
+        resolution_time=datetime(2026, 12, 31, 0, 0, tzinfo=UTC),
+        best_bid_yes=0.09,
+        best_ask_yes=0.10,
+        best_bid_no=0.90,
+        best_ask_no=0.91,
+        tick_size=0.01,
+        liquidity_score=0.8,
+        metadata={
+            "question": "Will Bitcoin hit $150K by December 31, 2026?",
+            "event_slug": "btc-reach-2026",
+            "no_token_id": "reach-no",
+        },
+    )
+    fair_value = FairValueEstimate(
+        market_id="reach-150k",
+        category=Category.CRYPTO,
+        fair_probability=0.14,
+        confidence=0.8,
+        half_life_seconds=3600,
+        observed_probability=0.10,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model", "surface_consistency"),
+        supporting_values={"net_edge_bps": 140.0, "gross_edge_bps": 400.0},
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=reach_snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {"reach-150k": fair_value},
+                "recent_events": (
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "market_id": "dip-50k",
+                            "side": SignalSide.BUY_NO.value,
+                            "thesis_group_id": "crypto:btc:bullish",
+                            "updated_at": (now - timedelta(seconds=30)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_blocks_conflicting_exposure_group_thesis() -> None:
+    strategy = CryptoPhase2Strategy({})
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = MarketSnapshot(
+        market_id="btc-above-68000",
+        token_id="btc-above-68000-yes",
+        slug="bitcoin-above-68000-on-april-5",
+        category=Category.CRYPTO,
+        timestamp=now,
+        resolution_time=datetime(2026, 4, 5, 16, 0, tzinfo=UTC),
+        best_bid_yes=0.38,
+        best_ask_yes=0.39,
+        best_bid_no=0.61,
+        best_ask_no=0.62,
+        tick_size=0.01,
+        liquidity_score=0.9,
+        metadata={
+            "question": "Will the price of Bitcoin be above $68,000 on April 5?",
+            "event_slug": "bitcoin-above-on-april-5",
+            "no_token_id": "btc-above-68000-no",
+        },
+    )
+    fair_value = FairValueEstimate(
+        market_id="btc-above-68000",
+        category=Category.CRYPTO,
+        fair_probability=0.52,
+        confidence=0.8,
+        half_life_seconds=3600,
+        observed_probability=0.38,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model", "surface_consistency"),
+        supporting_values={"net_edge_bps": 1100.0, "gross_edge_bps": 1200.0},
+    )
+    pending_order = PendingOrderState(
+        order_id="paper-1",
+        market_id="btc-above-66000",
+        token_id="btc-above-66000-no",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        side=SignalSide.BUY_NO.value,
+        limit_price=0.41,
+        requested_shares=12.0,
+        requested_notional=5.0,
+        matched_shares=0.0,
+        matched_notional=0.0,
+        fees_paid=0.0,
+        status="pending",
+        created_at=now - timedelta(seconds=5),
+        updated_at=now - timedelta(seconds=5),
+        exposure_group_id="crypto:bitcoin-above-on-april-5",
+        thesis_group_id="crypto:btc:bearish",
+        underlying_group_id="crypto:btc",
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(pending_orders=(pending_order,)),
+                "fair_values_by_market_id": {"btc-above-68000": fair_value},
+                "market_selection_actions": {"btc-above-68000": "tradable_market"},
+                "market_selection_reasons": {"btc-above-68000": ()},
+            },
+        )
+    )
+
+    assert signals == []
+
+
+def test_crypto_phase2_strategy_allows_refreshable_same_market_repricing_fallback_pending_order() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "taker_urgency_threshold": 0.62,
+            "repricing_taker_max_entry_premium_bps": 90.0,
+            "taker_slippage_guard_bps": 20.0,
+            "repricing_fallback_quote_ttl_seconds": 20,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-refreshable",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    pending_order = PendingOrderState(
+        order_id="paper-refreshable",
+        market_id="eth-dip-refreshable",
+        token_id="eth-dip-refreshable-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        side=SignalSide.BUY_YES.value,
+        limit_price=0.10,
+        requested_shares=50.0,
+        requested_notional=5.0,
+        matched_shares=0.0,
+        matched_notional=0.0,
+        fees_paid=0.0,
+        status="pending",
+        created_at=now - timedelta(seconds=11),
+        updated_at=now - timedelta(seconds=11),
+        time_in_force="GTC",
+        quote_ttl_seconds=20,
+        exposure_group_id="crypto:eth-dip-refreshable",
+        thesis_group_id="crypto:eth:bullish",
+        underlying_group_id="crypto:eth",
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(pending_orders=(pending_order,)),
+                "fair_values_by_market_id": {"eth-dip-refreshable": fair_value},
+                "market_selection_actions": {"eth-dip-refreshable": "tradable_market"},
+                "market_selection_reasons": {"eth-dip-refreshable": ("tight_runtime_spread",)},
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-refreshable",
+                            "market_id": "eth-dip-refreshable",
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_taker_too_expensive", "maker_fallback"],
+                            "created_at": (now - timedelta(seconds=11)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+
+
+def test_crypto_phase2_strategy_keeps_fresh_same_market_repricing_fallback_pending_order_blocked() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "taker_urgency_threshold": 0.62,
+            "repricing_taker_max_entry_premium_bps": 90.0,
+            "taker_slippage_guard_bps": 20.0,
+            "repricing_fallback_quote_ttl_seconds": 20,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="eth-dip-refreshable",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    pending_order = PendingOrderState(
+        order_id="paper-refreshable",
+        market_id="eth-dip-refreshable",
+        token_id="eth-dip-refreshable-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        side=SignalSide.BUY_YES.value,
+        limit_price=0.10,
+        requested_shares=50.0,
+        requested_notional=5.0,
+        matched_shares=0.0,
+        matched_notional=0.0,
+        fees_paid=0.0,
+        status="pending",
+        created_at=now - timedelta(seconds=5),
+        updated_at=now - timedelta(seconds=5),
+        time_in_force="GTC",
+        quote_ttl_seconds=20,
+        exposure_group_id="crypto:eth-dip-refreshable",
+        thesis_group_id="crypto:eth:bullish",
+        underlying_group_id="crypto:eth",
+    )
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(pending_orders=(pending_order,)),
+                "fair_values_by_market_id": {"eth-dip-refreshable": fair_value},
+                "market_selection_actions": {"eth-dip-refreshable": "tradable_market"},
+                "market_selection_reasons": {"eth-dip-refreshable": ("tight_runtime_spread",)},
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-refreshable",
+                            "market_id": "eth-dip-refreshable",
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_taker_too_expensive", "maker_fallback"],
+                            "created_at": (now - timedelta(seconds=5)).isoformat(),
                         },
                     },
                 ),

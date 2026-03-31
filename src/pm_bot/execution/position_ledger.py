@@ -218,16 +218,24 @@ class PositionLedger:
             average_cost = existing.cost_basis / existing.shares if existing.shares > 0 else 0.0
             relieved_cost_basis = average_cost * closed_shares
             realized_pnl = (fill_price * closed_shares) - relieved_cost_basis
+            closed_trade_strategy_id = (
+                existing.strategy_id
+                if tracked.strategy_id == "recovered.live" and existing.strategy_id != "recovered.live"
+                else tracked.strategy_id
+            )
             self._closed_trades.append(
                 ClosedTrade(
                     market_id=tracked.market_id,
                     token_id=tracked.token_id,
                     category=tracked.category,
-                    strategy_id=tracked.strategy_id,
+                    strategy_id=closed_trade_strategy_id,
                     intent_id=tracked.intent_id,
                     realized_pnl=realized_pnl,
                     fees_paid=closed_fees,
                     closed_at=tracked.updated_at,
+                    exposure_group_id=existing.exposure_group_id or tracked.exposure_group_id,
+                    thesis_group_id=existing.thesis_group_id or tracked.thesis_group_id,
+                    underlying_group_id=existing.underlying_group_id or tracked.underlying_group_id,
                 )
             )
 

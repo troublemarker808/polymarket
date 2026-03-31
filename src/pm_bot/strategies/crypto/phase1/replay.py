@@ -6,7 +6,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from pm_bot.core.research_types import FairValueEstimate
-from pm_bot.core.types import Category, MarketSnapshot
+from pm_bot.core.types import Category, MarketSnapshot, SignalSide
 from pm_bot.research import run_phase1_replay
 from pm_bot.research.engine import load_market_snapshots
 from pm_bot.research.phase1_artifacts import write_phase1_artifacts
@@ -181,7 +181,11 @@ def compute_crypto_phase1_fair_values_from_snapshots(
                 fused=fused,
                 observed_probability=observed_probability,
             )
-            entry_cost_bps = _spread_cost_bps(snapshot.best_bid_yes, snapshot.best_ask_yes)
+            trade_side = _trade_side_from_probabilities(
+                fair_probability=fair_estimate.fair_probability,
+                observed_probability=observed_probability,
+            )
+            entry_cost_bps = _spread_cost_bps_for_side(snapshot=snapshot, side=trade_side)
             net_edge = estimate_net_edge(
                 market_id=market.normalized.market_id,
                 fair_probability=fair_estimate.fair_probability,
@@ -190,6 +194,21 @@ def compute_crypto_phase1_fair_values_from_snapshots(
                 exit_cost_bps=entry_cost_bps,
                 slippage_bps=slippage_bps,
                 adverse_selection_bps=adverse_selection_bps,
+            )
+            fair_estimate = FairValueEstimate(
+                market_id=fair_estimate.market_id,
+                category=fair_estimate.category,
+                fair_probability=fair_estimate.fair_probability,
+                confidence=fair_estimate.confidence,
+                half_life_seconds=fair_estimate.half_life_seconds,
+                observed_probability=fair_estimate.observed_probability,
+                model_id=fair_estimate.model_id,
+                rationale_tags=fair_estimate.rationale_tags,
+                supporting_values={
+                    **fair_estimate.supporting_values,
+                    "trade_side": trade_side.value,
+                    "runtime_spread_bps": entry_cost_bps * 2.0,
+                },
             )
             fair_values.append(
                 enrich_fair_value_with_net_edge(
@@ -204,3 +223,15 @@ def _spread_cost_bps(best_bid_yes: float | None, best_ask_yes: float | None) -> 
     if best_bid_yes is None or best_ask_yes is None:
         return 0.0
     return max(best_ask_yes - best_bid_yes, 0.0) * 5000
+
+
+def _trade_side_from_probabilities(*, fair_probability: float, observed_probability: float) -> SignalSide:
+    if fair_probability >= observed_probability:
+        return SignalSide.BUY_YES
+    return SignalSide.BUY_NO
+
+
+def _spread_cost_bps_for_side(*, snapshot: MarketSnapshot, side: SignalSide) -> float:
+    if side == SignalSide.BUY_NO:
+        return _spread_cost_bps(snapshot.best_bid_no, snapshot.best_ask_no)
+    return _spread_cost_bps(snapshot.best_bid_yes, snapshot.best_ask_yes)

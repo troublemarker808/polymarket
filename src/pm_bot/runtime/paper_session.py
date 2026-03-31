@@ -577,8 +577,11 @@ async def _run_crypto_paper_session(
     registry = build_default_registry()
     strategies = registry.build_enabled(settings=settings)
     crypto_config = settings.category_configs.get(Category.CRYPTO)
-    snapshot_selector = build_snapshot_selector(
-        crypto_config.markets if crypto_config is not None else None
+    markets_config = crypto_config.markets if crypto_config is not None else None
+    snapshot_selector = build_snapshot_selector(markets_config)
+    discovery_max_pages = _resolve_discovery_max_pages(
+        cli_max_pages=max_pages,
+        markets_config=markets_config,
     )
     state_store = JsonRuntimeStateStore(state_path)
     risk_manager = BasicRiskManager(
@@ -600,7 +603,7 @@ async def _run_crypto_paper_session(
             gamma_client=gamma_client,
             clob_enricher=ClobSnapshotEnricher(clob_client),
             market_event_stream=MarketChannelClient(settings.polymarket.market_ws_url) if use_market_ws else None,
-            max_pages=max_pages,
+            max_pages=discovery_max_pages,
             tag_id=tag_id,
             snapshot_selector=snapshot_selector,
         )
@@ -618,6 +621,70 @@ async def _run_crypto_paper_session(
             if halt_triggered:
                 await _record_runtime_halt_event(recorder=recorder, risk_manager=risk_manager)
             raise
+        bootstrap_summary = getattr(market_data, "last_bootstrap_summary", None)
+        selection_diagnostics = getattr(snapshot_selector, "last_diagnostics", None)
+        if selection_diagnostics is not None:
+            pre_enrich_diagnostics = getattr(bootstrap_summary, "pre_enrich_diagnostics", None)
+            post_enrich_diagnostics = getattr(bootstrap_summary, "post_enrich_diagnostics", None)
+            await recorder.record(
+                event_type="market_universe.selection_summary",
+                payload={
+                    "raw_snapshots": getattr(bootstrap_summary, "raw_snapshots", selection_diagnostics.total_snapshots),
+                    "after_pre_enrich_selection": getattr(
+                        bootstrap_summary,
+                        "after_pre_enrich_selection",
+                        selection_diagnostics.total_snapshots,
+                    ),
+                    "after_enrichment": getattr(
+                        bootstrap_summary,
+                        "after_enrichment",
+                        selection_diagnostics.total_snapshots,
+                    ),
+                    "after_post_enrich_selection": getattr(
+                        bootstrap_summary,
+                        "after_post_enrich_selection",
+                        selection_diagnostics.selected_snapshots,
+                    ),
+                    "total_snapshots": selection_diagnostics.total_snapshots,
+                    "open_snapshots": selection_diagnostics.open_snapshots,
+                    "after_liquidity_score": selection_diagnostics.after_liquidity_score,
+                    "after_yes_mid_price": selection_diagnostics.after_yes_mid_price,
+                    "after_yes_spread": selection_diagnostics.after_yes_spread,
+                    "after_tradeable_spread": selection_diagnostics.after_tradeable_spread,
+                    "after_asset_keywords": selection_diagnostics.after_asset_keywords,
+                    "after_include_keywords": selection_diagnostics.after_include_keywords,
+                    "after_exclude_keywords": selection_diagnostics.after_exclude_keywords,
+                    "after_expiry_bucket": selection_diagnostics.after_expiry_bucket,
+                    "after_event_slug": selection_diagnostics.after_event_slug,
+                    "after_market_ids": selection_diagnostics.after_market_ids,
+                    "grouped_event_count": selection_diagnostics.grouped_event_count,
+                    "selected_snapshots": selection_diagnostics.selected_snapshots,
+                    "pre_open_snapshots": getattr(pre_enrich_diagnostics, "open_snapshots", None),
+                    "pre_after_liquidity_score": getattr(pre_enrich_diagnostics, "after_liquidity_score", None),
+                    "pre_after_yes_mid_price": getattr(pre_enrich_diagnostics, "after_yes_mid_price", None),
+                    "pre_after_yes_spread": getattr(pre_enrich_diagnostics, "after_yes_spread", None),
+                    "pre_after_tradeable_spread": getattr(pre_enrich_diagnostics, "after_tradeable_spread", None),
+                    "pre_after_asset_keywords": getattr(pre_enrich_diagnostics, "after_asset_keywords", None),
+                    "pre_after_include_keywords": getattr(pre_enrich_diagnostics, "after_include_keywords", None),
+                    "pre_after_exclude_keywords": getattr(pre_enrich_diagnostics, "after_exclude_keywords", None),
+                    "pre_after_expiry_bucket": getattr(pre_enrich_diagnostics, "after_expiry_bucket", None),
+                    "pre_after_event_slug": getattr(pre_enrich_diagnostics, "after_event_slug", None),
+                    "pre_after_market_ids": getattr(pre_enrich_diagnostics, "after_market_ids", None),
+                    "pre_grouped_event_count": getattr(pre_enrich_diagnostics, "grouped_event_count", None),
+                    "post_open_snapshots": getattr(post_enrich_diagnostics, "open_snapshots", None),
+                    "post_after_liquidity_score": getattr(post_enrich_diagnostics, "after_liquidity_score", None),
+                    "post_after_yes_mid_price": getattr(post_enrich_diagnostics, "after_yes_mid_price", None),
+                    "post_after_yes_spread": getattr(post_enrich_diagnostics, "after_yes_spread", None),
+                    "post_after_tradeable_spread": getattr(post_enrich_diagnostics, "after_tradeable_spread", None),
+                    "post_after_asset_keywords": getattr(post_enrich_diagnostics, "after_asset_keywords", None),
+                    "post_after_include_keywords": getattr(post_enrich_diagnostics, "after_include_keywords", None),
+                    "post_after_exclude_keywords": getattr(post_enrich_diagnostics, "after_exclude_keywords", None),
+                    "post_after_expiry_bucket": getattr(post_enrich_diagnostics, "after_expiry_bucket", None),
+                    "post_after_event_slug": getattr(post_enrich_diagnostics, "after_event_slug", None),
+                    "post_after_market_ids": getattr(post_enrich_diagnostics, "after_market_ids", None),
+                    "post_grouped_event_count": getattr(post_enrich_diagnostics, "grouped_event_count", None),
+                },
+            )
         if seed_snapshots:
             risk_manager.record_data_success(max(snapshot.timestamp for snapshot in seed_snapshots))
 
@@ -706,6 +773,20 @@ def _remaining_limit(limit: int | None, processed: int) -> int | None:
     return max(remaining, 0)
 
 
+def _resolve_discovery_max_pages(
+    *,
+    cli_max_pages: int,
+    markets_config: Mapping[str, object] | None,
+) -> int:
+    discovery_max_pages = cli_max_pages
+    if markets_config is None:
+        return discovery_max_pages
+    configured_max_pages = _parse_optional_int(markets_config.get("discovery_max_pages"))
+    if configured_max_pages is not None:
+        discovery_max_pages = max(discovery_max_pages, configured_max_pages)
+    return discovery_max_pages
+
+
 def _cycle_limit(
     *,
     max_market_snapshots: int | None,
@@ -721,6 +802,20 @@ def _cycle_limit(
     ):
         return remaining
     return remaining + initial_snapshot_count
+
+
+def _parse_optional_int(value: object) -> int | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        return int(value.strip())
+    raise TypeError(f"expected int-like value, got {type(value).__name__}")
 
 
 def _merge_snapshots(

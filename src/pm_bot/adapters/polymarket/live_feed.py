@@ -8,11 +8,22 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 
 from pm_bot.adapters.polymarket.clob_client import ClobSnapshotEnricher
 from pm_bot.adapters.polymarket.gamma_client import GammaMarketsClient
 from pm_bot.adapters.polymarket.ws_client import MarketChannelSnapshotFeed, MarketEventStream
 from pm_bot.core.types import MarketSnapshot
+
+
+@dataclass(slots=True, frozen=True)
+class MarketDataBootstrapSummary:
+    raw_snapshots: int
+    after_pre_enrich_selection: int
+    after_enrichment: int
+    after_post_enrich_selection: int
+    pre_enrich_diagnostics: object | None = None
+    post_enrich_diagnostics: object | None = None
 
 
 class PolymarketLiveMarketDataAdapter:
@@ -36,6 +47,7 @@ class PolymarketLiveMarketDataAdapter:
         self.max_pages = max_pages
         self.tag_id = tag_id
         self.snapshot_selector = snapshot_selector
+        self.last_bootstrap_summary: MarketDataBootstrapSummary | None = None
 
     async def bootstrap_snapshots(self) -> list[MarketSnapshot]:
         snapshots = await self.gamma_client.fetch_active_binary_market_snapshots(
@@ -43,10 +55,29 @@ class PolymarketLiveMarketDataAdapter:
             max_pages=self.max_pages,
             tag_id=self.tag_id,
         )
+        raw_snapshots = len(snapshots)
+        after_pre_enrich_selection = raw_snapshots
+        pre_enrich_diagnostics = None
+        post_enrich_diagnostics = None
         if self.snapshot_selector is not None:
             snapshots = list(self.snapshot_selector(tuple(snapshots)))
+            after_pre_enrich_selection = len(snapshots)
+            pre_enrich_diagnostics = getattr(self.snapshot_selector, "last_diagnostics", None)
+        after_enrichment = len(snapshots)
         if self.clob_enricher is not None:
             snapshots = await self.clob_enricher.enrich_snapshots(snapshots)
+            after_enrichment = len(snapshots)
+            if self.snapshot_selector is not None:
+                snapshots = list(self.snapshot_selector(tuple(snapshots)))
+                post_enrich_diagnostics = getattr(self.snapshot_selector, "last_diagnostics", None)
+        self.last_bootstrap_summary = MarketDataBootstrapSummary(
+            raw_snapshots=raw_snapshots,
+            after_pre_enrich_selection=after_pre_enrich_selection,
+            after_enrichment=after_enrichment,
+            after_post_enrich_selection=len(snapshots),
+            pre_enrich_diagnostics=pre_enrich_diagnostics,
+            post_enrich_diagnostics=post_enrich_diagnostics,
+        )
         return snapshots
 
     async def stream_snapshots(self) -> AsyncIterator[MarketSnapshot]:

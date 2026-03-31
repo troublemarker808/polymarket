@@ -84,3 +84,51 @@ def test_polymarket_live_market_data_adapter_bootstraps_and_streams_updates() ->
     assert snapshots[1].best_bid_yes == 0.13
     assert snapshots[1].best_ask_yes == 0.17
     assert enricher.last_market_ids == ["824952"]
+    assert adapter.last_bootstrap_summary is not None
+    assert adapter.last_bootstrap_summary.raw_snapshots == 1
+    assert adapter.last_bootstrap_summary.after_post_enrich_selection == 1
+
+
+def test_polymarket_live_market_data_adapter_reapplies_selector_after_enrichment() -> None:
+    class PostEnrichWideningClobEnricher:
+        def __init__(self) -> None:
+            self.last_market_ids: list[str] = []
+
+        async def enrich_snapshots(self, snapshots):
+            self.last_market_ids = [snapshot.market_id for snapshot in snapshots]
+            enriched = list(snapshots)
+            enriched[0] = MarketSnapshot(
+                market_id=enriched[0].market_id,
+                token_id=enriched[0].token_id,
+                slug=enriched[0].slug,
+                category=enriched[0].category,
+                timestamp=enriched[0].timestamp,
+                resolution_time=enriched[0].resolution_time,
+                best_bid_yes=0.12,
+                best_ask_yes=0.17,
+                last_traded_price=enriched[0].last_traded_price,
+                metadata=dict(enriched[0].metadata),
+            )
+            return enriched
+
+    enricher = PostEnrichWideningClobEnricher()
+    adapter = PolymarketLiveMarketDataAdapter(
+        gamma_client=FakeGammaClient(),
+        clob_enricher=enricher,
+        snapshot_selector=lambda snapshots: [
+            snapshot
+            for snapshot in snapshots
+            if snapshot.best_bid_yes is not None
+            and snapshot.best_ask_yes is not None
+            and (snapshot.best_ask_yes - snapshot.best_bid_yes) * 10000.0 <= 450.0
+        ],
+    )
+
+    snapshots = asyncio.run(adapter.bootstrap_snapshots())
+
+    assert snapshots == []
+    assert enricher.last_market_ids == ["824952"]
+    assert adapter.last_bootstrap_summary is not None
+    assert adapter.last_bootstrap_summary.raw_snapshots == 1
+    assert adapter.last_bootstrap_summary.after_pre_enrich_selection == 1
+    assert adapter.last_bootstrap_summary.after_post_enrich_selection == 0

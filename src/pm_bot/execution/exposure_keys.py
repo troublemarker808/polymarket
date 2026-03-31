@@ -185,10 +185,17 @@ def _parse_barrier_price(combined: str) -> float | None:
 
 
 def _guess_underlying(*, source: str) -> str | None:
-    token = _source_tokens(source)[:1]
-    if not token:
+    tokens = _source_tokens(source)
+    for token in tokens:
+        if token in {"btc", "bitcoin"}:
+            return "btc"
+        if token in {"eth", "ethereum"}:
+            return "eth"
+        if token in {"sol", "solana"}:
+            return "sol"
+    if not tokens:
         return None
-    candidate = token[0]
+    candidate = tokens[0]
     if candidate.isalpha():
         return candidate
     return None
@@ -196,6 +203,11 @@ def _guess_underlying(*, source: str) -> str | None:
 
 def _guess_event_family(*, source: str) -> str | None:
     tokens = _source_tokens(source)
+    for token in tokens:
+        if token in _DOWNWARD_TOKENS:
+            return "dip"
+        if token in _UPWARD_TOKENS:
+            return "reach"
     if len(tokens) < 2:
         return None
     candidate = tokens[1]

@@ -10,7 +10,7 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any
 
-from pm_bot.core.types import MarketSnapshot
+from pm_bot.core.types import MarketSnapshot, SignalSide
 from pm_bot.research.engine import load_market_snapshots
 from pm_bot.strategies.common import parse_float
 from pm_bot.strategies.crypto.phase1.baseline import resolve_crypto_calibration_model_configs
@@ -26,6 +26,8 @@ class CryptoRuntimeTradabilityPolicy:
     min_top_book_depth: float
     min_nearby_book_depth: float
     max_quote_age_seconds: float
+    min_tradeable_contract_price: float
+    watch_thin_liquidity: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -93,10 +95,10 @@ _HARD_RUNTIME_BLOCK_REASONS = frozenset(
         "execution_no_fill",
         "negative_edge",
         "deep_negative_edge",
-        "thin_top_book",
         "thin_nearby_depth",
     }
 )
+_EXECUTION_NO_FILL_MIN_EXPIRED_ORDERS = 2
 
 
 def recommended_skip_series_keys(report: CryptoMarketSelectionReport) -> tuple[str, ...]:
@@ -321,9 +323,12 @@ def generate_crypto_market_selection_report_from_snapshots(
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
     )
-    latest_by_market_id: dict[str, MarketSnapshot] = {snapshot.market_id: snapshot for snapshot in snapshots}
+    active_snapshots = tuple(snapshot for snapshot in snapshots if not _is_resolved_snapshot(snapshot))
+    latest_by_market_id: dict[str, MarketSnapshot] = {
+        snapshot.market_id: snapshot for snapshot in active_snapshots
+    }
     fair_values = compute_crypto_phase1_fair_values_from_snapshots(
-        snapshots=snapshots,
+        snapshots=active_snapshots,
         underlying_states=underlying_states,
         barrier_model_config=resolved_barrier_model_config,
         fusion_model_config=resolved_fusion_model_config,
@@ -336,7 +341,7 @@ def generate_crypto_market_selection_report_from_snapshots(
     for market_id, fair_value in sorted(fair_values_by_market_id.items()):
         snapshot = latest_by_market_id.get(market_id)
         normalized = normalize_crypto_market(snapshot) if snapshot is not None else None
-        if snapshot is None or normalized is None:
+        if snapshot is None or normalized is None or _is_resolved_snapshot(snapshot):
             continue
         entry_cost_bps = parse_float(fair_value.supporting_values, "entry_cost_bps") or 0.0
         net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
@@ -344,9 +349,13 @@ def generate_crypto_market_selection_report_from_snapshots(
             underlying=normalized.underlying,
             event_family=normalized.event_family,
         )
-        spread_bps = _spread_bps(snapshot)
-        top_book_depth = _top_book_depth(snapshot)
-        nearby_book_depth = _nearby_book_depth(snapshot)
+        trade_side = _trade_side_from_probabilities(
+            observed_probability=fair_value.observed_probability or 0.0,
+            fair_probability=fair_value.fair_probability,
+        )
+        spread_bps = _spread_bps(snapshot, side=trade_side)
+        top_book_depth = _top_book_depth(snapshot, side=trade_side)
+        nearby_book_depth = _nearby_book_depth(snapshot, side=trade_side)
         quote_age_seconds = _quote_age_seconds(snapshot)
         accepting_orders = _accepting_orders(snapshot)
         market_event_counts = event_counts_by_market_id.get(market_id, {})
@@ -372,6 +381,8 @@ def generate_crypto_market_selection_report_from_snapshots(
             filled_order_count=market_event_counts.get("order.filled", 0),
             expired_order_count=market_event_counts.get("order.expired", 0),
             recommended_action=_market_action(
+                observed_probability=fair_value.observed_probability or 0.0,
+                fair_probability=fair_value.fair_probability,
                 net_edge_bps=net_edge_bps,
                 entry_cost_bps=entry_cost_bps,
                 spread_bps=spread_bps,
@@ -388,6 +399,8 @@ def generate_crypto_market_selection_report_from_snapshots(
                 expired_order_count=market_event_counts.get("order.expired", 0),
             ),
             reasons=_market_reasons(
+                observed_probability=fair_value.observed_probability or 0.0,
+                fair_probability=fair_value.fair_probability,
                 net_edge_bps=net_edge_bps,
                 entry_cost_bps=entry_cost_bps,
                 spread_bps=spread_bps,
@@ -408,6 +421,8 @@ def generate_crypto_market_selection_report_from_snapshots(
                 entry_cost_bps=entry_cost_bps,
                 liquidity_score=snapshot.liquidity_score,
                 recommended_action=_market_action(
+                    observed_probability=fair_value.observed_probability or 0.0,
+                    fair_probability=fair_value.fair_probability,
                     net_edge_bps=net_edge_bps,
                     entry_cost_bps=entry_cost_bps,
                     spread_bps=spread_bps,
@@ -565,6 +580,12 @@ def _build_series_report(
     submitted_order_count = sum(event_counts_by_market_id.get(row.market_id, {}).get("order.submitted", 0) for row in ordered)
     filled_order_count = sum(event_counts_by_market_id.get(row.market_id, {}).get("order.filled", 0) for row in ordered)
     expired_order_count = sum(event_counts_by_market_id.get(row.market_id, {}).get("order.expired", 0) for row in ordered)
+    repeated_execution_no_fill = _has_execution_no_fill(
+        signal_count=signal_count,
+        submitted_order_count=submitted_order_count,
+        filled_order_count=filled_order_count,
+        expired_order_count=expired_order_count,
+    )
     reasons: list[str] = []
     if positive_net_edge_count == 0:
         reasons.append("all_rungs_negative")
@@ -576,14 +597,14 @@ def _build_series_report(
         reasons.append("wide_spread")
     if min_liquidity_score < 0.95:
         reasons.append("thin_liquidity")
-    if signal_count > 0 and submitted_order_count > 0 and filled_order_count == 0 and expired_order_count > 0:
+    if repeated_execution_no_fill:
         reasons.append("execution_no_fill")
     if runtime_actionable_market_count == 0:
         reasons.append("no_runtime_actionable_markets")
 
     if positive_net_edge_count == 0 and mean_net_edge_bps <= -750:
         recommended_action = "skip_series"
-    elif signal_count > 0 and submitted_order_count > 0 and filled_order_count == 0 and expired_order_count > 0:
+    elif repeated_execution_no_fill:
         recommended_action = "watch_only"
     elif runtime_actionable_market_count == 0:
         recommended_action = "watch_only"
@@ -654,6 +675,8 @@ def _market_profit_quality_score(
 
 def _market_action(
     *,
+    observed_probability: float,
+    fair_probability: float,
     net_edge_bps: float,
     entry_cost_bps: float,
     spread_bps: float | None,
@@ -669,28 +692,49 @@ def _market_action(
     filled_order_count: int,
     expired_order_count: int,
 ) -> str:
+    repeated_execution_no_fill = _has_execution_no_fill(
+        signal_count=signal_count,
+        submitted_order_count=submitted_order_count,
+        filled_order_count=filled_order_count,
+        expired_order_count=expired_order_count,
+    )
     if accepting_orders is False:
         return "skip_market"
     if _is_stale_quote(quote_age_seconds=quote_age_seconds, policy=policy):
         return "watch_market"
-    if signal_count > 0 and submitted_order_count > 0 and filled_order_count == 0 and expired_order_count > 0:
+    if repeated_execution_no_fill:
         return "watch_market"
     if net_edge_bps <= -750:
         return "skip_market"
     if net_edge_bps <= 0:
         return "watch_market"
-    if _is_thin_top_book(
+    if _entry_contract_price(
+        observed_probability=observed_probability,
+        fair_probability=fair_probability,
+    ) < policy.min_tradeable_contract_price:
+        return "watch_market"
+    thin_top_book = _is_thin_top_book(
         top_book_depth=top_book_depth,
         min_order_size=min_order_size,
         policy=policy,
-    ) or _is_thin_nearby_depth(
+    )
+    thin_nearby_depth = _is_thin_nearby_depth(
         nearby_book_depth=nearby_book_depth,
         min_order_size=min_order_size,
         policy=policy,
-    ):
+    )
+    resilient_nearby_depth = _has_resilient_nearby_depth(
+        nearby_book_depth=nearby_book_depth,
+        min_order_size=min_order_size,
+        policy=policy,
+    )
+    if thin_nearby_depth or (thin_top_book and not resilient_nearby_depth):
+        return "watch_market"
+    if liquidity_score < 0.95 and policy.watch_thin_liquidity:
         return "watch_market"
     if (
-        entry_cost_bps > 75
+        thin_top_book
+        or entry_cost_bps > 75
         or liquidity_score < 0.95
         or _is_wide_runtime_spread(spread_bps=spread_bps, policy=policy)
     ):
@@ -700,6 +744,8 @@ def _market_action(
 
 def _market_reasons(
     *,
+    observed_probability: float,
+    fair_probability: float,
     net_edge_bps: float,
     entry_cost_bps: float,
     spread_bps: float | None,
@@ -716,16 +762,27 @@ def _market_reasons(
     expired_order_count: int,
 ) -> tuple[str, ...]:
     reasons: list[str] = []
+    repeated_execution_no_fill = _has_execution_no_fill(
+        signal_count=signal_count,
+        submitted_order_count=submitted_order_count,
+        filled_order_count=filled_order_count,
+        expired_order_count=expired_order_count,
+    )
     if accepting_orders is False:
         reasons.append("orders_disabled")
     if _is_stale_quote(quote_age_seconds=quote_age_seconds, policy=policy):
         reasons.append("stale_quote")
-    if signal_count > 0 and submitted_order_count > 0 and filled_order_count == 0 and expired_order_count > 0:
+    if repeated_execution_no_fill:
         reasons.append("execution_no_fill")
     if net_edge_bps <= -1000:
         reasons.append("deep_negative_edge")
     elif net_edge_bps <= 0:
         reasons.append("negative_edge")
+    if _entry_contract_price(
+        observed_probability=observed_probability,
+        fair_probability=fair_probability,
+    ) < policy.min_tradeable_contract_price:
+        reasons.append("contract_price_too_low")
     if _is_wide_runtime_spread(spread_bps=spread_bps, policy=policy):
         reasons.append("wide_runtime_spread")
     if entry_cost_bps > 75:
@@ -760,6 +817,21 @@ def _series_has_runtime_actionable_market(
     )
 
 
+def _has_execution_no_fill(
+    *,
+    signal_count: int,
+    submitted_order_count: int,
+    filled_order_count: int,
+    expired_order_count: int,
+) -> bool:
+    return (
+        signal_count > 0
+        and submitted_order_count > 0
+        and filled_order_count == 0
+        and expired_order_count >= _EXECUTION_NO_FILL_MIN_EXPIRED_ORDERS
+    )
+
+
 def _decoded_series_has_runtime_actionable_market(
     *,
     series_key: str,
@@ -787,6 +859,8 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             min_top_book_depth=15.0,
             min_nearby_book_depth=100.0,
             max_quote_age_seconds=180.0,
+            min_tradeable_contract_price=0.10,
+            watch_thin_liquidity=True,
         )
     if underlying == "BTC" and event_family == "dip":
         return CryptoRuntimeTradabilityPolicy(
@@ -794,6 +868,8 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             min_top_book_depth=5.0,
             min_nearby_book_depth=50.0,
             max_quote_age_seconds=180.0,
+            min_tradeable_contract_price=0.10,
+            watch_thin_liquidity=True,
         )
     if underlying == "ETH" and event_family == "reach":
         return CryptoRuntimeTradabilityPolicy(
@@ -801,40 +877,77 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             min_top_book_depth=5.0,
             min_nearby_book_depth=25.0,
             max_quote_age_seconds=180.0,
+            min_tradeable_contract_price=0.05,
         )
     return CryptoRuntimeTradabilityPolicy(
         max_runtime_spread_bps=225.0,
         min_top_book_depth=5.0,
         min_nearby_book_depth=25.0,
         max_quote_age_seconds=180.0,
+        min_tradeable_contract_price=0.05,
     )
 
 
-def _spread_bps(snapshot: MarketSnapshot) -> float | None:
-    if snapshot.best_bid_yes is None or snapshot.best_ask_yes is None:
+def _entry_contract_price(*, observed_probability: float, fair_probability: float) -> float:
+    if _trade_side_from_probabilities(
+        observed_probability=observed_probability,
+        fair_probability=fair_probability,
+    ) == SignalSide.BUY_YES:
+        return observed_probability
+    return 1.0 - observed_probability
+
+
+def _trade_side_from_probabilities(*, observed_probability: float, fair_probability: float) -> SignalSide:
+    if fair_probability >= observed_probability:
+        return SignalSide.BUY_YES
+    return SignalSide.BUY_NO
+
+
+def _spread_bps(snapshot: MarketSnapshot, *, side: SignalSide) -> float | None:
+    best_bid, best_ask = _book_quotes(snapshot=snapshot, side=side)
+    if best_bid is None or best_ask is None:
         return None
-    return max(0.0, (snapshot.best_ask_yes - snapshot.best_bid_yes) * 10000.0)
+    return max(0.0, (best_ask - best_bid) * 10000.0)
 
 
-def _top_book_depth(snapshot: MarketSnapshot) -> float | None:
-    bid_size = snapshot.best_bid_yes_size
-    ask_size = snapshot.best_ask_yes_size
+def _top_book_depth(snapshot: MarketSnapshot, *, side: SignalSide) -> float | None:
+    bid_size, ask_size = _book_sizes(snapshot=snapshot, side=side)
     if bid_size is not None and ask_size is not None:
         return min(bid_size, ask_size)
-    if snapshot.yes_bid_levels and snapshot.yes_ask_levels:
-        return min(snapshot.yes_bid_levels[0].size, snapshot.yes_ask_levels[0].size)
+    bid_levels, ask_levels = _book_levels(snapshot=snapshot, side=side)
+    if bid_levels and ask_levels:
+        return min(bid_levels[0].size, ask_levels[0].size)
     return None
 
 
-def _nearby_book_depth(snapshot: MarketSnapshot, *, level_count: int = 3) -> float | None:
-    if snapshot.yes_bid_levels and snapshot.yes_ask_levels:
-        bid_depth = sum(level.size for level in snapshot.yes_bid_levels[:level_count])
-        ask_depth = sum(level.size for level in snapshot.yes_ask_levels[:level_count])
+def _nearby_book_depth(snapshot: MarketSnapshot, *, side: SignalSide, level_count: int = 3) -> float | None:
+    bid_levels, ask_levels = _book_levels(snapshot=snapshot, side=side)
+    if bid_levels and ask_levels:
+        bid_depth = sum(level.size for level in bid_levels[:level_count])
+        ask_depth = sum(level.size for level in ask_levels[:level_count])
         return min(bid_depth, ask_depth)
-    top_book_depth = _top_book_depth(snapshot)
+    top_book_depth = _top_book_depth(snapshot, side=side)
     if top_book_depth is None:
         return None
     return top_book_depth
+
+
+def _book_quotes(snapshot: MarketSnapshot, *, side: SignalSide) -> tuple[float | None, float | None]:
+    if side == SignalSide.BUY_NO:
+        return snapshot.best_bid_no, snapshot.best_ask_no
+    return snapshot.best_bid_yes, snapshot.best_ask_yes
+
+
+def _book_sizes(snapshot: MarketSnapshot, *, side: SignalSide) -> tuple[float | None, float | None]:
+    if side == SignalSide.BUY_NO:
+        return snapshot.best_bid_no_size, snapshot.best_ask_no_size
+    return snapshot.best_bid_yes_size, snapshot.best_ask_yes_size
+
+
+def _book_levels(snapshot: MarketSnapshot, *, side: SignalSide):
+    if side == SignalSide.BUY_NO:
+        return snapshot.no_bid_levels, snapshot.no_ask_levels
+    return snapshot.yes_bid_levels, snapshot.yes_ask_levels
 
 
 def _quote_age_seconds(snapshot: MarketSnapshot) -> float | None:
@@ -903,6 +1016,24 @@ def _is_thin_nearby_depth(
         return False
     minimum_depth = max((min_order_size or 0.0) * 3.0, policy.min_nearby_book_depth)
     return nearby_book_depth < minimum_depth
+
+
+def _has_resilient_nearby_depth(
+    *,
+    nearby_book_depth: float | None,
+    min_order_size: float | None,
+    policy: CryptoRuntimeTradabilityPolicy,
+) -> bool:
+    if nearby_book_depth is None:
+        return False
+    robust_depth = max((min_order_size or 0.0) * 10.0, policy.min_nearby_book_depth * 2.0)
+    return nearby_book_depth >= robust_depth
+
+
+def _is_resolved_snapshot(snapshot: MarketSnapshot) -> bool:
+    if snapshot.resolution_time is None:
+        return False
+    return snapshot.resolution_time.astimezone(timezone.utc) <= snapshot.timestamp.astimezone(timezone.utc)
 
 
 def _normalize(value: Any) -> Any:

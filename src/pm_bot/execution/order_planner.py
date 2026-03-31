@@ -38,6 +38,8 @@ def signal_to_order_intent(
     size = round(notional / price, 6)
     if size <= 0:
         return None
+    if snapshot.min_order_size is not None and size + 1e-9 < snapshot.min_order_size:
+        return None
 
     token_id = signal.token_id
     if signal.side in {SignalSide.BUY_NO, SignalSide.SELL_NO}:

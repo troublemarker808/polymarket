@@ -78,6 +78,7 @@ def evaluate_exit(
     stop_loss_max_remaining_edge_bps: float = 150.0,
     adverse_fill_exit_bps: float = 75.0,
     adverse_fill_max_remaining_edge_bps: float = 150.0,
+    time_stop_max_remaining_edge_bps: float | None = None,
 ) -> CryptoExitDecision:
     if position.average_entry_price is None:
         return _hold_decision(fair_value.market_id, "missing_entry_price", 0.0)
@@ -160,7 +161,10 @@ def evaluate_exit(
             remaining_edge_bps=remaining_edge_bps,
             rationale_tags=(exit_reason,),
         )
-    if time_stop_triggered:
+    if time_stop_triggered and (
+        time_stop_max_remaining_edge_bps is None
+        or remaining_edge_bps <= time_stop_max_remaining_edge_bps
+    ):
         return CryptoExitDecision(
             market_id=fair_value.market_id,
             should_exit=True,
@@ -295,6 +299,8 @@ def summarize_execution_feedback_from_events(
         payload = event.get("payload")
         if event_type != "trade.closed" or not isinstance(payload, Mapping):
             continue
+        if str(payload.get("strategy_id", "")).strip() == "recovered.live":
+            continue
         closed_at = _parse_datetime(payload.get("closed_at"))
         if closed_at is None:
             continue
@@ -308,6 +314,21 @@ def summarize_execution_feedback_from_events(
                 fees_paid=float(payload.get("fees_paid", 0.0) or 0.0),
                 closed_at=closed_at,
                 intent_id=(str(payload.get("intent_id")) if payload.get("intent_id") not in (None, "") else None),
+                exposure_group_id=(
+                    str(payload.get("exposure_group_id"))
+                    if payload.get("exposure_group_id") not in (None, "")
+                    else None
+                ),
+                thesis_group_id=(
+                    str(payload.get("thesis_group_id"))
+                    if payload.get("thesis_group_id") not in (None, "")
+                    else None
+                ),
+                underlying_group_id=(
+                    str(payload.get("underlying_group_id"))
+                    if payload.get("underlying_group_id") not in (None, "")
+                    else None
+                ),
             )
         )
     return summarize_execution_feedback(

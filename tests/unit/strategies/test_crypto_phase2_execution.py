@@ -423,6 +423,129 @@ def test_route_execution_falls_back_to_maker_when_repricing_taker_is_too_expensi
     assert decision.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
 
 
+def test_route_execution_falls_back_to_maker_when_repricing_taker_exceeds_repricer_path_cap() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(
+        market_id="eth-dip-repricing-cap",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+    )
+
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+        taker_max_entry_premium_bps=750.0,
+        repricing_taker_max_entry_premium_bps=90.0,
+    )
+
+    assert classification.signal_type == "repricing_edge"
+    assert decision.route == "maker"
+    assert decision.target_price == 0.10
+    assert decision.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+
+
+def test_route_execution_uses_dedicated_ttl_for_repricing_maker_fallback() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(
+        market_id="eth-dip-fallback-ttl",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+    )
+
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+        maker_quote_ttl_seconds=10,
+        repricing_taker_max_entry_premium_bps=90.0,
+        repricing_fallback_quote_ttl_seconds=20,
+    )
+
+    assert classification.signal_type == "repricing_edge"
+    assert decision.route == "maker"
+    assert decision.quote_ttl_seconds == 20
+    assert decision.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+
+
+def test_route_execution_applies_taker_slippage_guard_before_repricing_taker_route() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(
+        market_id="eth-dip-slippage-guard",
+        best_bid_yes=0.63,
+        best_ask_yes=0.64,
+        best_bid_no=0.36,
+        best_ask_no=0.37,
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+    )
+
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+        repricing_taker_max_entry_premium_bps=90.0,
+        taker_slippage_guard_bps=20.0,
+    )
+
+    assert classification.signal_type == "repricing_edge"
+    assert decision.route == "maker"
+    assert decision.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+
+
+def test_route_execution_falls_back_to_maker_when_repricing_edge_after_premium_is_too_thin() -> None:
+    fair_value = _fair_value("repricing_yes")
+    snapshot = _snapshot(
+        market_id="eth-dip-buffer-thin",
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    eligibility = evaluate_trade_eligibility(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+    )
+
+    decision = route_execution(
+        fair_value=fair_value,
+        snapshot=snapshot,
+        classification=classification,
+        eligibility=eligibility,
+        taker_min_net_edge_after_premium_bps=250.0,
+    )
+
+    assert classification.signal_type == "repricing_edge"
+    assert decision.route == "maker"
+    assert decision.target_price == 0.10
+    assert decision.rationale_tags == ("repricing_taker_edge_buffer_too_thin", "maker_fallback")
+
+
 def test_build_order_intent_uses_maker_route_and_no_token_for_buy_no() -> None:
     fair_value = _fair_value("resolution_no")
     snapshot = _snapshot(

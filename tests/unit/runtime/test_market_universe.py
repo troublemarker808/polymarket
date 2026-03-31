@@ -165,6 +165,10 @@ def test_build_snapshot_selector_creates_callable_from_markets_config() -> None:
     selected = selector(snapshots)
 
     assert [snapshot.market_id for snapshot in selected] == ["btc-1"]
+    diagnostics = getattr(selector, "last_diagnostics", None)
+    assert diagnostics is not None
+    assert diagnostics.total_snapshots == 2
+    assert diagnostics.selected_snapshots == 1
 
 
 def test_market_universe_can_filter_by_event_slug() -> None:
@@ -198,6 +202,33 @@ def test_market_universe_can_filter_by_event_slug() -> None:
     selected = selector(snapshots)
 
     assert [snapshot.market_id for snapshot in selected] == ["btc-1"]
+
+
+def test_market_universe_drops_resolved_snapshots_before_other_filters() -> None:
+    active_snapshot = _snapshot(
+        market_id="btc-active",
+        slug="bitcoin-above-70000",
+        event_slug="bitcoin-prices",
+        event_title="Bitcoin prices",
+        question="Will Bitcoin be above 70000?",
+        liquidity_score=0.95,
+    )
+    resolved_snapshot = _snapshot(
+        market_id="btc-resolved",
+        slug="bitcoin-above-68000",
+        event_slug="bitcoin-prices",
+        event_title="Bitcoin prices",
+        question="Will Bitcoin be above 68000?",
+        liquidity_score=0.99,
+    )
+    resolved_snapshot.resolution_time = datetime(2026, 3, 25, 0, 0, tzinfo=UTC)
+
+    selected = select_market_snapshots(
+        snapshots=(active_snapshot, resolved_snapshot),
+        policy=MarketUniversePolicy(),
+    )
+
+    assert [snapshot.market_id for snapshot in selected] == ["btc-active"]
 
 
 def test_market_universe_event_slug_filter_is_strict() -> None:
@@ -275,6 +306,37 @@ def test_market_universe_prefers_explicit_market_ids_over_liquidity() -> None:
     selected = selector(snapshots)
 
     assert [snapshot.market_id for snapshot in selected] == ["preferred-1", "preferred-2"]
+
+
+def test_market_universe_prefers_tighter_spread_within_same_event() -> None:
+    wide_snapshot = _snapshot(
+        market_id="btc-wide",
+        slug="bitcoin-above-66000",
+        event_slug="bitcoin-above-april-5",
+        event_title="Bitcoin above on April 5",
+        question="Will Bitcoin be above 66000 on April 5?",
+        liquidity_score=0.99,
+    )
+    wide_snapshot.best_bid_yes = 0.40
+    wide_snapshot.best_ask_yes = 0.43
+
+    tight_snapshot = _snapshot(
+        market_id="btc-tight",
+        slug="bitcoin-above-68000",
+        event_slug="bitcoin-above-april-5",
+        event_title="Bitcoin above on April 5",
+        question="Will Bitcoin be above 68000 on April 5?",
+        liquidity_score=0.95,
+    )
+    tight_snapshot.best_bid_yes = 0.38
+    tight_snapshot.best_ask_yes = 0.39
+
+    selected = select_market_snapshots(
+        snapshots=(wide_snapshot, tight_snapshot),
+        policy=MarketUniversePolicy(max_active_markets=2, max_markets_per_event=2),
+    )
+
+    assert [snapshot.market_id for snapshot in selected] == ["btc-tight", "btc-wide"]
 
 
 def test_market_universe_can_filter_by_expiry_bucket() -> None:
@@ -395,3 +457,169 @@ def test_market_universe_can_require_price_barrier_keywords() -> None:
     selected = selector((barrier_snapshot, non_barrier_snapshot))
 
     assert [snapshot.market_id for snapshot in selected] == ["btc-barrier"]
+
+
+def test_market_universe_can_limit_btc_profiles_to_above_below_only() -> None:
+    above_snapshot = _snapshot(
+        market_id="btc-above",
+        slug="will-bitcoin-be-above-68000-on-march-31",
+        event_slug="bitcoin-above-68000-mar-31",
+        event_title="Bitcoin above 68000 on March 31",
+        question="Will Bitcoin be above 68000 on March 31?",
+        liquidity_score=0.92,
+    )
+    below_snapshot = _snapshot(
+        market_id="btc-below",
+        slug="will-bitcoin-be-below-60000-on-march-31",
+        event_slug="bitcoin-below-60000-mar-31",
+        event_title="Bitcoin below 60000 on March 31",
+        question="Will Bitcoin be below 60000 on March 31?",
+        liquidity_score=0.91,
+    )
+    hit_snapshot = _snapshot(
+        market_id="btc-hit",
+        slug="what-price-will-bitcoin-hit-march-30-april-5",
+        event_slug="bitcoin-hit-prices-mar-30-apr-5",
+        event_title="What price will Bitcoin hit March 30-April 5?",
+        question="What price will Bitcoin hit March 30-April 5?",
+        liquidity_score=0.95,
+    )
+    dip_snapshot = _snapshot(
+        market_id="btc-dip",
+        slug="will-bitcoin-dip-to-60000-by-april-5",
+        event_slug="bitcoin-dip-60000-apr-5",
+        event_title="Bitcoin dip to 60000 by April 5",
+        question="Will Bitcoin dip to 60000 by April 5?",
+        liquidity_score=0.94,
+    )
+
+    selector = build_snapshot_selector(
+        {
+            "assets": ["BTC"],
+            "include_keywords": ["above", "below", "under", "over"],
+            "exclude_keywords": ["dip", "drop", "fall", "reach", "hit"],
+        }
+    )
+
+    assert selector is not None
+    selected = selector((above_snapshot, below_snapshot, hit_snapshot, dip_snapshot))
+
+    assert [snapshot.market_id for snapshot in selected] == ["btc-above", "btc-below"]
+
+
+def test_market_universe_can_filter_by_yes_mid_price_window() -> None:
+    low_price_snapshot = _snapshot(
+        market_id="btc-low",
+        slug="bitcoin-above-80000",
+        event_slug="bitcoin-above-april-2",
+        event_title="Bitcoin above on April 2",
+        question="Will Bitcoin be above 80000 on April 2?",
+        liquidity_score=0.9,
+    )
+    low_price_snapshot.best_bid_yes = 0.01
+    low_price_snapshot.best_ask_yes = 0.03
+
+    mid_price_snapshot = _snapshot(
+        market_id="btc-mid",
+        slug="bitcoin-above-68000",
+        event_slug="bitcoin-above-april-2",
+        event_title="Bitcoin above on April 2",
+        question="Will Bitcoin be above 68000 on April 2?",
+        liquidity_score=0.9,
+    )
+    mid_price_snapshot.best_bid_yes = 0.39
+    mid_price_snapshot.best_ask_yes = 0.41
+
+    high_price_snapshot = _snapshot(
+        market_id="btc-high",
+        slug="bitcoin-above-58000",
+        event_slug="bitcoin-above-april-2",
+        event_title="Bitcoin above on April 2",
+        question="Will Bitcoin be above 58000 on April 2?",
+        liquidity_score=0.9,
+    )
+    high_price_snapshot.best_bid_yes = 0.95
+    high_price_snapshot.best_ask_yes = 0.97
+
+    selector = build_snapshot_selector(
+        {
+            "assets": ["BTC"],
+            "include_keywords": ["above", "below", "under", "over"],
+            "min_yes_mid_price": 0.08,
+            "max_yes_mid_price": 0.92,
+        }
+    )
+
+    assert selector is not None
+    selected = selector((low_price_snapshot, mid_price_snapshot, high_price_snapshot))
+
+    assert [snapshot.market_id for snapshot in selected] == ["btc-mid"]
+
+
+def test_market_universe_can_filter_by_yes_spread_bps() -> None:
+    tight_snapshot = _snapshot(
+        market_id="btc-tight",
+        slug="bitcoin-above-68000",
+        event_slug="bitcoin-above-april-2",
+        event_title="Bitcoin above on April 2",
+        question="Will Bitcoin be above 68000 on April 2?",
+        liquidity_score=0.96,
+    )
+    tight_snapshot.best_bid_yes = 0.45
+    tight_snapshot.best_ask_yes = 0.46
+
+    wide_snapshot = _snapshot(
+        market_id="btc-wide",
+        slug="bitcoin-above-70000",
+        event_slug="bitcoin-above-april-2",
+        event_title="Bitcoin above on April 2",
+        question="Will Bitcoin be above 70000 on April 2?",
+        liquidity_score=0.99,
+    )
+    wide_snapshot.best_bid_yes = 0.42
+    wide_snapshot.best_ask_yes = 0.46
+
+    selector = build_snapshot_selector(
+        {
+            "assets": ["BTC"],
+            "include_keywords": ["above", "below", "under", "over"],
+            "max_yes_spread_bps": 200,
+        }
+    )
+
+    assert selector is not None
+    selected = selector((tight_snapshot, wide_snapshot))
+
+    assert [snapshot.market_id for snapshot in selected] == ["btc-tight"]
+
+
+def test_market_universe_can_filter_by_tradeable_spread_bps_for_buy_no_candidates() -> None:
+    asymmetric_snapshot = _snapshot(
+        market_id="btc-buy-no",
+        slug="bitcoin-above-68000",
+        event_slug="bitcoin-above-april-2",
+        event_title="Bitcoin above on April 2",
+        question="Will Bitcoin be above 68000 on April 2?",
+        liquidity_score=0.97,
+    )
+    asymmetric_snapshot.best_bid_yes = 0.51
+    asymmetric_snapshot.best_ask_yes = 0.55
+    asymmetric_snapshot.best_bid_no = 0.45
+    asymmetric_snapshot.best_ask_no = 0.46
+
+    selector = build_snapshot_selector(
+        {
+            "assets": ["BTC"],
+            "include_keywords": ["above", "below", "under", "over"],
+            "max_tradeable_spread_bps": 200,
+        }
+    )
+
+    assert selector is not None
+    selected = selector((asymmetric_snapshot,))
+
+    assert [snapshot.market_id for snapshot in selected] == ["btc-buy-no"]
+    diagnostics = getattr(selector, "last_diagnostics", None)
+    assert diagnostics is not None
+    assert diagnostics.after_yes_spread == 1
+    assert diagnostics.after_tradeable_spread == 1

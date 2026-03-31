@@ -39,7 +39,7 @@ def test_signal_to_order_intent_maps_fields() -> None:
     assert intent.quote_ttl_seconds == 12
     assert intent.signal_edge_bps == 320
     assert intent.exposure_group_id == "crypto:m1"
-    assert intent.thesis_group_id == "crypto:btc:above"
+    assert intent.thesis_group_id == "crypto:btc:reach"
     assert intent.underlying_group_id == "crypto:btc"
 
 
@@ -97,6 +97,33 @@ def test_signal_to_order_intent_maps_buy_no_to_no_token_and_share_size() -> None
     assert intent.token_id == "no-token"
     assert intent.notional == 5.0
     assert intent.size == round(5.0 / 0.39, 6)
+
+
+def test_signal_to_order_intent_returns_none_when_below_market_min_order_size() -> None:
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="btc-above",
+        category=Category.CRYPTO,
+        timestamp=datetime.now(tz=timezone.utc),
+        resolution_time=None,
+        best_bid_yes=0.41,
+        min_order_size=5.0,
+    )
+    signal = StrategySignal(
+        strategy_id="crypto.phase2",
+        category=Category.CRYPTO,
+        market_id="m1",
+        token_id="yes-token",
+        fair_probability=0.55,
+        side=SignalSide.SELL_YES,
+        confidence=0.8,
+        edge_bps=400,
+        generated_at=datetime.now(tz=timezone.utc),
+        target_size=1.64,
+    )
+
+    assert signal_to_order_intent(signal=signal, snapshot=snapshot, default_size=5.0) is None
 
 
 def test_signal_to_order_intent_prefers_event_slug_for_exposure_group() -> None:

@@ -15,6 +15,9 @@ def _tracked_order(
     matched_notional: float = 5.0,
     fees_paid: float = 0.01,
     trade_side: str = "BUY",
+    exposure_group_id: str | None = None,
+    thesis_group_id: str | None = None,
+    underlying_group_id: str | None = None,
 ) -> TrackedOrder:
     now = datetime(2026, 3, 23, 12, 0, tzinfo=UTC)
     return TrackedOrder(
@@ -34,6 +37,9 @@ def _tracked_order(
         updated_at=now,
         status=OrderLifecycleStatus.FILLED,
         last_event="trade:taker",
+        exposure_group_id=exposure_group_id,
+        thesis_group_id=thesis_group_id,
+        underlying_group_id=underlying_group_id,
     )
 
 
@@ -140,6 +146,37 @@ def test_position_ledger_realizes_pnl_when_position_is_fully_sold() -> None:
     assert closed_trades[0].net_pnl == pytest.approx(1.17)
 
 
+def test_position_ledger_carries_group_ids_into_closed_trade() -> None:
+    ledger = PositionLedger()
+    ledger.apply_tracked_order(
+        _tracked_order(
+            exposure_group_id="crypto:btc-march-31",
+            thesis_group_id="crypto:btc:bullish",
+            underlying_group_id="crypto:btc",
+        )
+    )
+
+    ledger.apply_tracked_order(
+        _tracked_order(
+            order_id="sell-1",
+            matched_shares=10.0,
+            matched_notional=6.2,
+            fees_paid=0.02,
+            trade_side="SELL",
+            exposure_group_id="crypto:btc-march-31",
+            thesis_group_id="crypto:btc:bullish",
+            underlying_group_id="crypto:btc",
+        )
+    )
+
+    closed_trades = ledger.drain_closed_trades()
+
+    assert len(closed_trades) == 1
+    assert closed_trades[0].exposure_group_id == "crypto:btc-march-31"
+    assert closed_trades[0].thesis_group_id == "crypto:btc:bullish"
+    assert closed_trades[0].underlying_group_id == "crypto:btc"
+
+
 def test_position_ledger_realizes_partial_pnl_and_keeps_remaining_position() -> None:
     ledger = PositionLedger()
     ledger.apply_tracked_order(_tracked_order())
@@ -161,6 +198,37 @@ def test_position_ledger_realizes_partial_pnl_and_keeps_remaining_position() -> 
     assert len(closed_trades) == 1
     assert closed_trades[0].realized_pnl == pytest.approx(0.596)
     assert closed_trades[0].net_pnl == pytest.approx(0.586)
+
+
+def test_position_ledger_preserves_existing_strategy_on_recovered_live_close() -> None:
+    ledger = PositionLedger()
+    ledger.apply_tracked_order(_tracked_order())
+
+    ledger.apply_tracked_order(
+        TrackedOrder(
+            order_id="sell-legacy-1",
+            market_id="m1",
+            token_id="yes-token",
+            category=Category.CRYPTO,
+            strategy_id="recovered.live",
+            trade_side="SELL",
+            limit_price=0.62,
+            requested_shares=10.0,
+            requested_notional=6.2,
+            matched_shares=10.0,
+            matched_notional=6.2,
+            fees_paid=0.02,
+            created_at=datetime(2026, 3, 23, 12, 5, tzinfo=UTC),
+            updated_at=datetime(2026, 3, 23, 12, 5, tzinfo=UTC),
+            status=OrderLifecycleStatus.FILLED,
+            last_event="trade:taker",
+        )
+    )
+
+    closed_trades = ledger.drain_closed_trades()
+
+    assert len(closed_trades) == 1
+    assert closed_trades[0].strategy_id == "crypto.surface"
 
 
 def test_position_ledger_realizes_pnl_when_no_position_is_sold() -> None:

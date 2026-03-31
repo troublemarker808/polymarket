@@ -60,3 +60,21 @@ def test_derive_exposure_keys_groups_btc_bearish_thesis_across_dip_yes_and_reach
 
     assert dip_yes_keys.thesis_group_id == "crypto:btc:bearish"
     assert reach_no_keys.thesis_group_id == "crypto:btc:bearish"
+
+
+def test_derive_exposure_keys_does_not_misread_what_price_btc_titles() -> None:
+    now = datetime.now(tz=timezone.utc)
+    snapshot = MarketSnapshot(
+        market_id="reach-150k",
+        token_id="reach-yes",
+        slug="what-price-will-bitcoin-hit-before-2027",
+        category=Category.CRYPTO,
+        timestamp=now,
+        resolution_time=datetime(2027, 1, 1, tzinfo=timezone.utc),
+        metadata={"question": "What price will Bitcoin hit before 2027?"},
+    )
+
+    keys = derive_exposure_keys(snapshot, side=SignalSide.BUY_YES)
+
+    assert keys.underlying_group_id == "crypto:btc"
+    assert keys.thesis_group_id == "crypto:btc:reach"

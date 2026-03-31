@@ -5,6 +5,7 @@ from pathlib import Path
 
 from pm_bot.adapters.in_memory import InMemoryMarketDataAdapter
 from pm_bot.adapters.polymarket.user_ws_client import UserChannelAuth, UserTradeEvent
+from pm_bot.core.research_types import FairValueEstimate
 from pm_bot.core.settings import RiskSettings, TradingSettings
 from pm_bot.core.types import (
     Category,
@@ -1037,6 +1038,126 @@ def test_live_session_runner_records_stale_cancel_as_comparable_event(tmp_path: 
     ]
     canceled = next(event for event in events if event["event_type"] == "order.canceled")
     assert canceled["payload"]["reason"] == "stale_ttl_cancel"
+
+
+def test_live_session_runner_records_runtime_diagnostics_for_sync_shadow_context() -> None:
+    snapshot_time = datetime(2026, 3, 31, 12, 0, tzinfo=UTC)
+    snapshot = MarketSnapshot(
+        market_id="m1",
+        token_id="yes-token",
+        slug="will-bitcoin-be-above-66000-on-march-31",
+        category=Category.CRYPTO,
+        timestamp=snapshot_time,
+        resolution_time=datetime(2026, 3, 31, 23, 59, tzinfo=UTC),
+        best_bid_yes=0.42,
+        best_ask_yes=0.44,
+        best_bid_no=0.56,
+        best_ask_no=0.58,
+        last_traded_price=0.43,
+        metadata={
+            "question": "Will Bitcoin be above $66,000 on March 31?",
+            "event_slug": "btc-above-66000-2026-03-31",
+        },
+    )
+    recorder = InMemoryRecorder()
+    shadow_recorder = InMemoryRecorder()
+    risk_manager = BasicRiskManager(
+        settings=RiskSettings(),
+        trading_settings=TradingSettings(),
+    )
+    execution = PolymarketLiveExecutionAdapter(
+        client=FakeLiveClient(),
+        ttl_seconds=15,
+        post_only=False,
+        build_order_args=lambda intent: {
+            "token_id": intent.token_id,
+            "price": intent.price,
+            "size": intent.size,
+            "side": "BUY",
+        },
+        resolve_order_type=lambda tif: tif,
+        user_channel_auth=UserChannelAuth(
+            api_key="key",
+            secret="secret",
+            passphrase="passphrase",
+        ),
+    )
+    router = EventRouter(
+        market_data=InMemoryMarketDataAdapter([snapshot]),
+        strategies=[],
+        risk_manager=risk_manager,
+        execution=execution,
+        recorder=recorder,
+        default_order_size=5.0,
+    )
+
+    class ShadowCoordinator:
+        def __init__(self) -> None:
+            self.recorder = shadow_recorder
+
+        async def before_market_snapshot(self, *, snapshot: MarketSnapshot) -> None:
+            del snapshot
+
+        async def after_market_snapshot(self, *, snapshot: MarketSnapshot) -> None:
+            del snapshot
+
+    fair_value = FairValueEstimate(
+        market_id="m1",
+        category=Category.CRYPTO,
+        fair_probability=0.39,
+        confidence=0.72,
+        observed_probability=0.43,
+        model_id="crypto.phase1",
+        rationale_tags=("barrier", "surface"),
+        supporting_values={
+            "gross_edge_bps": -200.0,
+            "net_edge_bps": -250.0,
+            "entry_cost_bps": 50.0,
+        },
+    )
+
+    def runtime_context_builder(*, snapshot: MarketSnapshot, snapshots_by_market_id, recorder):
+        del snapshot, snapshots_by_market_id, recorder
+        return {
+            "fair_values_by_market_id": {"m1": fair_value},
+            "market_selection_actions": {"m1": "watch_market"},
+            "market_selection_reasons": {"m1": ("negative_edge",)},
+            "blocked_market_ids": {"m1"},
+            "blocked_market_reasons": {"m1": ("negative_edge",)},
+            "blocked_series_keys": {"btc-above-66000-2026-03-31"},
+            "blocked_series_reasons": {"btc-above-66000-2026-03-31": ("negative_edge",)},
+        }
+
+    runner = LiveSessionRunner(
+        router=router,
+        execution=execution,
+        risk_manager=risk_manager,
+        recorder=recorder,
+        market_snapshots=(snapshot,),
+        market_snapshot_stream=_market_stream(snapshot),
+        user_event_stream=_empty_user_stream(),
+        shadow_coordinator=ShadowCoordinator(),
+        runtime_context_builder=runtime_context_builder,
+    )
+
+    stats = asyncio.run(runner.run(max_market_snapshots=1, max_user_events=0))
+
+    assert stats.market_snapshots_processed == 1
+    diagnostic = next(event for event in recorder.events if event["event_type"] == "market.runtime_diagnostics")
+    assert diagnostic["payload"]["market_id"] == "m1"
+    assert diagnostic["payload"]["strategies_enabled"] is False
+    assert diagnostic["payload"]["active_strategy_ids"] == []
+    assert diagnostic["payload"]["fair_value_present"] is True
+    assert diagnostic["payload"]["net_edge_bps"] == -250.0
+    assert diagnostic["payload"]["selection_action"] == "watch_market"
+    assert diagnostic["payload"]["selection_reasons"] == ["negative_edge"]
+    assert diagnostic["payload"]["market_blocked"] is True
+    assert diagnostic["payload"]["market_block_reasons"] == ["negative_edge"]
+    assert diagnostic["payload"]["series_blocked"] is True
+    shadow_diagnostic = next(
+        event for event in shadow_recorder.events if event["event_type"] == "market.runtime_diagnostics"
+    )
+    assert shadow_diagnostic["payload"] == diagnostic["payload"]
 
 
 def test_live_session_runner_ignores_historical_user_trade_events_before_session_start() -> None:

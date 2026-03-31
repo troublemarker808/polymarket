@@ -69,6 +69,42 @@ def test_crypto_phase2_paper_context_builder_updates_reentry_state_from_closed_l
     assert reentry_state.blocked_until is not None
 
 
+def test_crypto_phase2_paper_context_builder_ignores_recovered_live_events() -> None:
+    builder = CryptoPhase2PaperContextBuilder(
+        underlying_state_path=Path("tests/fixtures/crypto_phase1/underlying_state.json"),
+        apply_series_filter=False,
+    )
+    snapshots = load_market_snapshots(Path("tests/fixtures/crypto_phase2/compare_snapshots.jsonl"))
+    recorder = PaperRuntimeRecorder()
+    recorder.events.extend(
+        [
+            {
+                "event_type": "order.filled",
+                "payload": {
+                    "market_id": "eth-dip-1000",
+                    "token_id": "eth-dip-1000-yes",
+                    "strategy_id": "recovered.live",
+                    "updated_at": datetime(2026, 3, 28, 0, 0, tzinfo=UTC).isoformat(),
+                },
+            },
+            {
+                "event_type": "trade.closed",
+                "payload": {
+                    "market_id": "eth-dip-1000",
+                    "strategy_id": "recovered.live",
+                    "realized_pnl": -0.25,
+                    "closed_at": datetime(2026, 3, 28, 0, 1, tzinfo=UTC).isoformat(),
+                },
+            },
+        ]
+    )
+
+    context = builder.build_context(snapshot_cache=snapshots, recorder=recorder)
+
+    assert context["position_intents_by_market_id"] == {}
+    assert context["reentry_state_by_market_id"] == {}
+
+
 def test_crypto_phase2_paper_context_builder_captures_fill_quality_in_position_intent() -> None:
     builder = CryptoPhase2PaperContextBuilder(
         underlying_state_path=Path("tests/fixtures/crypto_phase1/underlying_state.json"),

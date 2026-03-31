@@ -77,6 +77,9 @@ class ClosedTrade:
     fees_paid: float
     closed_at: datetime
     intent_id: str | None = None
+    exposure_group_id: str | None = None
+    thesis_group_id: str | None = None
+    underlying_group_id: str | None = None
 
     @property
     def net_pnl(self) -> float:

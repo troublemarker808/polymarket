@@ -106,9 +106,9 @@ python -m pm_bot show-dashboard --config-dir configs
 For BTC shadow validation, do not mix long-horizon thesis markets with short-horizon execution validation in the same profile.
 
 - `configs/profiles/sync-btc-short-shadow-v1`
-  Use this as the primary BTC validation pool. It scans short-horizon BTC price-barrier markets and excludes derivative BTC markets such as volatility, dominance, and premium contracts.
+  Use this as the primary BTC validation pool. It scans short-horizon BTC Above / Below markets only and excludes Hit Price plus derivative BTC markets such as volatility, dominance, and premium contracts.
 - `configs/profiles/sync-btc-shadow-v1`
-  Use this as long-horizon thesis observation. It now scans long-horizon BTC price-barrier markets only and is not the main fast alpha validation pool.
+  Use this as long-horizon thesis observation. It scans long-horizon BTC Above / Below markets only and is not the main fast alpha validation pool.
 
 Example commands:
 

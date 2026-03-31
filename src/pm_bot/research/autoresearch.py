@@ -85,9 +85,9 @@ _TUNABLE_PARAMETERS = (
     "strategy.phase2.adverse_fill_max_remaining_edge_bps",
 )
 _SCORE_FORMULA = """score =
-  + 8.0 * closed_trade_net_pnl
-  + 3.0 * trades_closed
-  + 10.0 * fill_rate
+  + 8.0 * effective_closed_trade_net_pnl
+  + 3.0 * effective_trades_closed
+  + 10.0 * effective_fill_rate
   - 6.0 * cancel_rate
   - 8.0 * rejected_ratio
   - 10.0 * capacity_bound_rejection_ratio
@@ -110,18 +110,96 @@ class EventDiagnostics:
     rejection_reasons: dict[str, int]
     fill_sources: dict[str, int]
     closed_trade_net_pnl: float
+    session_rejection_reasons: dict[str, int]
+    session_fill_sources: dict[str, int]
+    session_fill_event_count: int
+    session_submitted_order_count: int
+    session_filled_order_count: int
+    session_closed_trade_count: int
+    session_closed_trade_net_pnl: float
+    recovered_closed_trade_count: int
+    recovered_closed_trade_net_pnl: float
+
+    @property
+    def has_session_scope(self) -> bool:
+        return any(
+            (
+                self.session_submitted_order_count > 0,
+                self.session_filled_order_count > 0,
+                self.session_fill_event_count > 0,
+                self.session_closed_trade_count > 0,
+                bool(self.session_rejection_reasons),
+                bool(self.session_fill_sources),
+            )
+        )
+
+    @property
+    def effective_rejection_reasons(self) -> dict[str, int]:
+        if self.has_session_scope:
+            return self.session_rejection_reasons
+        return self.rejection_reasons
+
+    @property
+    def effective_fill_sources(self) -> dict[str, int]:
+        if self.has_session_scope:
+            return self.session_fill_sources
+        return self.fill_sources
+
+    @property
+    def effective_closed_trade_net_pnl(self) -> float:
+        if self.has_session_scope:
+            return self.session_closed_trade_net_pnl
+        return self.closed_trade_net_pnl
+
+    def effective_orders_submitted(self, metrics: dict[str, Any]) -> int:
+        if self.has_session_scope and self.session_submitted_order_count > 0:
+            return self.session_submitted_order_count
+        return int(metrics.get("orders_submitted", 0) or 0)
+
+    def effective_orders_rejected(self, metrics: dict[str, Any]) -> int:
+        effective_rejections = sum(self.effective_rejection_reasons.values())
+        if effective_rejections > 0:
+            return effective_rejections
+        return int(metrics.get("orders_rejected", 0) or 0)
+
+    def effective_filled_orders(self, metrics: dict[str, Any]) -> int:
+        metric_fills = int(metrics.get("orders_filled", 0) or 0) + int(
+            metrics.get("orders_partially_filled", 0) or 0
+        )
+        if not self.has_session_scope:
+            return metric_fills
+        if self.session_filled_order_count > 0:
+            return self.session_filled_order_count
+        if self.session_fill_event_count <= 0:
+            return metric_fills
+        submitted = self.effective_orders_submitted(metrics)
+        if submitted > 0:
+            return min(self.session_fill_event_count, submitted)
+        return self.session_fill_event_count
+
+    def effective_closed_trade_count(self, metrics: dict[str, Any]) -> int:
+        if self.has_session_scope:
+            return self.session_closed_trade_count
+        return int(metrics.get("trades_closed", 0) or 0)
+
+    def effective_fill_rate(self, metrics: dict[str, Any]) -> float:
+        submitted = self.effective_orders_submitted(metrics)
+        if submitted <= 0:
+            return 0.0
+        return min(1.0, self.effective_filled_orders(metrics) / submitted)
 
     @property
     def dominant_rejection_reason(self) -> str | None:
-        if not self.rejection_reasons:
+        rejection_reasons = self.effective_rejection_reasons
+        if not rejection_reasons:
             return None
-        return max(self.rejection_reasons.items(), key=lambda item: (item[1], item[0]))[0]
+        return max(rejection_reasons.items(), key=lambda item: (item[1], item[0]))[0]
 
     @property
     def capacity_bound_rejection_count(self) -> int:
         return sum(
             count
-            for reason, count in self.rejection_reasons.items()
+            for reason, count in self.effective_rejection_reasons.items()
             if reason in _CAPACITY_REJECTION_REASONS
         )
 
@@ -129,7 +207,7 @@ class EventDiagnostics:
     def daily_limit_rejection_count(self) -> int:
         return sum(
             count
-            for reason, count in self.rejection_reasons.items()
+            for reason, count in self.effective_rejection_reasons.items()
             if reason in _DAILY_LIMIT_REASONS
         )
 
@@ -137,13 +215,15 @@ class EventDiagnostics:
     def concurrency_rejection_count(self) -> int:
         return sum(
             count
-            for reason, count in self.rejection_reasons.items()
+            for reason, count in self.effective_rejection_reasons.items()
             if reason in _CONCURRENCY_REASONS
         )
 
     @property
     def capacity_bound_rejection_ratio(self) -> float:
-        rejected = self.event_counts.get("order.rejected", 0)
+        rejected = sum(self.effective_rejection_reasons.values())
+        if rejected <= 0:
+            rejected = self.event_counts.get("order.rejected", 0)
         if rejected <= 0:
             return 0.0
         return self.capacity_bound_rejection_count / rejected
@@ -165,6 +245,14 @@ class AutoresearchReport:
     tunable_parameters: tuple[str, ...]
     experiment_matrix: tuple[ExperimentSuggestion, ...]
     next_follow_up_experiments: tuple[str, ...]
+    effective_orders_submitted: int
+    effective_orders_rejected: int
+    effective_orders_filled: int
+    effective_trades_closed: int
+    effective_fill_rate: float
+    effective_closed_trade_net_pnl: float
+    recovered_closed_trade_count: int
+    recovered_closed_trade_net_pnl: float
     state_status: str | None
     total_equity: float | None
     today_pnl: float | None
@@ -183,6 +271,12 @@ def generate_autoresearch_report(
     runtime_state = _load_runtime_state(state_path)
     classification = _classify_baseline(metrics=metrics, diagnostics=diagnostics)
     score = _compute_score(metrics=metrics, diagnostics=diagnostics)
+    effective_orders_submitted = diagnostics.effective_orders_submitted(metrics)
+    effective_orders_rejected = diagnostics.effective_orders_rejected(metrics)
+    effective_orders_filled = diagnostics.effective_filled_orders(metrics)
+    effective_trades_closed = diagnostics.effective_closed_trade_count(metrics)
+    effective_fill_rate = diagnostics.effective_fill_rate(metrics)
+    effective_closed_trade_net_pnl = diagnostics.effective_closed_trade_net_pnl
     return AutoresearchReport(
         generated_at=datetime.now(tz=timezone.utc),
         metrics_path=str(Path(metrics_path)),
@@ -198,6 +292,14 @@ def generate_autoresearch_report(
         tunable_parameters=_TUNABLE_PARAMETERS,
         experiment_matrix=_experiment_matrix(classification=classification, metrics=metrics),
         next_follow_up_experiments=_follow_up_experiments(classification=classification, metrics=metrics),
+        effective_orders_submitted=effective_orders_submitted,
+        effective_orders_rejected=effective_orders_rejected,
+        effective_orders_filled=effective_orders_filled,
+        effective_trades_closed=effective_trades_closed,
+        effective_fill_rate=effective_fill_rate,
+        effective_closed_trade_net_pnl=effective_closed_trade_net_pnl,
+        recovered_closed_trade_count=diagnostics.recovered_closed_trade_count,
+        recovered_closed_trade_net_pnl=diagnostics.recovered_closed_trade_net_pnl,
         state_status=(runtime_state.status.value if runtime_state is not None else None),
         total_equity=(runtime_state.total_equity if runtime_state is not None else None),
         today_pnl=(runtime_state.today_pnl if runtime_state is not None else None),
@@ -224,18 +326,25 @@ def format_autoresearch_report(report: AutoresearchReport) -> str:
         "## Baseline",
         "",
         f"- signals_generated: {int(report.metrics.get('signals_generated', 0))}",
-        f"- orders_submitted: {int(report.metrics.get('orders_submitted', 0))}",
-        f"- orders_rejected: {int(report.metrics.get('orders_rejected', 0))}",
-        f"- orders_filled: {int(report.metrics.get('orders_filled', 0))}",
+        f"- orders_submitted: {report.effective_orders_submitted}",
+        f"- orders_rejected: {report.effective_orders_rejected}",
+        f"- orders_filled: {report.effective_orders_filled}",
         f"- orders_partially_filled: {int(report.metrics.get('orders_partially_filled', 0))}",
         f"- orders_expired: {int(report.metrics.get('orders_expired', 0))}",
-        f"- trades_closed: {int(report.metrics.get('trades_closed', 0))}",
-        f"- fill_rate: {float(report.metrics.get('fill_rate', 0.0)):.4f}",
+        f"- trades_closed: {report.effective_trades_closed}",
+        f"- fill_rate: {report.effective_fill_rate:.4f}",
         f"- cancel_rate: {float(report.metrics.get('cancel_rate', 0.0)):.4f}",
         f"- avg_fill_price_vs_mid_bps: {float(report.metrics.get('avg_fill_price_vs_mid_bps', 0.0)):.2f}",
         f"- capacity_bound_rejection_ratio: {report.event_diagnostics.capacity_bound_rejection_ratio:.4f}",
-        f"- closed_trade_net_pnl: {report.event_diagnostics.closed_trade_net_pnl:.6f}",
+        f"- closed_trade_net_pnl: {report.effective_closed_trade_net_pnl:.6f}",
     ]
+    if report.event_diagnostics.has_session_scope:
+        lines.append("- session_scoped_baseline: true")
+        if report.recovered_closed_trade_count > 0:
+            lines.append(f"- recovered_closed_trades: {report.recovered_closed_trade_count}")
+            lines.append(
+                f"- recovered_closed_trade_net_pnl: {report.recovered_closed_trade_net_pnl:.6f}"
+            )
     if report.state_status is not None:
         lines.extend(
             [
@@ -328,12 +437,30 @@ def _summarize_event_log(path: str | Path | None) -> EventDiagnostics:
     rejection_reasons: Counter[str] = Counter()
     fill_sources: Counter[str] = Counter()
     closed_trade_net_pnl = 0.0
+    session_rejection_reasons: Counter[str] = Counter()
+    session_fill_sources: Counter[str] = Counter()
+    session_fill_event_count = 0
+    session_submitted_order_ids: set[str] = set()
+    session_filled_order_ids: set[str] = set()
+    session_closed_trade_count = 0
+    session_closed_trade_net_pnl = 0.0
+    recovered_closed_trade_count = 0
+    recovered_closed_trade_net_pnl = 0.0
     if path is None:
         return EventDiagnostics(
             event_counts={},
             rejection_reasons={},
             fill_sources={},
             closed_trade_net_pnl=0.0,
+            session_rejection_reasons={},
+            session_fill_sources={},
+            session_fill_event_count=0,
+            session_submitted_order_count=0,
+            session_filled_order_count=0,
+            session_closed_trade_count=0,
+            session_closed_trade_net_pnl=0.0,
+            recovered_closed_trade_count=0,
+            recovered_closed_trade_net_pnl=0.0,
         )
 
     event_path = Path(path)
@@ -353,21 +480,51 @@ def _summarize_event_log(path: str | Path | None) -> EventDiagnostics:
             payload = event.get("payload")
             if not isinstance(payload, dict):
                 continue
+            strategy_id = str(payload.get("strategy_id", "")).strip()
+            is_recovered = strategy_id == "recovered.live"
+            if event_type == "order.submitted" and not is_recovered:
+                order_id = str(payload.get("order_id", "")).strip()
+                if order_id:
+                    session_submitted_order_ids.add(order_id)
             if event_type == "order.rejected":
                 reason = str(payload.get("reason", "")).strip()
                 if reason:
                     rejection_reasons[reason] += 1
+                    if not is_recovered:
+                        session_rejection_reasons[reason] += 1
             elif event_type in {"order.filled", "order.partially_filled"}:
                 fill_source = str(payload.get("fill_source", "")).strip() or "unknown"
                 fill_sources[fill_source] += 1
+                if not is_recovered:
+                    session_fill_sources[fill_source] += 1
+                    session_fill_event_count += 1
+                    order_id = str(payload.get("order_id", "")).strip()
+                    if order_id:
+                        session_filled_order_ids.add(order_id)
             elif event_type == "trade.closed":
-                closed_trade_net_pnl += float(payload.get("net_pnl", 0.0) or 0.0)
+                net_pnl = float(payload.get("net_pnl", 0.0) or 0.0)
+                closed_trade_net_pnl += net_pnl
+                if is_recovered:
+                    recovered_closed_trade_count += 1
+                    recovered_closed_trade_net_pnl += net_pnl
+                else:
+                    session_closed_trade_count += 1
+                    session_closed_trade_net_pnl += net_pnl
 
     return EventDiagnostics(
         event_counts=dict(sorted(event_counts.items())),
         rejection_reasons=dict(sorted(rejection_reasons.items())),
         fill_sources=dict(sorted(fill_sources.items())),
         closed_trade_net_pnl=closed_trade_net_pnl,
+        session_rejection_reasons=dict(sorted(session_rejection_reasons.items())),
+        session_fill_sources=dict(sorted(session_fill_sources.items())),
+        session_fill_event_count=session_fill_event_count,
+        session_submitted_order_count=len(session_submitted_order_ids),
+        session_filled_order_count=len(session_filled_order_ids),
+        session_closed_trade_count=session_closed_trade_count,
+        session_closed_trade_net_pnl=session_closed_trade_net_pnl,
+        recovered_closed_trade_count=recovered_closed_trade_count,
+        recovered_closed_trade_net_pnl=recovered_closed_trade_net_pnl,
     )
 
 
@@ -385,11 +542,11 @@ def _load_runtime_state(path: str | Path | None) -> RuntimeState | None:
 
 def _classify_baseline(*, metrics: dict[str, Any], diagnostics: EventDiagnostics) -> str:
     signals_generated = int(metrics.get("signals_generated", 0) or 0)
-    orders_submitted = int(metrics.get("orders_submitted", 0) or 0)
-    orders_rejected = int(metrics.get("orders_rejected", 0) or 0)
-    fills = int(metrics.get("orders_filled", 0) or 0) + int(metrics.get("orders_partially_filled", 0) or 0)
+    orders_submitted = diagnostics.effective_orders_submitted(metrics)
+    orders_rejected = diagnostics.effective_orders_rejected(metrics)
+    fills = diagnostics.effective_filled_orders(metrics)
     expired = int(metrics.get("orders_expired", 0) or 0) + int(metrics.get("orders_canceled", 0) or 0)
-    trades_closed = int(metrics.get("trades_closed", 0) or 0)
+    trades_closed = diagnostics.effective_closed_trade_count(metrics)
     market_data_failures = int(metrics.get("market_data_failures", 0) or 0)
 
     submission_rate = _safe_ratio(orders_submitted, signals_generated)
@@ -410,7 +567,7 @@ def _classify_baseline(*, metrics: dict[str, Any], diagnostics: EventDiagnostics
     if orders_submitted > 0 and fills <= max(1, orders_submitted // 10) and expired >= max(1, orders_submitted // 2):
         return "execution-bound"
 
-    if trades_closed > 0 and diagnostics.closed_trade_net_pnl <= 0:
+    if trades_closed > 0 and diagnostics.effective_closed_trade_net_pnl <= 0:
         return "alpha-bound"
 
     if market_data_failures > 0 and diagnostics.capacity_bound_rejection_ratio < 0.25:
@@ -425,13 +582,15 @@ def _classify_baseline(*, metrics: dict[str, Any], diagnostics: EventDiagnostics
 
 
 def _compute_score(*, metrics: dict[str, Any], diagnostics: EventDiagnostics) -> float:
-    orders_submitted = int(metrics.get("orders_submitted", 0) or 0)
-    orders_rejected = int(metrics.get("orders_rejected", 0) or 0)
+    orders_submitted = diagnostics.effective_orders_submitted(metrics)
+    orders_rejected = diagnostics.effective_orders_rejected(metrics)
     rejected_ratio = _safe_ratio(orders_rejected, orders_rejected + orders_submitted)
+    effective_fill_rate = diagnostics.effective_fill_rate(metrics)
+    effective_trades_closed = diagnostics.effective_closed_trade_count(metrics)
     return (
-        (8.0 * diagnostics.closed_trade_net_pnl)
-        + (3.0 * float(metrics.get("trades_closed", 0) or 0))
-        + (10.0 * float(metrics.get("fill_rate", 0.0) or 0.0))
+        (8.0 * diagnostics.effective_closed_trade_net_pnl)
+        + (3.0 * float(effective_trades_closed))
+        + (10.0 * effective_fill_rate)
         - (6.0 * float(metrics.get("cancel_rate", 0.0) or 0.0))
         - (8.0 * rejected_ratio)
         - (10.0 * diagnostics.capacity_bound_rejection_ratio)

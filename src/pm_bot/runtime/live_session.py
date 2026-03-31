@@ -22,6 +22,7 @@ from pm_bot.adapters.polymarket import (
     UserTradeEvent,
 )
 from pm_bot.config.loader import load_settings_from_directory
+from pm_bot.core.research_types import FairValueEstimate
 from pm_bot.core.settings import TradingSettings
 from pm_bot.core.types import Category, MarketSnapshot, RuntimeMode
 from pm_bot.execution.order_tracker import OrderLifecycleStatus, TrackedOrder
@@ -36,8 +37,11 @@ from pm_bot.runtime.live_reconcile import LiveRecoveryStats, recover_live_state
 from pm_bot.runtime.market_universe import build_snapshot_selector
 from pm_bot.runtime.state import DashboardState, HaltReason, RuntimeStatus
 from pm_bot.runtime.live_sync import sync_live_execution_state
+from pm_bot.runtime.underlying_state import resolve_underlying_state_path
 from pm_bot.storage.recorder import LiveRuntimeRecorder
 from pm_bot.storage.runtime_state_store import JsonRuntimeStateStore
+from pm_bot.strategies.common import parse_float
+from pm_bot.strategies.crypto.phase1.normalization import normalize_crypto_market
 from pm_bot.strategies.crypto.phase2.runtime_context import CryptoPhase2PaperContextBuilder
 
 if TYPE_CHECKING:
@@ -347,6 +351,22 @@ class LiveSessionRunner:
                 snapshots_by_market_id=dict(self.snapshots_by_market_id),
                 recorder=self.recorder,
             )
+        diagnostics_payload = _runtime_diagnostics_payload(
+            snapshot=snapshot,
+            runtime_context=runtime_context,
+            active_strategy_ids=tuple(
+                str(getattr(strategy, "strategy_id", "")).strip()
+                for strategy in self.router.strategies
+                if str(getattr(strategy, "strategy_id", "")).strip()
+            ),
+        )
+        if diagnostics_payload is not None:
+            await self._record("market.runtime_diagnostics", diagnostics_payload)
+            await _record_shadow_event(
+                shadow_coordinator=self.shadow_coordinator,
+                event_type="market.runtime_diagnostics",
+                payload=diagnostics_payload,
+            )
         submitted = await self.router.run_once(snapshot=snapshot, context=runtime_context)
         cancelled_orders = await self.execution.cancel_stale_orders()
         await _shadow_after_market_snapshot(
@@ -508,6 +528,9 @@ class LiveSessionRunner:
                         "realized_pnl": closed_trade.realized_pnl,
                         "fees_paid": closed_trade.fees_paid,
                         "net_pnl": closed_trade.net_pnl,
+                        "exposure_group_id": closed_trade.exposure_group_id,
+                        "thesis_group_id": closed_trade.thesis_group_id,
+                        "underlying_group_id": closed_trade.underlying_group_id,
                         "closed_at": closed_trade.closed_at.isoformat(),
                     },
                 )
@@ -863,13 +886,15 @@ async def run_crypto_live_session(
     recorder = LiveRuntimeRecorder(event_path=recorder_path, metrics_path=metrics_path)
     session_started_at = datetime.now(tz=UTC)
     runtime_context_builder = None
+    resolved_underlying_state_path: str | None = None
     if "crypto.phase2" in enabled_strategy_ids:
         if underlying_state_path is None:
             raise ValueError(
                 "run_crypto_live_session requires underlying_state_path when crypto.phase2 is enabled"
             )
+        resolved_underlying_state_path = str(resolve_underlying_state_path(underlying_state_path))
         phase2_context_builder = CryptoPhase2PaperContextBuilder(
-            underlying_state_path=underlying_state_path,
+            underlying_state_path=resolved_underlying_state_path,
             apply_series_filter=True,
         )
         def runtime_context_builder(
@@ -890,6 +915,7 @@ async def run_crypto_live_session(
             "recovery_scope": settings.polymarket.live_recovery_scope,
             "configured_signature_type": settings.polymarket.signature_type,
             "resolved_signature_type": execution.signature_type,
+            "resolved_underlying_state_path": resolved_underlying_state_path,
         },
     )
 
@@ -1145,6 +1171,153 @@ async def _shadow_after_market_snapshot(
     callback = getattr(shadow_coordinator, "after_market_snapshot", None)
     if callable(callback):
         await callback(snapshot=snapshot)
+
+
+async def _record_shadow_event(
+    *,
+    shadow_coordinator: object | None,
+    event_type: str,
+    payload: Mapping[str, object],
+) -> None:
+    if shadow_coordinator is None:
+        return
+    recorder = getattr(shadow_coordinator, "recorder", None)
+    record = getattr(recorder, "record", None)
+    if callable(record):
+        await record(event_type=event_type, payload=payload)
+
+
+def _runtime_diagnostics_payload(
+    *,
+    snapshot: MarketSnapshot,
+    runtime_context: Mapping[str, object] | None,
+    active_strategy_ids: Sequence[str],
+) -> dict[str, object] | None:
+    if runtime_context is None:
+        return None
+
+    normalized = normalize_crypto_market(snapshot) if snapshot.category == Category.CRYPTO else None
+    fair_value = _fair_value_from_context(snapshot=snapshot, runtime_context=runtime_context)
+    selection_action = _context_str_by_key(
+        runtime_context=runtime_context,
+        key="market_selection_actions",
+        item_key=snapshot.market_id,
+    )
+    selection_reasons = _context_str_sequence_by_key(
+        runtime_context=runtime_context,
+        key="market_selection_reasons",
+        item_key=snapshot.market_id,
+    )
+    blocked_market_ids = runtime_context.get("blocked_market_ids")
+    blocked_market = (
+        snapshot.market_id in blocked_market_ids
+        if isinstance(blocked_market_ids, (set, frozenset, tuple, list))
+        else False
+    )
+    blocked_market_reasons = _context_str_sequence_by_key(
+        runtime_context=runtime_context,
+        key="blocked_market_reasons",
+        item_key=snapshot.market_id,
+    )
+    series_key = normalized.series_key if normalized is not None else None
+    blocked_series_keys = runtime_context.get("blocked_series_keys")
+    blocked_series = (
+        series_key in blocked_series_keys
+        if series_key is not None and isinstance(blocked_series_keys, (set, frozenset, tuple, list))
+        else False
+    )
+    blocked_series_reasons = (
+        _context_str_sequence_by_key(
+            runtime_context=runtime_context,
+            key="blocked_series_reasons",
+            item_key=series_key,
+        )
+        if series_key is not None
+        else ()
+    )
+
+    return {
+        "market_id": snapshot.market_id,
+        "token_id": snapshot.token_id,
+        "updated_at": snapshot.timestamp.isoformat(),
+        "strategies_enabled": bool(active_strategy_ids),
+        "active_strategy_ids": list(active_strategy_ids),
+        "market_family": normalized.normalized.market_family if normalized is not None else None,
+        "series_key": series_key,
+        "instrument_key": normalized.normalized.instrument_key if normalized is not None else None,
+        "underlying": normalized.underlying if normalized is not None else None,
+        "event_family": normalized.event_family if normalized is not None else None,
+        "fair_value_present": fair_value is not None,
+        "fair_probability": fair_value.fair_probability if fair_value is not None else None,
+        "observed_probability": fair_value.observed_probability if fair_value is not None else None,
+        "confidence": fair_value.confidence if fair_value is not None else None,
+        "model_id": fair_value.model_id if fair_value is not None else None,
+        "rationale_tags": list(fair_value.rationale_tags) if fair_value is not None else [],
+        "gross_edge_bps": (
+            parse_float(fair_value.supporting_values, "gross_edge_bps")
+            if fair_value is not None
+            else None
+        ),
+        "net_edge_bps": (
+            parse_float(fair_value.supporting_values, "net_edge_bps")
+            if fair_value is not None
+            else None
+        ),
+        "entry_cost_bps": (
+            parse_float(fair_value.supporting_values, "entry_cost_bps")
+            if fair_value is not None
+            else None
+        ),
+        "selection_action": selection_action,
+        "selection_reasons": list(selection_reasons),
+        "market_blocked": blocked_market,
+        "market_block_reasons": list(blocked_market_reasons),
+        "series_blocked": blocked_series,
+        "series_block_reasons": list(blocked_series_reasons),
+    }
+
+
+def _fair_value_from_context(
+    *,
+    snapshot: MarketSnapshot,
+    runtime_context: Mapping[str, object],
+) -> FairValueEstimate | None:
+    fair_values = runtime_context.get("fair_values_by_market_id")
+    if not isinstance(fair_values, Mapping):
+        return None
+    candidate = fair_values.get(snapshot.market_id)
+    return candidate if isinstance(candidate, FairValueEstimate) else None
+
+
+def _context_str_by_key(
+    *,
+    runtime_context: Mapping[str, object],
+    key: str,
+    item_key: str,
+) -> str | None:
+    values = runtime_context.get(key)
+    if not isinstance(values, Mapping):
+        return None
+    raw_value = values.get(item_key)
+    if raw_value is None:
+        return None
+    text = str(raw_value).strip()
+    return text or None
+
+
+def _context_str_sequence_by_key(
+    *,
+    runtime_context: Mapping[str, object],
+    key: str,
+    item_key: str,
+) -> tuple[str, ...]:
+    values = runtime_context.get(key)
+    if not isinstance(values, Mapping):
+        return ()
+    raw_value = values.get(item_key)
+    if not isinstance(raw_value, Sequence) or isinstance(raw_value, (str, bytes, bytearray)):
+        return ()
+    return tuple(str(item).strip() for item in raw_value if str(item).strip())
 
 
 def _should_ignore_historical_user_event(
