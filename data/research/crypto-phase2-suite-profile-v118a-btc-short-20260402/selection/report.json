@@ -1,0 +1,113 @@
+{
+  "generated_at": "2026-04-01T16:17:15.793679+00:00",
+  "snapshot_path": "data\\runtime\\20260401-015839-btc-short-repricing-fallback-snapshots.jsonl",
+  "model_parameters": {
+    "baseline_preset": "crypto-calibration-baseline-20260328",
+    "baseline_candidate": "btc-r1-s165-b35-s65",
+    "barrier_steepness": 1.65,
+    "fusion_barrier_weight": 0.35,
+    "fusion_surface_weight": 0.65
+  },
+  "series_reports": [
+    {
+      "series_key": "bitcoin-above-on-april-1",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "market_count": 1,
+      "runtime_actionable_market_count": 1,
+      "positive_net_edge_count": 1,
+      "mean_net_edge_bps": 1954.9999999999993,
+      "median_net_edge_bps": 1954.9999999999993,
+      "mean_entry_cost_bps": 100.00000000000009,
+      "min_liquidity_score": 0.9919650828290844,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "tradable",
+      "reasons": [
+        "wide_spread"
+      ],
+      "profit_quality_score": 0.7692,
+      "selection_rank": 1
+    },
+    {
+      "series_key": "bitcoin-above-on-april-4",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "market_count": 1,
+      "runtime_actionable_market_count": 1,
+      "positive_net_edge_count": 1,
+      "mean_net_edge_bps": 805.2286870813047,
+      "median_net_edge_bps": 805.2286870813047,
+      "mean_entry_cost_bps": 99.99999999999953,
+      "min_liquidity_score": 0.9651578033008397,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "tradable",
+      "reasons": [
+        "wide_spread"
+      ],
+      "profit_quality_score": 0.7639,
+      "selection_rank": 2
+    }
+  ],
+  "market_rows": [
+    {
+      "market_id": "1717486",
+      "series_key": "bitcoin-above-on-april-1",
+      "instrument_key": "BTC:reach:2026-04-01:68000",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "observed_probability": 0.37,
+      "fair_probability": 0.587,
+      "net_edge_bps": 1954.9999999999993,
+      "entry_cost_bps": 100.00000000000009,
+      "spread_bps": 200.00000000000017,
+      "liquidity_score": 0.9919650828290844,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "top_book_depth": 120.0,
+      "nearby_book_depth": 954.67,
+      "quote_age_seconds": 5.314,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "selective_market",
+      "reasons": [
+        "wide_spread"
+      ],
+      "profit_quality_score": 0.7692
+    },
+    {
+      "market_id": "1762321",
+      "series_key": "bitcoin-above-on-april-4",
+      "instrument_key": "BTC:reach:2026-04-04:66000",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "observed_probability": 0.69,
+      "fair_probability": 0.7920228687081303,
+      "net_edge_bps": 805.2286870813047,
+      "entry_cost_bps": 99.99999999999953,
+      "spread_bps": 199.99999999999906,
+      "liquidity_score": 0.9651578033008397,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "top_book_depth": 346.74,
+      "nearby_book_depth": 11758.18,
+      "quote_age_seconds": 6.644,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "selective_market",
+      "reasons": [
+        "wide_spread"
+      ],
+      "profit_quality_score": 0.7639
+    }
+  ]
+}

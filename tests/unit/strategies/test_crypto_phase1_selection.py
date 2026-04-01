@@ -19,6 +19,7 @@ from pm_bot.strategies.crypto.phase1.selection import (
     format_crypto_market_selection_report,
     generate_crypto_market_selection_report,
     generate_crypto_market_selection_report_from_snapshots,
+    runtime_scan_identify_diagnostics,
     recommended_runtime_blocked_market_ids,
     recommended_runtime_blocked_series_keys,
 )
@@ -53,6 +54,9 @@ def test_generate_crypto_market_selection_report_marks_btc_runtime_strip_as_trad
     assert report.model_parameters["baseline_candidate"] == preset.candidate_name
     assert (tmp_path / "selection" / "report.json").exists()
     assert (tmp_path / "selection" / "summary.md").exists()
+    diagnostics = runtime_scan_identify_diagnostics(report)
+    assert diagnostics["scan_total_market_count"] == len(report.market_rows)
+    assert diagnostics["identify_incomplete_market_count"] == 0
 
 
 def test_format_crypto_market_selection_report_contains_series_section() -> None:
@@ -190,6 +194,51 @@ def test_generate_crypto_market_selection_report_does_not_block_btc_market_after
     assert row.expired_order_count == 2
     assert "execution_no_fill" not in row.reasons
     assert row.recommended_action != "watch_market"
+
+
+def test_generate_crypto_market_selection_report_blocks_btc_market_after_two_no_fill_attempts_when_override_applied() -> None:
+    snapshots = load_market_snapshots(Path("tests/fixtures/crypto_phase2/btc_runtime_ladder_window.jsonl"))
+    report = generate_crypto_market_selection_report_from_snapshots(
+        snapshots=snapshots,
+        snapshot_label="two-no-fill-btc-override",
+        events=[
+            {
+                "event_type": "signal.generated",
+                "payload": {"market_id": "1339768"},
+            },
+            {
+                "event_type": "order.submitted",
+                "payload": {"market_id": "1339768"},
+            },
+            {
+                "event_type": "order.expired",
+                "payload": {"market_id": "1339768"},
+            },
+            {
+                "event_type": "order.expired",
+                "payload": {"market_id": "1339768"},
+            },
+        ],
+        underlying_states={
+            "BTC": build_underlying_state(
+                underlying="BTC",
+                as_of=datetime.fromisoformat("2026-03-27T15:15:00+00:00"),
+                spot_price=79000.0,
+                daily_return=-0.028,
+                realized_volatility=0.58,
+                implied_volatility=0.66,
+            )
+        },
+        barrier_model_config=CryptoBarrierModelConfig(steepness=1.65),
+        fusion_model_config=CryptoFusionModelConfig(barrier_weight=0.35, surface_weight=0.65),
+        runtime_policy_overrides={"default": 2},
+    )
+
+    row = next(row for row in report.market_rows if row.market_id == "1339768")
+
+    assert row.expired_order_count == 2
+    assert "execution_no_fill" in row.reasons
+    assert row.recommended_action == "watch_market"
 
 
 def test_recommended_runtime_blocked_series_keys_keeps_watch_only_series_open_when_actionable_markets_remain(tmp_path: Path) -> None:

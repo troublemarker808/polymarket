@@ -1,0 +1,363 @@
+{
+  "tuning_plan": {
+    "learning_report": {
+      "run_count": 3,
+      "recurring_profit_focuses": [
+        "pricing"
+      ],
+      "recurring_tuning_priorities": [
+        "pricing"
+      ],
+      "recommended_next_experiment": "pricing",
+      "recommended_actions": [
+        "rebalance exit families because defensive exits dominate the current close mix",
+        "hold current scaling until trade-level realized pnl turns positive across repeated runs",
+        "tighten exits before widening flow because losing closes remain larger than winning closes",
+        "prioritize repricing and calibration variants before widening execution flow",
+        "prioritize variants that improve edge capture before widening trade flow",
+        "re-run phase1 calibration against the locked baseline before widening execution thresholds",
+        "compare filtered versus unfiltered pnl by family to isolate mispriced ladders",
+        "design the next variant to also address secondary loss in sizing instead of retuning pricing in isolation",
+        "keep notional conservative until pnl per notional turns positive across repeated runs"
+      ],
+      "focus_counts": {
+        "exit": 1,
+        "pricing": 2
+      },
+      "tuning_counts": {
+        "exit": 1,
+        "pricing": 2
+      },
+      "average_component_losses": {
+        "selection": 0.2,
+        "pricing": 0.6,
+        "execution": 0.29,
+        "exit": 0.33,
+        "sizing": 0.23
+      },
+      "recurring_loss_ranking": [
+        "pricing",
+        "exit",
+        "execution",
+        "sizing",
+        "selection"
+      ],
+      "average_edge_capture_ratio": 0.3118,
+      "average_signal_edge_bps": 309.3864,
+      "average_adverse_fill_bps": 20.0046,
+      "average_pnl_per_notional": -0.000646,
+      "average_trade_expected_edge_bps": 303.0207,
+      "average_trade_execution_drag_bps": 18.2706,
+      "average_trade_realized_pnl_bps": -11.7638,
+      "average_fusion_observed_gap_bps": 688.2745,
+      "average_barrier_surface_disagreement_bps": 1905.9616,
+      "average_win_trade_pnl": 0.0,
+      "average_loss_trade_pnl": -0.014471,
+      "average_submitted_notional": 4.993429,
+      "average_large_notional_share": 0.0,
+      "dominant_exit_reason": "none",
+      "average_stop_loss_exit_share": 0.0,
+      "average_passive_cleanup_exit_share": 0.3333,
+      "average_exit_family_balance_score": 0.2,
+      "average_small_bucket_pnl_per_notional": 0.0,
+      "average_medium_bucket_pnl_per_notional": -0.000646,
+      "average_large_bucket_pnl_per_notional": 0.0
+    },
+    "latest_profit_focus": "pricing",
+    "secondary_profit_focus": "sizing",
+    "latest_tuning_priority": "pricing",
+    "experiment_family": "pricing",
+    "loss_ranking": [
+      "pricing",
+      "sizing",
+      "execution",
+      "selection",
+      "exit"
+    ],
+    "variants": [
+      {
+        "name": "pricing_higher_edge_filter",
+        "focus": "pricing",
+        "overrides": {
+          "min_net_edge_bps": 100.0
+        },
+        "rationale": [
+          "reduce mispriced entries",
+          "force cleaner calibration residuals"
+        ]
+      },
+      {
+        "name": "pricing_wider_confidence_gate",
+        "focus": "pricing",
+        "overrides": {
+          "min_confidence": 0.68
+        },
+        "rationale": [
+          "only trade higher-confidence fair values",
+          "test calibration discipline"
+        ]
+      },
+      {
+        "name": "pricing_capture_high_confidence",
+        "focus": "pricing+execution",
+        "overrides": {
+          "min_net_edge_bps": 105.0,
+          "min_confidence": 0.7,
+          "maker_quote_ttl_seconds": 40
+        },
+        "rationale": [
+          "pricing is weak and realized edge capture remains soft",
+          "raise confidence while reducing quote decay"
+        ]
+      },
+      {
+        "name": "pricing_repricing_capture_guard",
+        "focus": "pricing+execution",
+        "overrides": {
+          "min_net_edge_bps": 110.0,
+          "maker_quote_ttl_seconds": 35
+        },
+        "rationale": [
+          "fused fair values still sit too far from observed pricing",
+          "tighten repricing edge requirements while reducing quote decay"
+        ]
+      },
+      {
+        "name": "pricing_realization_gap_guard",
+        "focus": "pricing+execution",
+        "overrides": {
+          "min_net_edge_bps": 110.0,
+          "min_confidence": 0.72,
+          "maker_quote_ttl_seconds": 35
+        },
+        "rationale": [
+          "trade-level realized pnl remains negative despite positive expected edge",
+          "tighten pricing and reduce quote decay together"
+        ]
+      }
+    ]
+  },
+  "baseline": {
+    "variant_name": "baseline",
+    "focus": "baseline",
+    "secondary_focus": "execution",
+    "loss_ranking": [
+      "exit",
+      "execution",
+      "pricing",
+      "selection",
+      "sizing"
+    ],
+    "readiness_score": 0.75,
+    "total_profit_loss": 2.41,
+    "filtered_pnl": -0.08682539760999841,
+    "recommended_action": "review",
+    "tuning_priority": "exit",
+    "selection_loss": 0.3,
+    "pricing_loss": 0.42,
+    "execution_loss": 0.47,
+    "exit_loss": 0.99,
+    "sizing_loss": 0.23,
+    "average_loss_trade_pnl": -0.043413,
+    "large_notional_share": 0.0,
+    "average_trade_execution_drag_bps": 54.8119,
+    "average_trade_realized_pnl_bps": -35.2913,
+    "exit_family_balance_score": 0.6,
+    "large_bucket_pnl_per_notional": 0.0,
+    "target_alignment_score": 1,
+    "targeted_loss_improvement": 0.0,
+    "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\baseline"
+  },
+  "candidates": [
+    {
+      "variant_name": "pricing_higher_edge_filter",
+      "focus": "pricing",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 1,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\pricing_higher_edge_filter"
+    },
+    {
+      "variant_name": "pricing_wider_confidence_gate",
+      "focus": "pricing",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 1,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\pricing_wider_confidence_gate"
+    },
+    {
+      "variant_name": "pricing_capture_high_confidence",
+      "focus": "pricing+execution",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.51,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.57,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 68.5149,
+      "average_trade_realized_pnl_bps": -44.1142,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 1,
+      "targeted_loss_improvement": -0.05,
+      "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\pricing_capture_high_confidence"
+    },
+    {
+      "variant_name": "pricing_repricing_capture_guard",
+      "focus": "pricing+execution",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.66,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.57,
+      "execution_loss": 0.57,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 1,
+      "targeted_loss_improvement": -0.05,
+      "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\pricing_repricing_capture_guard"
+    },
+    {
+      "variant_name": "pricing_realization_gap_guard",
+      "focus": "pricing+execution",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.66,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.57,
+      "execution_loss": 0.57,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 1,
+      "targeted_loss_improvement": -0.05,
+      "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\pricing_realization_gap_guard"
+    }
+  ],
+  "winner": {
+    "variant_name": "baseline",
+    "focus": "baseline",
+    "secondary_focus": "execution",
+    "loss_ranking": [
+      "exit",
+      "execution",
+      "pricing",
+      "selection",
+      "sizing"
+    ],
+    "readiness_score": 0.75,
+    "total_profit_loss": 2.41,
+    "filtered_pnl": -0.08682539760999841,
+    "recommended_action": "review",
+    "tuning_priority": "exit",
+    "selection_loss": 0.3,
+    "pricing_loss": 0.42,
+    "execution_loss": 0.47,
+    "exit_loss": 0.99,
+    "sizing_loss": 0.23,
+    "average_loss_trade_pnl": -0.043413,
+    "large_notional_share": 0.0,
+    "average_trade_execution_drag_bps": 54.8119,
+    "average_trade_realized_pnl_bps": -35.2913,
+    "exit_family_balance_score": 0.6,
+    "large_bucket_pnl_per_notional": 0.0,
+    "target_alignment_score": 1,
+    "targeted_loss_improvement": 0.0,
+    "output_dir": "data\\research\\crypto-phase2-preset-package-btc-20260401-230126\\baseline"
+  },
+  "winner_reason": "baseline remains the strongest current preset",
+  "promotion_decision": "keep_baseline",
+  "promotion_target": "baseline",
+  "promotion_reason": "baseline remains the strongest current working preset"
+}

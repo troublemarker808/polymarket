@@ -1,0 +1,35 @@
+{
+  "processed_snapshots": 2000,
+  "paper_days_observed": 2,
+  "observed_trading_days": [
+    "2026-03-26",
+    "2026-03-27"
+  ],
+  "signals_generated": 409,
+  "signals_rejected": 0,
+  "orders_submitted": 80,
+  "orders_rejected": 329,
+  "orders_filled": 24,
+  "orders_partially_filled": 0,
+  "orders_expired": 56,
+  "orders_canceled": 0,
+  "trades_closed": 12,
+  "market_data_failures": 0,
+  "market_data_recoveries": 0,
+  "filled_shares_total": 192.0,
+  "maker_filled_shares": 96.0,
+  "taker_filled_shares": 96.0,
+  "fill_rate": 0.3,
+  "cancel_rate": 0.7,
+  "avg_time_to_fill_ms": 0.0,
+  "avg_fill_price_vs_mid_bps": -212.12029702970312,
+  "maker_fill_share": 0.5,
+  "taker_fill_share": 0.5,
+  "generated_by_strategy": {
+    "crypto.phase2": 409
+  },
+  "submitted_by_strategy": {
+    "crypto.phase2": 80
+  },
+  "updated_at": "2026-03-27T12:35:39.483000+00:00"
+}

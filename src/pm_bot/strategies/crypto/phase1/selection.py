@@ -238,6 +238,46 @@ def runtime_market_selection_reasons(report: CryptoMarketSelectionReport) -> dic
     return {row.market_id: row.reasons for row in report.market_rows}
 
 
+def runtime_scan_identify_diagnostics(report: CryptoMarketSelectionReport) -> dict[str, object]:
+    required_identify_fields = (
+        "liquidity_score",
+        "spread_bps",
+        "top_book_depth",
+        "nearby_book_depth",
+        "quote_age_seconds",
+        "observed_probability",
+        "fair_probability",
+        "net_edge_bps",
+    )
+    action_counts: dict[str, int] = {}
+    missing_field_counts: dict[str, int] = {field: 0 for field in required_identify_fields}
+    complete_identify_count = 0
+    for row in report.market_rows:
+        action_counts[row.recommended_action] = action_counts.get(row.recommended_action, 0) + 1
+        missing_fields = [
+            field
+            for field in required_identify_fields
+            if getattr(row, field) is None
+        ]
+        if not missing_fields:
+            complete_identify_count += 1
+            continue
+        for field in missing_fields:
+            missing_field_counts[field] += 1
+    runtime_blocked_market_ids = recommended_runtime_blocked_market_ids(report)
+    return {
+        "scan_total_market_count": len(report.market_rows),
+        "scan_runtime_blocked_market_count": len(runtime_blocked_market_ids),
+        "scan_runtime_eligible_market_count": max(0, len(report.market_rows) - len(runtime_blocked_market_ids)),
+        "scan_runtime_blocked_series_count": len(recommended_runtime_blocked_series_keys(report)),
+        "scan_action_counts": action_counts,
+        "identify_required_fields": required_identify_fields,
+        "identify_complete_market_count": complete_identify_count,
+        "identify_incomplete_market_count": max(0, len(report.market_rows) - complete_identify_count),
+        "identify_missing_field_counts": {key: value for key, value in missing_field_counts.items() if value > 0},
+    }
+
+
 def load_runtime_market_selection_actions(report_path: str | Path) -> dict[str, str]:
     decoded = json.loads(Path(report_path).read_text(encoding="utf-8-sig"))
     market_rows = decoded.get("market_rows", [])
@@ -295,6 +335,7 @@ def generate_crypto_market_selection_report(
     output_dir: str | Path | None = None,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
+    runtime_policy_overrides: Mapping[str, int] | None = None,
 ) -> CryptoMarketSelectionReport:
     snapshots = load_market_snapshots(snapshot_path)
     return generate_crypto_market_selection_report_from_snapshots(
@@ -306,6 +347,7 @@ def generate_crypto_market_selection_report(
         output_dir=output_dir,
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
+        runtime_policy_overrides=runtime_policy_overrides,
     )
 
 
@@ -319,6 +361,7 @@ def generate_crypto_market_selection_report_from_snapshots(
     output_dir: str | Path | None = None,
     barrier_model_config: CryptoBarrierModelConfig | None = None,
     fusion_model_config: CryptoFusionModelConfig | None = None,
+    runtime_policy_overrides: Mapping[str, int] | None = None,
 ) -> CryptoMarketSelectionReport:
     baseline_preset, resolved_barrier_model_config, resolved_fusion_model_config, resolved_residual_model_config = resolve_crypto_calibration_model_configs(
         barrier_model_config=barrier_model_config,
@@ -350,6 +393,7 @@ def generate_crypto_market_selection_report_from_snapshots(
         runtime_policy = _runtime_tradability_policy(
             underlying=normalized.underlying,
             event_family=normalized.event_family,
+            runtime_policy_overrides=runtime_policy_overrides,
         )
         trade_side = _trade_side_from_probabilities(
             observed_probability=fair_value.observed_probability or 0.0,
@@ -857,7 +901,18 @@ def _decoded_series_has_runtime_actionable_market(
     return False
 
 
-def _runtime_tradability_policy(*, underlying: str, event_family: str) -> CryptoRuntimeTradabilityPolicy:
+def _runtime_tradability_policy(
+    *,
+    underlying: str,
+    event_family: str,
+    runtime_policy_overrides: Mapping[str, int] | None = None,
+) -> CryptoRuntimeTradabilityPolicy:
+    no_fill_min_expired_orders = _resolve_runtime_no_fill_threshold(
+        underlying=underlying,
+        event_family=event_family,
+        runtime_policy_overrides=runtime_policy_overrides,
+        default_value=2,
+    )
     if underlying == "BTC" and event_family == "reach":
         return CryptoRuntimeTradabilityPolicy(
             max_runtime_spread_bps=250.0,
@@ -866,7 +921,7 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             max_quote_age_seconds=780.0,
             min_tradeable_contract_price=0.30,
             watch_thin_liquidity=False,
-            execution_no_fill_min_expired_orders=3,
+            execution_no_fill_min_expired_orders=no_fill_min_expired_orders,
         )
     if underlying == "BTC" and event_family == "dip":
         return CryptoRuntimeTradabilityPolicy(
@@ -876,7 +931,7 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             max_quote_age_seconds=780.0,
             min_tradeable_contract_price=0.35,
             watch_thin_liquidity=True,
-            execution_no_fill_min_expired_orders=3,
+            execution_no_fill_min_expired_orders=no_fill_min_expired_orders,
         )
     if underlying == "ETH" and event_family == "reach":
         return CryptoRuntimeTradabilityPolicy(
@@ -885,6 +940,7 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             min_nearby_book_depth=25.0,
             max_quote_age_seconds=180.0,
             min_tradeable_contract_price=0.05,
+            execution_no_fill_min_expired_orders=no_fill_min_expired_orders,
         )
     return CryptoRuntimeTradabilityPolicy(
         max_runtime_spread_bps=225.0,
@@ -892,7 +948,39 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
         min_nearby_book_depth=25.0,
         max_quote_age_seconds=180.0,
         min_tradeable_contract_price=0.05,
+        execution_no_fill_min_expired_orders=no_fill_min_expired_orders,
     )
+
+
+def _resolve_runtime_no_fill_threshold(
+    *,
+    underlying: str,
+    event_family: str,
+    runtime_policy_overrides: Mapping[str, int] | None,
+    default_value: int,
+) -> int:
+    if runtime_policy_overrides is None:
+        if underlying == "BTC" and event_family in {"reach", "dip"}:
+            return 8
+        return max(1, int(default_value))
+
+    keys = (
+        f"{underlying}:{event_family}",
+        underlying,
+        "default",
+    )
+    for key in keys:
+        raw_value = runtime_policy_overrides.get(key)
+        if raw_value is None:
+            continue
+        try:
+            return max(1, int(raw_value))
+        except (TypeError, ValueError):
+            continue
+
+    if underlying == "BTC" and event_family in {"reach", "dip"}:
+        return 8
+    return max(1, int(default_value))
 
 
 def _entry_contract_price(*, observed_probability: float, fair_probability: float) -> float:

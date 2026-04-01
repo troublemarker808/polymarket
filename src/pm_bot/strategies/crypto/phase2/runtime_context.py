@@ -28,11 +28,13 @@ from pm_bot.strategies.crypto.phase1.selection import (
     recommended_runtime_blocked_market_reasons,
     recommended_runtime_blocked_series_keys,
     recommended_runtime_blocked_series_reasons,
+    runtime_scan_identify_diagnostics,
 )
 from pm_bot.strategies.crypto.phase2.execution import classify_crypto_signal
 from pm_bot.strategies.crypto.phase2.management import (
     build_route_policy_key,
     build_position_intent,
+    summarize_market_probation_state_from_events,
     summarize_execution_feedback_from_events,
     update_route_policy_state,
     update_reentry_state,
@@ -41,6 +43,7 @@ from pm_bot.strategies.crypto.phase2.models import (
     CryptoDynamicEligibilityGate,
     CryptoExecutionFeedback,
     CryptoExitDecision,
+    CryptoMarketProbationState,
     CryptoPositionIntent,
     CryptoReentryState,
     CryptoRoutePolicyState,
@@ -119,6 +122,7 @@ class CryptoPhase2PaperContextBuilder:
         blocked_market_reasons: dict[str, tuple[str, ...]] = dict(self.static_blocked_market_reasons)
         market_selection_actions: dict[str, str] = dict(self.static_market_selection_actions)
         market_selection_reasons: dict[str, tuple[str, ...]] = dict(self.static_market_selection_reasons)
+        scan_identify_diagnostics: dict[str, object] = {}
         if self.apply_series_filter:
             report = generate_crypto_market_selection_report_from_snapshots(
                 snapshots=snapshots,
@@ -134,6 +138,7 @@ class CryptoPhase2PaperContextBuilder:
             blocked_market_reasons.update(recommended_runtime_blocked_market_reasons(report))
             market_selection_actions.update(runtime_market_selection_actions(report))
             market_selection_reasons.update(runtime_market_selection_reasons(report))
+            scan_identify_diagnostics = runtime_scan_identify_diagnostics(report)
 
         self._processed_event_count = _update_runtime_context_from_events(
             recorder=recorder,
@@ -187,6 +192,11 @@ class CryptoPhase2PaperContextBuilder:
                 sample_count=sample_counts_by_route_key.get(route_key, 0),
                 as_of=now,
             )
+        market_probation_state_by_market_id = _market_probation_state_by_market_id(
+            snapshots=snapshots,
+            recent_events=recent_events,
+            as_of=now,
+        )
         return {
             "fair_values_by_market_id": fair_values_by_market_id,
             "position_intents_by_market_id": dict(self.position_intents_by_market_id),
@@ -197,10 +207,12 @@ class CryptoPhase2PaperContextBuilder:
             "blocked_market_reasons": blocked_market_reasons,
             "market_selection_actions": market_selection_actions,
             "market_selection_reasons": market_selection_reasons,
+            "scan_identify_diagnostics": scan_identify_diagnostics,
             "execution_feedback": execution_feedback,
             "execution_feedback_by_family": execution_feedback_by_family,
             "dynamic_eligibility_gates": dynamic_eligibility_gates,
             "route_policy_state_by_key": dict(self.route_policy_state_by_key),
+            "market_probation_state_by_market_id": market_probation_state_by_market_id,
         }
 
 
@@ -551,3 +563,19 @@ def _market_family_key(snapshot: MarketSnapshot) -> str | None:
     else:
         return None
     return f"{underlying}:{event_family}"
+
+
+def _market_probation_state_by_market_id(
+    *,
+    snapshots: Sequence[MarketSnapshot],
+    recent_events: Sequence[dict[str, object]],
+    as_of: datetime,
+) -> dict[str, CryptoMarketProbationState]:
+    result: dict[str, CryptoMarketProbationState] = {}
+    for snapshot in snapshots:
+        result[snapshot.market_id] = summarize_market_probation_state_from_events(
+            market_id=snapshot.market_id,
+            recent_events=recent_events,
+            as_of=as_of,
+        )
+    return result

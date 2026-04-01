@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v108b-afterfix-selective-taker-open-prem400",
+  "events_recorded": 2489,
+  "generated_at": "2026-03-27T12:35:39.483000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 409
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 329,
+  "output_dir": "data\\research\\crypto-phase2-suite-profile-v108b-overnight-20260401\\replay-unfiltered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 409,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-longtail.v58.overnight.20260327.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 80
+  },
+  "submitted_orders": 80,
+  "today_pnl": 0.7841600000000009,
+  "total_equity": 25.78416
+}

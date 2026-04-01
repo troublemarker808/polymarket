@@ -69,6 +69,9 @@ class CryptoPhase2ReplayDigest:
     medium_bucket_pnl_per_notional: float
     large_bucket_pnl_per_notional: float
     execution_feedback_bias: str
+    top_loss_trades: tuple[dict[str, Any], ...]
+    top_loss_market_breakdown: tuple[dict[str, Any], ...]
+    top_loss_signature_breakdown: tuple[dict[str, Any], ...]
 
 
 @dataclass(slots=True, frozen=True)
@@ -147,6 +150,12 @@ async def run_crypto_phase2_suite(
             readiness_score=0.0,
             execution_quality="unknown",
             evidence_status="pending",
+            route_stage_acceptance_decision="review",
+            route_stage_failed_stages=("scan_quality",),
+            route_stage_statuses={"scan_quality": "review"},
+            route_stage_blockers={"scan_quality": ("pending final scorecard",)},
+            dominant_route_stage_blocker="pending final scorecard",
+            next_constrained_action="complete final scorecard synthesis before tuning decisions.",
             reasons=("pending final scorecard",),
             blocked_series_keys=(),
             filtered_orders=0,
@@ -205,6 +214,13 @@ async def run_crypto_phase2_suite(
             promotion_max_execution_loss_ratio=0.65,
             promotion_min_pnl_per_notional=0.0,
             observed_execution_loss_ratio=0.0,
+            promotion_max_single_loss_pnl=-0.2,
+            promotion_max_top3_loss_concentration_ratio=0.75,
+            observed_max_single_loss_pnl=0.0,
+            observed_top3_loss_concentration_ratio=0.0,
+            top_loss_trades=(),
+            top_loss_market_breakdown=(),
+            top_loss_signature_breakdown=(),
         ),
     )
     result = CryptoPhase2SuiteResult(
@@ -287,6 +303,9 @@ def format_crypto_phase2_suite_result(result: CryptoPhase2SuiteResult) -> str:
                 f"- medium_bucket_pnl_per_notional: {replay.medium_bucket_pnl_per_notional:.6f}",
                 f"- large_bucket_pnl_per_notional: {replay.large_bucket_pnl_per_notional:.6f}",
                 f"- execution_feedback_bias: {replay.execution_feedback_bias}",
+                f"- top_loss_trades: {json.dumps(list(replay.top_loss_trades), ensure_ascii=True)}",
+                f"- top_loss_market_breakdown: {json.dumps(list(replay.top_loss_market_breakdown), ensure_ascii=True)}",
+                f"- top_loss_signature_breakdown: {json.dumps(list(replay.top_loss_signature_breakdown), ensure_ascii=True)}",
                 "",
             ]
         )
@@ -304,6 +323,10 @@ def format_crypto_phase2_suite_result(result: CryptoPhase2SuiteResult) -> str:
             f"- readiness_score: {result.final_scorecard.readiness_score:.4f}",
             f"- execution_quality: {result.final_scorecard.execution_quality}",
             f"- evidence_status: {result.final_scorecard.evidence_status}",
+            f"- route_stage_acceptance_decision: {result.final_scorecard.route_stage_acceptance_decision}",
+            f"- route_stage_failed_stages: {', '.join(result.final_scorecard.route_stage_failed_stages) if result.final_scorecard.route_stage_failed_stages else 'none'}",
+            f"- dominant_route_stage_blocker: {result.final_scorecard.dominant_route_stage_blocker or 'none'}",
+            f"- next_constrained_action: {result.final_scorecard.next_constrained_action}",
             f"- promotion_decision: {result.final_scorecard.promotion_decision}",
             f"- promotion_stage_label: {result.final_scorecard.promotion_stage_label}",
             f"- promotion_blocking_reasons: {', '.join(result.final_scorecard.promotion_blocking_reasons) if result.final_scorecard.promotion_blocking_reasons else 'none'}",
@@ -370,10 +393,13 @@ def _load_replay_digest(label: str, output_dir: Path) -> CryptoPhase2ReplayDiges
         medium_bucket_pnl_per_notional=float(execution_feedback["medium_bucket_pnl_per_notional"]),
         large_bucket_pnl_per_notional=float(execution_feedback["large_bucket_pnl_per_notional"]),
         execution_feedback_bias=str(execution_feedback["execution_feedback_bias"]),
+        top_loss_trades=tuple(execution_feedback["top_loss_trades"]),
+        top_loss_market_breakdown=tuple(execution_feedback["top_loss_market_breakdown"]),
+        top_loss_signature_breakdown=tuple(execution_feedback["top_loss_signature_breakdown"]),
     )
 
 
-def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
+def _load_execution_feedback(events_path: Path) -> dict[str, Any]:
     if not events_path.exists():
         return {
             "maker_fill_rate": 0.0,
@@ -404,6 +430,9 @@ def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
             "medium_bucket_pnl_per_notional": 0.0,
             "large_bucket_pnl_per_notional": 0.0,
             "execution_feedback_bias": "stable",
+            "top_loss_trades": [],
+            "top_loss_market_breakdown": [],
+            "top_loss_signature_breakdown": [],
         }
 
     maker_submitted = 0
@@ -431,8 +460,14 @@ def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
     intent_matched_notional: dict[str, float] = {}
     intent_closed_pnl: dict[str, float] = {}
     intent_bucket: dict[str, str] = {}
+    intent_metadata: dict[str, dict[str, str]] = {}
     bucket_submitted_notional = {"small": 0.0, "medium": 0.0, "large": 0.0}
     bucket_closed_pnl = {"small": 0.0, "medium": 0.0, "large": 0.0}
+    top_loss_candidates: list[dict[str, Any]] = []
+    market_loss_totals: dict[str, float] = {}
+    market_loss_counts: dict[str, int] = {}
+    signature_loss_totals: dict[str, float] = {}
+    signature_loss_counts: dict[str, int] = {}
 
     for raw_line in events_path.read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
@@ -476,6 +511,19 @@ def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
                 taker_submitted += 1
             else:
                 maker_submitted += 1
+            if intent_id:
+                signal_type = str(diagnostics.get("signal_type", "unknown") or "unknown").strip() or "unknown"
+                execution_route = str(diagnostics.get("execution_route", "unknown") or "unknown").strip() or "unknown"
+                phase2_preset = str(diagnostics.get("phase2_preset", "unknown") or "unknown").strip() or "unknown"
+                intent_metadata[intent_id] = {
+                    "signal_type": signal_type,
+                    "execution_route": execution_route,
+                    "phase2_preset": phase2_preset,
+                    "side": str(payload.get("side", "unknown") or "unknown").strip() or "unknown",
+                    "market_id": str(payload.get("market_id", "unknown") or "unknown").strip() or "unknown",
+                    "underlying_group_id": str(payload.get("underlying_group_id", "unknown") or "unknown").strip() or "unknown",
+                    "thesis_group_id": str(payload.get("thesis_group_id", "unknown") or "unknown").strip() or "unknown",
+                }
         elif event_type in {"order.filled", "order.partially_filled"}:
             fill_source = str(payload.get("fill_source", "")).lower()
             if fill_source == "taker":
@@ -526,9 +574,38 @@ def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
                 bucket_closed_pnl[closed_bucket] += net_pnl
             if intent_id:
                 intent_closed_pnl[intent_id] = intent_closed_pnl.get(intent_id, 0.0) + net_pnl
+            metadata = intent_metadata.get(intent_id, {})
+            market_id = str(payload.get("market_id", metadata.get("market_id", "unknown")) or "unknown")
+            signal_type = metadata.get("signal_type", "unknown")
+            execution_route = metadata.get("execution_route", "unknown")
+            phase2_preset = metadata.get("phase2_preset", "unknown")
+            side = metadata.get("side", "unknown")
+            underlying_group_id = str(payload.get("underlying_group_id", metadata.get("underlying_group_id", "unknown")) or "unknown")
+            thesis_group_id = str(payload.get("thesis_group_id", metadata.get("thesis_group_id", "unknown")) or "unknown")
+            signature = "|".join((signal_type, execution_route, phase2_preset, side))
             if net_pnl < 0:
                 negative_closed_trades += 1
                 total_negative_trade_pnl += net_pnl
+                market_loss_totals[market_id] = market_loss_totals.get(market_id, 0.0) + abs(net_pnl)
+                market_loss_counts[market_id] = market_loss_counts.get(market_id, 0) + 1
+                signature_loss_totals[signature] = signature_loss_totals.get(signature, 0.0) + abs(net_pnl)
+                signature_loss_counts[signature] = signature_loss_counts.get(signature, 0) + 1
+                top_loss_candidates.append(
+                    {
+                        "intent_id": intent_id or "unknown",
+                        "market_id": market_id,
+                        "net_pnl": round(net_pnl, 6),
+                        "abs_loss": round(abs(net_pnl), 6),
+                        "signal_type": signal_type,
+                        "execution_route": execution_route,
+                        "phase2_preset": phase2_preset,
+                        "side": side,
+                        "underlying_group_id": underlying_group_id,
+                        "thesis_group_id": thesis_group_id,
+                        "signature": signature,
+                        "closed_at": str(payload.get("closed_at", "") or ""),
+                    }
+                )
             elif net_pnl > 0:
                 positive_closed_trades += 1
                 total_positive_trade_pnl += net_pnl
@@ -613,6 +690,24 @@ def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
         execution_feedback_bias = "more_aggressive"
     else:
         execution_feedback_bias = "stable"
+    top_loss_trades = sorted(
+        top_loss_candidates,
+        key=lambda item: (float(item["net_pnl"]), str(item["market_id"]), str(item["intent_id"])),
+    )[:3]
+    top_loss_market_breakdown = [
+        {"market_id": market_id, "total_abs_loss": round(total_abs_loss, 6), "loss_count": market_loss_counts[market_id]}
+        for market_id, total_abs_loss in sorted(
+            market_loss_totals.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:5]
+    ]
+    top_loss_signature_breakdown = [
+        {"signature": signature, "total_abs_loss": round(total_abs_loss, 6), "loss_count": signature_loss_counts[signature]}
+        for signature, total_abs_loss in sorted(
+            signature_loss_totals.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:5]
+    ]
     return {
         "maker_fill_rate": round(maker_fill_rate, 4),
         "taker_fill_rate": round(taker_fill_rate, 4),
@@ -642,6 +737,9 @@ def _load_execution_feedback(events_path: Path) -> dict[str, float | str]:
         "medium_bucket_pnl_per_notional": round(medium_bucket_pnl_per_notional, 6),
         "large_bucket_pnl_per_notional": round(large_bucket_pnl_per_notional, 6),
         "execution_feedback_bias": execution_feedback_bias,
+        "top_loss_trades": top_loss_trades,
+        "top_loss_market_breakdown": top_loss_market_breakdown,
+        "top_loss_signature_breakdown": top_loss_signature_breakdown,
     }
 
 

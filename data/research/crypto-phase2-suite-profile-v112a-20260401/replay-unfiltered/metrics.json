@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v112a-reach-fast-expire-aggr-taker",
+  "events_recorded": 2084,
+  "generated_at": "2026-03-27T12:42:24.801000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 55
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 4,
+  "output_dir": "data\\research\\crypto-phase2-suite-profile-v112a-20260401\\replay-unfiltered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 55,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-longtail.v58.20260327.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 44
+  },
+  "submitted_orders": 44,
+  "today_pnl": -0.6756635907400006,
+  "total_equity": 24.32433640926
+}

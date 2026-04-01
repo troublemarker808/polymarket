@@ -1,0 +1,42 @@
+{
+  "next_working_preset": "baseline",
+  "ready_to_apply": false,
+  "promotion_decision": "keep_baseline",
+  "promotion_reason": "baseline remains the strongest current working preset",
+  "recurring_targeted_improvement": 0.0,
+  "strategy_state": "quarantined",
+  "strategy_state_reason": "candidate fails to improve losses, pnl, edge capture, or loss-trade asymmetry",
+  "lifecycle": {
+    "working_preset": "baseline",
+    "candidate_presets": [
+      "pricing_higher_edge_filter",
+      "pricing_wider_confidence_gate",
+      "pricing_capture_high_confidence",
+      "pricing_repricing_capture_guard",
+      "pricing_realization_gap_guard"
+    ],
+    "retired_presets": [],
+    "promotion_decision": "keep_baseline",
+    "promotion_reason": "baseline remains the strongest current working preset",
+    "next_working_preset": "baseline",
+    "apply_ready": false,
+    "strategy_state": "candidate",
+    "strategy_state_reason": "strategy state pending version comparison"
+  },
+  "evidence": {
+    "report_count": 3,
+    "winning_variant": "none",
+    "ready_to_apply": false,
+    "recurring_promotion_target": "none",
+    "recurring_promotion_count": 0,
+    "recurring_targeted_improvement": 0.0,
+    "recurring_exit_asymmetry_improvement": 0.0,
+    "recurring_size_concentration_improvement": 0.0,
+    "blockers": [
+      "same candidate has not won enough repeated auto-experiments",
+      "targeted loss improvement is not strong enough across repeated auto-experiments"
+    ],
+    "warnings": []
+  },
+  "patch": {}
+}

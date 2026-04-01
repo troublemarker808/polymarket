@@ -102,6 +102,7 @@ from pm_bot.research import (
     format_paper_integrity_report,
     format_replay_determinism_report,
     format_window_mining_report,
+    format_autoresearch_candidate_ranking,
     format_autoresearch_report,
     format_research_summary,
     generate_crypto_signal_report,
@@ -114,6 +115,7 @@ from pm_bot.research import (
     run_fixed_window_experiments,
     run_phase1_replay,
     run_replay,
+    rank_autoresearch_candidates,
     write_crypto_family_export_result,
     write_crypto_signal_report,
     write_crypto_window_family_report,
@@ -344,6 +346,7 @@ def main() -> None:
             "run-paper-crypto-session",
             "compare-execution-metrics",
             "autoresearch-report",
+            "autoresearch-compare",
             "mine-fixed-windows",
             "run-fixed-window-experiments",
             "check-paper-integrity",
@@ -458,6 +461,32 @@ def main() -> None:
         "--promotion-scorecard-path",
         default=None,
         help="Optional crypto phase2 final_scorecard.json path used to include promotion gate status in autoresearch reports.",
+    )
+    parser.add_argument(
+        "--promotion-scorecard-paths",
+        nargs="+",
+        default=None,
+        help="Optional scorecard paths aligned to --bundle-paths for autoresearch-compare.",
+    )
+    parser.add_argument(
+        "--window-set-id",
+        default=None,
+        help="Optional window-set id recorded into autoresearch reports for comparability checks.",
+    )
+    parser.add_argument(
+        "--variant-id",
+        default=None,
+        help="Optional candidate variant id recorded into autoresearch reports.",
+    )
+    parser.add_argument(
+        "--evidence-tier",
+        default=None,
+        help="Optional evidence tier label (e.g. replay, paper) recorded into autoresearch reports.",
+    )
+    parser.add_argument(
+        "--loop-stage-set",
+        default=None,
+        help="Optional loop-stage-set label recorded into autoresearch reports for closure-protocol comparability.",
     )
     parser.add_argument(
         "--shadow-state-path",
@@ -1386,10 +1415,36 @@ def main() -> None:
             event_path=args.event_path,
             state_path=args.state_path if args.state_path else None,
             promotion_scorecard_path=args.promotion_scorecard_path if args.promotion_scorecard_path else None,
+            window_set_id=args.window_set_id if args.window_set_id else None,
+            variant_id=args.variant_id if args.variant_id else None,
+            evidence_tier=args.evidence_tier if args.evidence_tier else None,
+            loop_stage_set=args.loop_stage_set if args.loop_stage_set else None,
         )
         if args.report_path is not None:
             write_autoresearch_report(autoresearch_report, args.report_path)
         print(format_autoresearch_report(autoresearch_report))
+    elif args.command == "autoresearch-compare":
+        if not args.bundle_paths:
+            parser.error("--bundle-paths is required for autoresearch-compare")
+        reports = []
+        for index, metrics_path in enumerate(args.bundle_paths):
+            promotion_scorecard_path = None
+            if args.promotion_scorecard_paths and index < len(args.promotion_scorecard_paths):
+                promotion_scorecard_path = args.promotion_scorecard_paths[index]
+            report = generate_autoresearch_report(
+                metrics_path=metrics_path,
+                promotion_scorecard_path=promotion_scorecard_path,
+                window_set_id=args.window_set_id if args.window_set_id else None,
+                evidence_tier=args.evidence_tier if args.evidence_tier else None,
+                loop_stage_set=args.loop_stage_set if args.loop_stage_set else None,
+            )
+            reports.append(report)
+        ranking = rank_autoresearch_candidates(reports=tuple(reports))
+        rendered = format_autoresearch_candidate_ranking(ranking)
+        if args.report_path is not None:
+            Path(args.report_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.report_path).write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
     elif args.command == "check-paper-integrity":
         if args.metrics_path is None:
             parser.error("--metrics-path is required for check-paper-integrity")

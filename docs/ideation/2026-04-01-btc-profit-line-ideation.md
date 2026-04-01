@@ -106,3 +106,67 @@ focus: strengthen BTC crypto line for profitability-first progression
 ## Session Log
 
 - 2026-04-01: Initial BTC-profit ideation - 27 candidates generated, 7 survived.
+- 2026-04-01: Refinement pass (replace largest loss trade) - 18 candidates generated, 6 survived.
+
+## Refinement Pass: Replace Largest Loss Trade
+
+### 1. Counterfactual Entry Replacement Gate
+**Description:** Before opening a BTC trade, score the current candidate against 1-2 best alternative markets in the same snapshot and only open if it is top-ranked by downside-adjusted expected value.
+**Rationale:** Current bottleneck is a few repeated high-loss trades (not broad signal scarcity). Replacing bad entries with better contemporaneous alternatives is higher leverage than tuning exits on the same bad entry.
+**Downsides:** Needs low-latency in-strategy scoring and careful tie-break logic to avoid over-filtering.
+**Confidence:** 93%
+**Complexity:** Medium
+**Status:** Unexplored
+
+### 2. Market-Level Probation With Graduated Reinstatement
+**Description:** Add per-market probation states (`active -> probation -> quarantined`) using recent realized loss clusters and re-enable only after replay-validated recovery criteria.
+**Rationale:** Existing cooldown/quarantine is broad; repeated offenders can still come back too quickly. A market-specific rehabilitation path directly targets recurring outliers like current top loss markets.
+**Downsides:** If criteria are too strict, trade count can collapse.
+**Confidence:** 91%
+**Complexity:** Medium
+**Status:** Unexplored
+
+### 3. Family-Aware Trade Budget Router (Reach vs Dip)
+**Description:** Allocate a dynamic per-family trade budget each run and force routing toward the family with better recent edge-capture quality instead of taking whichever signal appears first.
+**Rationale:** Current losses cluster by family behavior. Budget routing improves replacement quality while preserving `closed>=3`.
+**Downsides:** Misestimated family quality may temporarily suppress profitable opportunities.
+**Confidence:** 87%
+**Complexity:** Medium
+**Status:** Unexplored
+
+### 4. Exit Replay Micro-Policy (Per-Market Exit Mode Memory)
+**Description:** Persist per-market exit outcomes (`IOC fill`, `passive expired`, `adverse reversal`) and choose initial exit mode from recent market-specific success profile.
+**Rationale:** Existing global exit policy oscillates between preserving trade count and reducing slippage. Market-level memory can reduce repeated wrong first-exit choices.
+**Downsides:** Adds state complexity and potential stale-policy risk across regime shifts.
+**Confidence:** 84%
+**Complexity:** Medium
+**Status:** Unexplored
+
+### 5. Notional Haircut for Fragile Closers
+**Description:** Apply automatic size haircut on markets with poor close efficiency (high time-stop share + high passive expiry rate), while keeping full size on stable closers.
+**Rationale:** If bad trades cannot be fully removed yet, shrinking their blast radius improves PnL distribution without losing all closures.
+**Downsides:** May slow upside if market quality recovers quickly.
+**Confidence:** 86%
+**Complexity:** Low
+**Status:** Unexplored
+
+### 6. Replay-Driven “Do Not Re-Enter Same Signature” Filter
+**Description:** Fingerprint high-loss entries by microstructure signature (spread band, depth, quote age, premium bucket) and block re-entry of matching signatures for a cooling horizon.
+**Rationale:** Current logic blocks by market/time, but many losses repeat by condition pattern. Signature-level suppression targets root recurrence.
+**Downsides:** Signature design can overfit if too granular.
+**Confidence:** 82%
+**Complexity:** High
+**Status:** Unexplored
+
+## Refinement Rejection Summary
+
+| # | Idea | Reason Rejected |
+|---|------|-----------------|
+| 1 | Continue broad threshold sweeps only | Already plateaued across multiple runs, low incremental value. |
+| 2 | Force all time-stop exits to IOC | Helps closure count but repeatedly worsens slippage on some markets. |
+| 3 | Open selective taker globally | Reintroduced severe outlier losses in dip markets. |
+| 4 | Remove reentry blocks to raise count | Increases repeated low-quality churn and tail risk. |
+| 5 | Raise default notional to dilute fixed costs | Multiplies drawdown on current fragile entry set. |
+| 6 | Merge reach/dip into one unified preset | Conflicts with observed family-specific behavior. |
+| 7 | Purely extend passive TTL everywhere | Does not reliably improve filtered PnL and can reduce closure certainty. |
+| 8 | Drop closed-trade count gate from evaluation | Hides stability risk rather than solving it. |

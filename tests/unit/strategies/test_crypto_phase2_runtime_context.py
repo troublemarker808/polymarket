@@ -24,6 +24,7 @@ def test_crypto_phase2_paper_context_builder_generates_fair_values_and_static_se
     blocked_market_ids = context["blocked_market_ids"]
     blocked_market_reasons = context["blocked_market_reasons"]
     market_selection_actions = context["market_selection_actions"]
+    scan_identify_diagnostics = context["scan_identify_diagnostics"]
 
     assert {"1339767", "1339768", "701502"} <= set(fair_values_by_market_id)
     assert "what-price-will-bitcoin-hit-before-2027" not in blocked_series_keys
@@ -33,8 +34,14 @@ def test_crypto_phase2_paper_context_builder_generates_fair_values_and_static_se
         for reason in ("execution_no_fill", "stale_quote", "negative_edge")
     )
     assert market_selection_actions["701495"] == "watch_market"
+    assert scan_identify_diagnostics["scan_total_market_count"] >= 1
+    assert "identify_required_fields" in scan_identify_diagnostics
+    assert "identify_complete_market_count" in scan_identify_diagnostics
     assert context["position_intents_by_market_id"] == {}
     assert context["reentry_state_by_market_id"] == {}
+    probation_state_by_market = context["market_probation_state_by_market_id"]
+    assert "1339768" in probation_state_by_market
+    assert probation_state_by_market["1339768"].state in {"active", "probation", "quarantined", "recovery"}
 
 
 def test_crypto_phase2_paper_context_builder_updates_reentry_state_from_closed_loss() -> None:

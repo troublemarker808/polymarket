@@ -181,12 +181,20 @@ Primary code targets:
 
 Acceptance criteria:
 
-- Final scorecard JSON includes machine-readable promotion decision, stage label, blocking reasons, thresholds, and observed execution-loss ratio.
+- Final scorecard JSON includes machine-readable promotion decision, stage label, blocking reasons, thresholds, and observed values for:
+  - execution-loss ratio
+  - max single-loss bound
+  - top-3 loss concentration ratio
 - Gate semantics satisfy:
   - `pause` when runtime status is halted.
-  - `review` when evidence is insufficient or profitability/edge-capture thresholds are not met.
+  - `review` when evidence is insufficient, profitability/edge-capture thresholds are not met, or tail-loss gates fail.
   - `proceed` only when all BTC gate thresholds pass.
 - CLI final report output includes promotion decision fields.
+- Final scorecard additionally includes route-stage acceptance fields and stage-level blockers:
+  - `route_stage_acceptance_decision`
+  - `route_stage_failed_stages`
+  - `route_stage_statuses`
+  - `route_stage_blockers`
 
 Resolution evidence:
 
@@ -196,3 +204,10 @@ Resolution evidence:
   - `tests/unit/research/test_autoresearch.py`
 - Integration test:
   - `tests/integration/test_cli_research.py::test_cli_crypto_phase2_final_report_prints_btc_promotion_gate_payload`
+- Route-stage gate coverage:
+  - `tests/unit/strategies/test_crypto_phase2_final_report.py`
+  - `tests/unit/strategies/test_crypto_phase2_suite.py`
+  - `tests/unit/research/test_autoresearch.py`
+- Protocol comparability baseline lock:
+  - `src/pm_bot/research/autoresearch.py` now emits `window_set_id`, `variant_id`, `evidence_tier`
+  - mixed-window comparison blockers are now machine-evaluable via `evaluate_report_comparability(...)`

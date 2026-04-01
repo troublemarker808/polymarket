@@ -9,6 +9,7 @@ from pm_bot.core.types import Category, MarketSnapshot, SignalSide
 from pm_bot.strategies.crypto.phase2 import (
     build_order_intent,
     classify_crypto_signal,
+    counterfactual_entry_score,
     evaluate_trade_eligibility,
     route_execution,
 )
@@ -26,6 +27,23 @@ def test_classify_crypto_signal_identifies_repricing_edge_for_short_half_life() 
     assert classification.side == SignalSide.BUY_YES
     assert classification.expected_exit_mode == "fair_value_reversion"
     assert classification.urgency_score == 0.77
+
+
+def test_counterfactual_entry_score_penalizes_spread_and_rewards_edge_confidence() -> None:
+    weak_score = counterfactual_entry_score(
+        net_edge_bps=180.0,
+        confidence=0.62,
+        urgency_score=0.55,
+        spread_bps=180.0,
+    )
+    strong_score = counterfactual_entry_score(
+        net_edge_bps=320.0,
+        confidence=0.78,
+        urgency_score=0.72,
+        spread_bps=90.0,
+    )
+
+    assert strong_score > weak_score
 
 
 def test_evaluate_trade_eligibility_rejects_low_net_edge_case() -> None:

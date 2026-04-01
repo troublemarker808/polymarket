@@ -14,6 +14,7 @@ from pm_bot.strategies.crypto.phase2 import (
     classify_crypto_signal,
     evaluate_exit,
     is_reentry_blocked,
+    summarize_market_probation_state_from_events,
     summarize_execution_feedback,
     summarize_execution_feedback_from_events,
     update_route_policy_state,
@@ -546,6 +547,127 @@ def test_evaluate_exit_holds_for_fresh_fill_even_when_adverse_reversal_would_tri
     assert exit_decision.reason == "fresh_fill_hold"
 
 
+def test_evaluate_exit_escalated_tail_guard_triggers_earlier_adverse_reversal() -> None:
+    fair_value = FairValueEstimate(
+        market_id="btc-reach-1000",
+        category=Category.CRYPTO,
+        fair_probability=0.37,
+        confidence=0.72,
+        half_life_seconds=3600,
+        observed_probability=0.34,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model",),
+        supporting_values={"net_edge_bps": 600.0, "gross_edge_bps": 700.0},
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    created_at = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-reach-1000-yes",
+        created_at=created_at,
+        entry_fill_price=0.37,
+        entry_mid_price=0.365,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="btc-reach-1000",
+        token_id="btc-reach-1000-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2.execution",
+        notional=5.0,
+        opened_at=created_at,
+        shares=13.5,
+        average_entry_price=0.37,
+        mark_price=0.368,
+    )
+
+    baseline = evaluate_exit(
+        fair_value=fair_value,
+        position=position,
+        intent=intent,
+        best_bid_yes=0.368,
+        best_bid_no=0.632,
+        as_of=created_at + timedelta(seconds=5),
+        exit_edge_bps=0.0,
+        adverse_fill_exit_bps=75.0,
+        adverse_fill_max_remaining_edge_bps=150.0,
+    )
+    guarded = evaluate_exit(
+        fair_value=fair_value,
+        position=position,
+        intent=intent,
+        best_bid_yes=0.368,
+        best_bid_no=0.632,
+        as_of=created_at + timedelta(seconds=5),
+        exit_edge_bps=0.0,
+        adverse_fill_exit_bps=75.0,
+        adverse_fill_max_remaining_edge_bps=150.0,
+        escalated_entry_tail_guard_enabled=True,
+        escalated_entry_adverse_fill_exit_bps=50.0,
+        escalated_entry_adverse_fill_max_remaining_edge_bps=300.0,
+    )
+
+    assert not baseline.should_exit
+    assert baseline.reason == "hold"
+    assert guarded.should_exit
+    assert guarded.reason == "adverse_fill_reversal"
+
+
+def test_evaluate_exit_escalated_tail_guard_does_not_overtrigger_on_mild_move() -> None:
+    fair_value = FairValueEstimate(
+        market_id="btc-reach-1000",
+        category=Category.CRYPTO,
+        fair_probability=0.37,
+        confidence=0.72,
+        half_life_seconds=3600,
+        observed_probability=0.34,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model",),
+        supporting_values={"net_edge_bps": 600.0, "gross_edge_bps": 700.0},
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    created_at = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-reach-1000-yes",
+        created_at=created_at,
+        entry_fill_price=0.37,
+        entry_mid_price=0.365,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="btc-reach-1000",
+        token_id="btc-reach-1000-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2.execution",
+        notional=5.0,
+        opened_at=created_at,
+        shares=13.5,
+        average_entry_price=0.37,
+        mark_price=0.3689,
+    )
+
+    guarded = evaluate_exit(
+        fair_value=fair_value,
+        position=position,
+        intent=intent,
+        best_bid_yes=0.3689,
+        best_bid_no=0.6311,
+        as_of=created_at + timedelta(seconds=5),
+        exit_edge_bps=0.0,
+        adverse_fill_exit_bps=75.0,
+        adverse_fill_max_remaining_edge_bps=150.0,
+        escalated_entry_tail_guard_enabled=True,
+        escalated_entry_adverse_fill_exit_bps=50.0,
+        escalated_entry_adverse_fill_max_remaining_edge_bps=300.0,
+    )
+
+    assert not guarded.should_exit
+    assert guarded.reason == "hold"
+
+
 def test_update_reentry_state_blocks_after_stop_loss() -> None:
     market_id = "eth-dip-1000"
     now = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
@@ -724,6 +846,100 @@ def test_update_route_policy_state_respects_cooldown_and_does_not_oscillate() ->
     )
 
     assert second.route_bias == "more_aggressive"
+
+
+def test_summarize_market_probation_state_promotes_probation_and_quarantine() -> None:
+    now = datetime(2026, 3, 28, 0, 5, tzinfo=timezone.utc)
+    recent_events = (
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": -0.3,
+                "closed_at": "2026-03-28T00:01:00+00:00",
+            },
+        },
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": -0.2,
+                "closed_at": "2026-03-28T00:02:00+00:00",
+            },
+        },
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": -0.1,
+                "closed_at": "2026-03-28T00:03:00+00:00",
+            },
+        },
+    )
+
+    state = summarize_market_probation_state_from_events(
+        market_id="eth-dip-1000",
+        recent_events=recent_events,
+        as_of=now,
+        loss_streak_for_probation=2,
+        loss_streak_for_quarantine=3,
+        recovery_win_streak_required=2,
+        cooldown_seconds=300.0,
+    )
+
+    assert state.state == "quarantined"
+    assert state.recent_loss_streak == 3
+    assert state.blocked_until is not None
+
+
+def test_summarize_market_probation_state_recovers_after_win_streak() -> None:
+    now = datetime(2026, 3, 28, 0, 10, tzinfo=timezone.utc)
+    recent_events = (
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": -0.3,
+                "closed_at": "2026-03-28T00:01:00+00:00",
+            },
+        },
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": 0.2,
+                "closed_at": "2026-03-28T00:08:00+00:00",
+            },
+        },
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": 0.1,
+                "closed_at": "2026-03-28T00:09:00+00:00",
+            },
+        },
+    )
+
+    state = summarize_market_probation_state_from_events(
+        market_id="eth-dip-1000",
+        recent_events=recent_events,
+        as_of=now,
+        loss_streak_for_probation=2,
+        loss_streak_for_quarantine=3,
+        recovery_win_streak_required=2,
+        cooldown_seconds=60.0,
+    )
+
+    assert state.state == "recovery"
+    assert state.recent_win_streak == 2
+    assert state.blocked_until is None
 
 
 def _fair_value(case_key: str) -> FairValueEstimate:

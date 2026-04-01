@@ -5,10 +5,13 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from pm_bot.research.engine import ResearchRecorder, load_market_snapshots
 from pm_bot.strategies.crypto.phase1.baseline import get_locked_crypto_calibration_baseline_preset
 from pm_bot.strategies.crypto.phase1.inputs import build_underlying_state
 from pm_bot.strategies.crypto.phase1.models import CryptoBarrierModelConfig, CryptoFusionModelConfig
 from pm_bot.strategies.crypto.phase2.replay import (
+    _runtime_blocked_selection,
+    _runtime_selection_no_fill_overrides,
     compute_crypto_phase2_fair_values,
     run_crypto_phase2_replay,
 )
@@ -195,3 +198,57 @@ def test_run_crypto_phase2_replay_applies_series_filter_to_btc_runtime_fixture(t
     assert metrics["signals_generated"] >= 1
     assert metrics["submitted_orders"] >= 1
     assert all(event["payload"].get("market_id") != "701495" for event in events if event["event_type"] == "signal.generated")
+
+
+def test_runtime_selection_no_fill_overrides_parses_and_clamps_strategy_config_values() -> None:
+    overrides = _runtime_selection_no_fill_overrides(
+        {
+            "runtime_selection_no_fill_min_expired_orders_btc_reach": "2",
+            "runtime_selection_no_fill_min_expired_orders_btc_dip": 0,
+            "runtime_selection_no_fill_min_expired_orders_default": "invalid",
+        }
+    )
+
+    assert overrides == {
+        "BTC:reach": 2,
+        "BTC:dip": 1,
+    }
+
+
+def test_runtime_blocked_selection_emits_scan_identify_diagnostics(tmp_path: Path) -> None:
+    snapshots = load_market_snapshots(FIXTURE_BTC_RUNTIME)
+    recorder = ResearchRecorder(
+        path=tmp_path / "events.jsonl",
+        metrics_path=tmp_path / "engine.metrics.json",
+    )
+    underlying_states = {
+        "BTC": build_underlying_state(
+            underlying="BTC",
+            as_of=datetime.fromisoformat("2026-03-27T15:15:00+00:00"),
+            spot_price=79000.0,
+            daily_return=-0.028,
+            realized_volatility=0.58,
+            implied_volatility=0.66,
+        )
+    }
+    (
+        _blocked_series_keys,
+        _blocked_market_ids,
+        _blocked_series_reasons,
+        _blocked_market_reasons,
+        _market_selection_actions,
+        _market_selection_reasons,
+        scan_identify_diagnostics,
+    ) = _runtime_blocked_selection(
+        snapshots=snapshots,
+        snapshot_path=FIXTURE_BTC_RUNTIME,
+        underlying_states=underlying_states,
+        recorder=recorder,
+        barrier_model_config=CryptoBarrierModelConfig(),
+        fusion_model_config=CryptoFusionModelConfig(),
+        runtime_policy_overrides=None,
+    )
+
+    assert scan_identify_diagnostics["scan_total_market_count"] >= 1
+    assert "identify_required_fields" in scan_identify_diagnostics
+    assert "identify_complete_market_count" in scan_identify_diagnostics

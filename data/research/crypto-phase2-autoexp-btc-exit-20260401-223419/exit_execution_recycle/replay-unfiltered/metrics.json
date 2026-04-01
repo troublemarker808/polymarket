@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/research-crypto-phase2-v1",
+  "events_recorded": 1981,
+  "generated_at": "2026-03-27T12:42:24.801000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 9
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_execution_recycle\\replay-unfiltered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-auto-exit_execution_recycle-unfiltered",
+  "signals_generated": 9,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-longtail.v58.20260327.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 9
+  },
+  "submitted_orders": 9,
+  "today_pnl": -0.18981559819999916,
+  "total_equity": 999.8101844018
+}

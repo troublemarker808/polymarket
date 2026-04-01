@@ -22,12 +22,26 @@ class _CryptoPromotionGateEvaluation:
     max_execution_loss_ratio: float
     min_pnl_per_notional: float
     observed_execution_loss_ratio: float
+    max_single_loss_pnl: float
+    max_top3_loss_concentration_ratio: float
+    observed_max_single_loss_pnl: float
+    observed_top3_loss_concentration_ratio: float
+
+
+@dataclass(slots=True, frozen=True)
+class _CryptoRouteStageGateEvaluation:
+    acceptance_decision: str
+    statuses: dict[str, str]
+    blockers: dict[str, tuple[str, ...]]
+    failed_stages: tuple[str, ...]
 
 
 _PROMOTION_MIN_CLOSED_TRADES = 3
 _PROMOTION_MIN_EDGE_CAPTURE_RATIO = 0.35
 _PROMOTION_MAX_EXECUTION_LOSS_RATIO = 0.65
 _PROMOTION_MIN_PNL_PER_NOTIONAL = 0.0
+_PROMOTION_MAX_SINGLE_LOSS_PNL = -0.20
+_PROMOTION_MAX_TOP3_LOSS_CONCENTRATION_RATIO = 0.75
 
 
 @dataclass(slots=True, frozen=True)
@@ -37,6 +51,12 @@ class CryptoPhase2FinalScorecard:
     readiness_score: float
     execution_quality: str
     evidence_status: str
+    route_stage_acceptance_decision: str
+    route_stage_failed_stages: tuple[str, ...]
+    route_stage_statuses: dict[str, str]
+    route_stage_blockers: dict[str, tuple[str, ...]]
+    dominant_route_stage_blocker: str | None
+    next_constrained_action: str
     reasons: tuple[str, ...]
     blocked_series_keys: tuple[str, ...]
     filtered_orders: int
@@ -95,6 +115,13 @@ class CryptoPhase2FinalScorecard:
     promotion_max_execution_loss_ratio: float
     promotion_min_pnl_per_notional: float
     observed_execution_loss_ratio: float
+    promotion_max_single_loss_pnl: float
+    promotion_max_top3_loss_concentration_ratio: float
+    observed_max_single_loss_pnl: float
+    observed_top3_loss_concentration_ratio: float
+    top_loss_trades: tuple[dict[str, Any], ...]
+    top_loss_market_breakdown: tuple[dict[str, Any], ...]
+    top_loss_signature_breakdown: tuple[dict[str, Any], ...]
 
 
 def build_crypto_phase2_final_scorecard(
@@ -125,7 +152,19 @@ def build_crypto_phase2_final_scorecard(
     if suite_result.selection_blocked_series_keys:
         reasons.append("selection filter still blocks runtime ladder families")
     promotion_gate = _evaluate_btc_promotion_gate(filtered=filtered)
-    recommended_action = promotion_gate.decision
+    route_stage_gate = _evaluate_route_stage_gates(
+        filtered=filtered,
+        unfiltered=unfiltered,
+        blocked_series_keys=suite_result.selection_blocked_series_keys,
+        promotion_gate=promotion_gate,
+        filter_order_delta=filter_order_delta,
+    )
+    recommended_action = _merge_decisions(route_stage_gate.acceptance_decision, promotion_gate.decision)
+    if route_stage_gate.failed_stages:
+        reasons.extend(
+            f"route stage blocked: {stage} ({', '.join(route_stage_gate.blockers.get(stage, ())) or 'unknown'})"
+            for stage in route_stage_gate.failed_stages
+        )
     if promotion_gate.blocking_reasons:
         reasons.extend(f"promotion gate blocked: {reason}" for reason in promotion_gate.blocking_reasons)
 
@@ -140,6 +179,10 @@ def build_crypto_phase2_final_scorecard(
         score -= 0.1
     if filter_order_delta < 0:
         score -= 0.05
+    if route_stage_gate.acceptance_decision == "pause":
+        score -= 0.2
+    elif route_stage_gate.acceptance_decision == "review":
+        score -= 0.1
     if promotion_gate.decision == "pause":
         score -= 0.2
     elif promotion_gate.decision == "review":
@@ -164,6 +207,8 @@ def build_crypto_phase2_final_scorecard(
         filtered=filtered,
         component_losses=component_losses,
     )
+    dominant_route_stage_blocker = _dominant_route_stage_blocker(route_stage_gate)
+    next_constrained_action = _next_constrained_action(route_stage_gate)
 
     return CryptoPhase2FinalScorecard(
         generated_at=suite_result.generated_at,
@@ -171,6 +216,12 @@ def build_crypto_phase2_final_scorecard(
         readiness_score=readiness_score,
         execution_quality=execution_quality,
         evidence_status=evidence_status,
+        route_stage_acceptance_decision=route_stage_gate.acceptance_decision,
+        route_stage_failed_stages=route_stage_gate.failed_stages,
+        route_stage_statuses=route_stage_gate.statuses,
+        route_stage_blockers=route_stage_gate.blockers,
+        dominant_route_stage_blocker=dominant_route_stage_blocker,
+        next_constrained_action=next_constrained_action,
         reasons=tuple(reasons) if reasons else ("filtered replay stable enough for continued promotion",),
         blocked_series_keys=suite_result.selection_blocked_series_keys,
         filtered_orders=filtered.submitted_orders,
@@ -229,6 +280,13 @@ def build_crypto_phase2_final_scorecard(
         promotion_max_execution_loss_ratio=promotion_gate.max_execution_loss_ratio,
         promotion_min_pnl_per_notional=promotion_gate.min_pnl_per_notional,
         observed_execution_loss_ratio=promotion_gate.observed_execution_loss_ratio,
+        promotion_max_single_loss_pnl=promotion_gate.max_single_loss_pnl,
+        promotion_max_top3_loss_concentration_ratio=promotion_gate.max_top3_loss_concentration_ratio,
+        observed_max_single_loss_pnl=promotion_gate.observed_max_single_loss_pnl,
+        observed_top3_loss_concentration_ratio=promotion_gate.observed_top3_loss_concentration_ratio,
+        top_loss_trades=filtered.top_loss_trades,
+        top_loss_market_breakdown=filtered.top_loss_market_breakdown,
+        top_loss_signature_breakdown=filtered.top_loss_signature_breakdown,
     )
 
 
@@ -240,6 +298,10 @@ def format_crypto_phase2_final_scorecard(scorecard: CryptoPhase2FinalScorecard) 
         f"- readiness_score: {scorecard.readiness_score:.4f}",
         f"- execution_quality: {scorecard.execution_quality}",
         f"- evidence_status: {scorecard.evidence_status}",
+        f"- route_stage_acceptance_decision: {scorecard.route_stage_acceptance_decision}",
+        f"- route_stage_failed_stages: {', '.join(scorecard.route_stage_failed_stages) if scorecard.route_stage_failed_stages else 'none'}",
+        f"- dominant_route_stage_blocker: {scorecard.dominant_route_stage_blocker or 'none'}",
+        f"- next_constrained_action: {scorecard.next_constrained_action}",
         f"- filtered_orders: {scorecard.filtered_orders}",
         f"- filtered_signals: {scorecard.filtered_signals}",
         f"- filtered_pnl: {scorecard.filtered_pnl:.6f}",
@@ -259,7 +321,24 @@ def format_crypto_phase2_final_scorecard(scorecard: CryptoPhase2FinalScorecard) 
         f"- promotion_max_execution_loss_ratio: {scorecard.promotion_max_execution_loss_ratio:.4f}",
         f"- promotion_min_pnl_per_notional: {scorecard.promotion_min_pnl_per_notional:.6f}",
         f"- observed_execution_loss_ratio: {scorecard.observed_execution_loss_ratio:.4f}",
+        f"- promotion_max_single_loss_pnl: {scorecard.promotion_max_single_loss_pnl:.6f}",
+        f"- promotion_max_top3_loss_concentration_ratio: {scorecard.promotion_max_top3_loss_concentration_ratio:.4f}",
+        f"- observed_max_single_loss_pnl: {scorecard.observed_max_single_loss_pnl:.6f}",
+        f"- observed_top3_loss_concentration_ratio: {scorecard.observed_top3_loss_concentration_ratio:.4f}",
         f"- promotion_blocking_reasons: {', '.join(scorecard.promotion_blocking_reasons) if scorecard.promotion_blocking_reasons else 'none'}",
+        "",
+        "## Route Stage Gates",
+        "",
+        f"- scan_quality: {scorecard.route_stage_statuses.get('scan_quality', 'unknown')}",
+        f"- scan_quality_blockers: {', '.join(scorecard.route_stage_blockers.get('scan_quality', ())) if scorecard.route_stage_blockers.get('scan_quality', ()) else 'none'}",
+        f"- selection_pass_through: {scorecard.route_stage_statuses.get('selection_pass_through', 'unknown')}",
+        f"- selection_pass_through_blockers: {', '.join(scorecard.route_stage_blockers.get('selection_pass_through', ())) if scorecard.route_stage_blockers.get('selection_pass_through', ()) else 'none'}",
+        f"- route_conversion_quality: {scorecard.route_stage_statuses.get('route_conversion_quality', 'unknown')}",
+        f"- route_conversion_quality_blockers: {', '.join(scorecard.route_stage_blockers.get('route_conversion_quality', ())) if scorecard.route_stage_blockers.get('route_conversion_quality', ()) else 'none'}",
+        f"- close_out_quality: {scorecard.route_stage_statuses.get('close_out_quality', 'unknown')}",
+        f"- close_out_quality_blockers: {', '.join(scorecard.route_stage_blockers.get('close_out_quality', ())) if scorecard.route_stage_blockers.get('close_out_quality', ()) else 'none'}",
+        f"- profitability_tail_risk: {scorecard.route_stage_statuses.get('profitability_tail_risk', 'unknown')}",
+        f"- profitability_tail_risk_blockers: {', '.join(scorecard.route_stage_blockers.get('profitability_tail_risk', ())) if scorecard.route_stage_blockers.get('profitability_tail_risk', ()) else 'none'}",
         "",
         "## Profit Components",
         "",
@@ -312,7 +391,13 @@ def format_crypto_phase2_final_scorecard(scorecard: CryptoPhase2FinalScorecard) 
     lines.extend(f"- {action}" for action in scorecard.tuning_actions)
     lines.extend(
         [
-            "",
+        "",
+        "## Top Loss Attribution",
+        "",
+        f"- top_loss_trades: {json.dumps(list(scorecard.top_loss_trades), ensure_ascii=True)}",
+        f"- top_loss_market_breakdown: {json.dumps(list(scorecard.top_loss_market_breakdown), ensure_ascii=True)}",
+        f"- top_loss_signature_breakdown: {json.dumps(list(scorecard.top_loss_signature_breakdown), ensure_ascii=True)}",
+        "",
         "## Reasons",
         "",
         ]
@@ -368,6 +453,12 @@ def _evaluate_btc_promotion_gate(
     observed_execution_loss_ratio = _execution_loss_ratio(filtered=filtered)
     if observed_execution_loss_ratio > _PROMOTION_MAX_EXECUTION_LOSS_RATIO:
         blocking_reasons.append("execution_loss_ratio_above_ceiling")
+    observed_max_single_loss_pnl = _max_single_loss_pnl(filtered=filtered)
+    if observed_max_single_loss_pnl < _PROMOTION_MAX_SINGLE_LOSS_PNL:
+        blocking_reasons.append("single_loss_breach")
+    observed_top3_loss_concentration_ratio = _top3_loss_concentration_ratio(filtered=filtered)
+    if observed_top3_loss_concentration_ratio > _PROMOTION_MAX_TOP3_LOSS_CONCENTRATION_RATIO:
+        blocking_reasons.append("top3_loss_concentration_above_ceiling")
     pnl_per_notional = (
         filtered.closed_trade_net_pnl / filtered.submitted_notional
         if filtered.submitted_notional > 0
@@ -390,7 +481,148 @@ def _evaluate_btc_promotion_gate(
         max_execution_loss_ratio=_PROMOTION_MAX_EXECUTION_LOSS_RATIO,
         min_pnl_per_notional=_PROMOTION_MIN_PNL_PER_NOTIONAL,
         observed_execution_loss_ratio=observed_execution_loss_ratio,
+        max_single_loss_pnl=_PROMOTION_MAX_SINGLE_LOSS_PNL,
+        max_top3_loss_concentration_ratio=_PROMOTION_MAX_TOP3_LOSS_CONCENTRATION_RATIO,
+        observed_max_single_loss_pnl=observed_max_single_loss_pnl,
+        observed_top3_loss_concentration_ratio=observed_top3_loss_concentration_ratio,
     )
+
+
+def _evaluate_route_stage_gates(
+    *,
+    filtered: "CryptoPhase2ReplayDigest",
+    unfiltered: "CryptoPhase2ReplayDigest",
+    blocked_series_keys: tuple[str, ...],
+    promotion_gate: _CryptoPromotionGateEvaluation,
+    filter_order_delta: int,
+) -> _CryptoRouteStageGateEvaluation:
+    statuses: dict[str, str] = {}
+    blockers: dict[str, tuple[str, ...]] = {}
+
+    scan_blockers: list[str] = []
+    if filtered.signals_generated <= 0:
+        scan_blockers.append("scan_no_signals")
+    if blocked_series_keys:
+        scan_blockers.append("scan_runtime_blocked_series")
+    statuses["scan_quality"] = _gate_status(scan_blockers)
+    blockers["scan_quality"] = tuple(scan_blockers)
+
+    selection_blockers: list[str] = []
+    if filtered.submitted_orders <= 0:
+        selection_blockers.append("selection_no_submitted_orders")
+    if filtered.signals_generated > 0 and (filtered.submitted_orders / filtered.signals_generated) < 0.2:
+        selection_blockers.append("selection_low_pass_through")
+    if filter_order_delta < 0:
+        selection_blockers.append("selection_negative_order_delta")
+    statuses["selection_pass_through"] = _gate_status(selection_blockers)
+    blockers["selection_pass_through"] = tuple(selection_blockers)
+
+    route_blockers: list[str] = []
+    if filtered.status == "halted":
+        route_blockers.append("route_halted")
+    if filtered.maker_fill_rate < 0.2 and filtered.expiration_rate >= 0.5:
+        route_blockers.append("route_maker_expire_dominance")
+    if filtered.average_adverse_fill_bps >= 35:
+        route_blockers.append("route_adverse_fill_too_high")
+    statuses["route_conversion_quality"] = _gate_status(route_blockers)
+    blockers["route_conversion_quality"] = tuple(route_blockers)
+
+    close_out_blockers: list[str] = []
+    if filtered.closed_trade_count <= 0:
+        close_out_blockers.append("close_out_no_closed_trades")
+    if filtered.stop_out_rate >= 0.5:
+        close_out_blockers.append("close_out_stop_out_pressure")
+    if filtered.average_trade_realized_pnl_bps < 0:
+        close_out_blockers.append("close_out_negative_realized_pnl_bps")
+    statuses["close_out_quality"] = _gate_status(close_out_blockers)
+    blockers["close_out_quality"] = tuple(close_out_blockers)
+
+    profitability_blockers: list[str] = []
+    pnl_per_notional = (
+        filtered.closed_trade_net_pnl / filtered.submitted_notional
+        if filtered.submitted_notional > 0
+        else 0.0
+    )
+    if pnl_per_notional <= 0:
+        profitability_blockers.append("profitability_non_positive_pnl_per_notional")
+    if "single_loss_breach" in promotion_gate.blocking_reasons:
+        profitability_blockers.append("tail_loss_single_loss_breach")
+    if "top3_loss_concentration_above_ceiling" in promotion_gate.blocking_reasons:
+        profitability_blockers.append("tail_loss_top3_concentration_breach")
+    if (
+        filtered.submitted_notional > 0
+        and filtered.large_notional_share >= 0.3
+        and pnl_per_notional <= 0.0
+    ):
+        profitability_blockers.append("sizing_large_notional_without_efficiency")
+    if (
+        filtered.large_bucket_pnl_per_notional
+        < filtered.small_bucket_pnl_per_notional - 0.01
+    ):
+        profitability_blockers.append("sizing_large_bucket_underperformance")
+    statuses["profitability_tail_risk"] = _gate_status(profitability_blockers)
+    blockers["profitability_tail_risk"] = tuple(profitability_blockers)
+
+    failed_stages = tuple(stage for stage, status in statuses.items() if status != "pass")
+    if any(status == "blocked" for status in statuses.values()):
+        acceptance_decision = "pause" if filtered.status == "halted" else "review"
+    elif failed_stages:
+        acceptance_decision = "review"
+    else:
+        acceptance_decision = "proceed"
+    if unfiltered.signals_generated <= 0 and filtered.signals_generated <= 0:
+        acceptance_decision = "review"
+    return _CryptoRouteStageGateEvaluation(
+        acceptance_decision=acceptance_decision,
+        statuses=statuses,
+        blockers=blockers,
+        failed_stages=failed_stages,
+    )
+
+
+def _gate_status(blockers: list[str]) -> str:
+    if not blockers:
+        return "pass"
+    if any(
+        blocker in {"scan_no_signals", "selection_no_submitted_orders", "route_halted", "close_out_no_closed_trades"}
+        for blocker in blockers
+    ):
+        return "blocked"
+    return "review"
+
+
+def _merge_decisions(first: str, second: str) -> str:
+    ranks = {"proceed": 0, "review": 1, "pause": 2}
+    return first if ranks.get(first, 1) >= ranks.get(second, 1) else second
+
+
+def _dominant_route_stage_blocker(
+    route_stage_gate: _CryptoRouteStageGateEvaluation,
+) -> str | None:
+    for stage in route_stage_gate.failed_stages:
+        blockers = route_stage_gate.blockers.get(stage, ())
+        if blockers:
+            return blockers[0]
+    return None
+
+
+def _next_constrained_action(
+    route_stage_gate: _CryptoRouteStageGateEvaluation,
+) -> str:
+    if not route_stage_gate.failed_stages:
+        return "collect another comparable evidence window and confirm stability before promotion."
+    primary_stage = route_stage_gate.failed_stages[0]
+    if primary_stage == "scan_quality":
+        return "repair scan/selection input quality before adjusting execution thresholds."
+    if primary_stage == "selection_pass_through":
+        return "improve selection pass-through on tradable families before route tuning."
+    if primary_stage == "route_conversion_quality":
+        return "reduce maker-expiry loops and stabilize route conversion before increasing activity."
+    if primary_stage == "close_out_quality":
+        return "tighten exit containment and improve close quality before adding new flow."
+    if primary_stage == "profitability_tail_risk":
+        return "reduce sizing and tail-loss concentration before seeking promotion."
+    return "resolve the dominant route-stage blocker before next tuning iteration."
 
 
 def _execution_loss_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> float:
@@ -399,6 +631,43 @@ def _execution_loss_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> float:
     if expected_edge <= 0:
         return 1.0 if execution_drag > 0 else 0.0
     return max(0.0, min(2.0, execution_drag / expected_edge))
+
+
+def _max_single_loss_pnl(*, filtered: "CryptoPhase2ReplayDigest") -> float:
+    losses: list[float] = []
+    for trade in filtered.top_loss_trades:
+        if not isinstance(trade, dict):
+            continue
+        raw_pnl = trade.get("net_pnl", trade.get("realized_pnl"))
+        try:
+            pnl = float(raw_pnl)
+        except (TypeError, ValueError):
+            continue
+        if pnl < 0:
+            losses.append(pnl)
+    return min(losses) if losses else 0.0
+
+
+def _top3_loss_concentration_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> float:
+    losses: list[float] = []
+    for trade in filtered.top_loss_trades:
+        if not isinstance(trade, dict):
+            continue
+        raw_pnl = trade.get("net_pnl", trade.get("realized_pnl"))
+        try:
+            pnl = float(raw_pnl)
+        except (TypeError, ValueError):
+            continue
+        if pnl < 0:
+            losses.append(abs(pnl))
+    if not losses:
+        return 0.0
+    negative_trade_count = int(round(max(0.0, (1.0 - filtered.winning_trade_rate) * filtered.closed_trade_count)))
+    gross_negative_pnl = abs(filtered.average_loss_trade_pnl) * float(max(1, negative_trade_count))
+    if gross_negative_pnl <= 0:
+        return 0.0
+    top3_abs_loss = sum(sorted(losses, reverse=True)[:3])
+    return max(0.0, min(1.0, top3_abs_loss / gross_negative_pnl))
 
 
 def _promotion_stage_label(*, decision: str) -> str:

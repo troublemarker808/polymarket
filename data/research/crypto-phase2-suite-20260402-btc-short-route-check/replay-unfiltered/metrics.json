@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/sync-btc-short-shadow-v1",
+  "events_recorded": 51,
+  "generated_at": "2026-03-31T17:58:46.188000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 1
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-20260402-btc-short-route-check\\replay-unfiltered",
+  "processed_snapshots": 50,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 1,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\20260401-015839-btc-short-repricing-fallback-snapshots.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 1
+  },
+  "submitted_orders": 1,
+  "today_pnl": 0.0,
+  "total_equity": 25.0
+}

@@ -1,0 +1,406 @@
+{
+  "tuning_plan": {
+    "learning_report": {
+      "run_count": 2,
+      "recurring_profit_focuses": [
+        "exit"
+      ],
+      "recurring_tuning_priorities": [
+        "exit"
+      ],
+      "recommended_next_experiment": "exit",
+      "recommended_actions": [
+        "hold current scaling until trade-level realized pnl turns positive across repeated runs",
+        "prioritize execution variants that cut trade-level drag before widening flow",
+        "tighten aging and stale cleanup exits because too many positions linger into passive cleanup",
+        "tighten exits before widening flow because losing closes remain larger than winning closes",
+        "prioritize repricing and calibration variants before widening execution flow",
+        "tighten aging/stale exit thresholds so weak positions recycle earlier",
+        "lower max_holding_multiplier for presets with repeated negative closed trades",
+        "design the next variant to also address secondary loss in execution instead of retuning exit in isolation",
+        "keep notional conservative until pnl per notional turns positive across repeated runs"
+      ],
+      "focus_counts": {
+        "exit": 2
+      },
+      "tuning_counts": {
+        "exit": 2
+      },
+      "average_component_losses": {
+        "selection": 0.15,
+        "pricing": 0.42,
+        "execution": 0.47,
+        "exit": 0.99,
+        "sizing": 0.23
+      },
+      "recurring_loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "sizing",
+        "selection"
+      ],
+      "average_edge_capture_ratio": 0.9149,
+      "average_signal_edge_bps": 879.8036,
+      "average_adverse_fill_bps": 73.8292,
+      "average_pnl_per_notional": -0.003882,
+      "average_trade_expected_edge_bps": 870.2551,
+      "average_trade_execution_drag_bps": 71.2283,
+      "average_trade_realized_pnl_bps": -61.8552,
+      "average_fusion_observed_gap_bps": 920.6798,
+      "average_barrier_surface_disagreement_bps": 2586.8965,
+      "average_win_trade_pnl": 0.0,
+      "average_loss_trade_pnl": -0.06517,
+      "average_submitted_notional": 4.976483,
+      "average_large_notional_share": 0.0,
+      "dominant_exit_reason": "time_stop",
+      "average_stop_loss_exit_share": 0.0,
+      "average_passive_cleanup_exit_share": 1.0,
+      "average_exit_family_balance_score": 0.6,
+      "average_small_bucket_pnl_per_notional": 0.0,
+      "average_medium_bucket_pnl_per_notional": -0.003882,
+      "average_large_bucket_pnl_per_notional": 0.0
+    },
+    "latest_profit_focus": "exit",
+    "secondary_profit_focus": "execution",
+    "latest_tuning_priority": "exit",
+    "experiment_family": "exit",
+    "loss_ranking": [
+      "exit",
+      "execution",
+      "pricing",
+      "selection",
+      "sizing"
+    ],
+    "variants": [
+      {
+        "name": "exit_faster_recycle",
+        "focus": "exit",
+        "overrides": {
+          "aging_exit_edge_bps": 125.0,
+          "max_holding_multiplier": 1.5
+        },
+        "rationale": [
+          "recycle weak positions faster",
+          "reduce prolonged stop-out drift"
+        ]
+      },
+      {
+        "name": "exit_tighter_stale_cleanup",
+        "focus": "exit",
+        "overrides": {
+          "stale_exit_edge_bps": 220.0,
+          "stale_start_fraction": 0.85
+        },
+        "rationale": [
+          "exit stale positions earlier",
+          "cut repeated negative closes"
+        ]
+      },
+      {
+        "name": "exit_execution_recycle",
+        "focus": "exit+execution",
+        "overrides": {
+          "aging_exit_edge_bps": 125.0,
+          "max_holding_multiplier": 1.5,
+          "taker_urgency_threshold": 0.64
+        },
+        "rationale": [
+          "exit is weakest and execution is the next drag",
+          "recycle weak positions faster while reducing missed fills"
+        ]
+      },
+      {
+        "name": "exit_loss_asymmetry_guard",
+        "focus": "exit",
+        "overrides": {
+          "aging_exit_edge_bps": 115.0,
+          "max_holding_multiplier": 1.35,
+          "stop_loss_bps": 225.0
+        },
+        "rationale": [
+          "losing closes remain larger than winning closes across repeated runs",
+          "tighten exit asymmetry before expanding flow"
+        ]
+      },
+      {
+        "name": "exit_passive_cleanup_guard",
+        "focus": "exit",
+        "overrides": {
+          "aging_exit_edge_bps": 110.0,
+          "stale_start_fraction": 0.9,
+          "stale_exit_edge_bps": 240.0
+        },
+        "rationale": [
+          "too many exits rely on aging or stale cleanup",
+          "recycle weak positions earlier instead of waiting for passive cleanup"
+        ]
+      },
+      {
+        "name": "exit_smaller_clip_guard",
+        "focus": "exit",
+        "overrides": {
+          "default_notional": 4.25
+        },
+        "rationale": [
+          "execution loss remains elevated",
+          "guard against oversizing while retuning"
+        ]
+      }
+    ]
+  },
+  "baseline": {
+    "variant_name": "baseline",
+    "focus": "baseline",
+    "secondary_focus": "execution",
+    "loss_ranking": [
+      "exit",
+      "execution",
+      "pricing",
+      "selection",
+      "sizing"
+    ],
+    "readiness_score": 0.75,
+    "total_profit_loss": 2.41,
+    "filtered_pnl": -0.08682539760999841,
+    "recommended_action": "review",
+    "tuning_priority": "exit",
+    "selection_loss": 0.3,
+    "pricing_loss": 0.42,
+    "execution_loss": 0.47,
+    "exit_loss": 0.99,
+    "sizing_loss": 0.23,
+    "average_loss_trade_pnl": -0.043413,
+    "large_notional_share": 0.0,
+    "average_trade_execution_drag_bps": 54.8119,
+    "average_trade_realized_pnl_bps": -35.2913,
+    "exit_family_balance_score": 0.6,
+    "large_bucket_pnl_per_notional": 0.0,
+    "target_alignment_score": 2,
+    "targeted_loss_improvement": 0.0,
+    "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\baseline"
+  },
+  "candidates": [
+    {
+      "variant_name": "exit_faster_recycle",
+      "focus": "exit",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.18731559810999876,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.093658,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 118.7599,
+      "average_trade_realized_pnl_bps": -95.4154,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 2,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_faster_recycle"
+    },
+    {
+      "variant_name": "exit_tighter_stale_cleanup",
+      "focus": "exit",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 2,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_tighter_stale_cleanup"
+    },
+    {
+      "variant_name": "exit_execution_recycle",
+      "focus": "exit+execution",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.18731559810999876,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.093658,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 118.7599,
+      "average_trade_realized_pnl_bps": -95.4154,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 2,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_execution_recycle"
+    },
+    {
+      "variant_name": "exit_loss_asymmetry_guard",
+      "focus": "exit",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.18731559810999876,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.093658,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 118.7599,
+      "average_trade_realized_pnl_bps": -95.4154,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 2,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_loss_asymmetry_guard"
+    },
+    {
+      "variant_name": "exit_passive_cleanup_guard",
+      "focus": "exit",
+      "secondary_focus": "execution",
+      "loss_ranking": [
+        "exit",
+        "execution",
+        "pricing",
+        "selection",
+        "sizing"
+      ],
+      "readiness_score": 0.75,
+      "total_profit_loss": 2.41,
+      "filtered_pnl": -0.08682539760999841,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.3,
+      "pricing_loss": 0.42,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.043413,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 2,
+      "targeted_loss_improvement": 0.0,
+      "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_passive_cleanup_guard"
+    },
+    {
+      "variant_name": "exit_smaller_clip_guard",
+      "focus": "exit",
+      "secondary_focus": "pricing",
+      "loss_ranking": [
+        "exit",
+        "pricing",
+        "execution",
+        "sizing",
+        "selection"
+      ],
+      "readiness_score": 0.8,
+      "total_profit_loss": 2.46,
+      "filtered_pnl": -0.07380158991499908,
+      "recommended_action": "review",
+      "tuning_priority": "exit",
+      "selection_loss": 0.2,
+      "pricing_loss": 0.57,
+      "execution_loss": 0.47,
+      "exit_loss": 0.99,
+      "sizing_loss": 0.23,
+      "average_loss_trade_pnl": -0.036901,
+      "large_notional_share": 0.0,
+      "average_trade_execution_drag_bps": 54.8119,
+      "average_trade_realized_pnl_bps": -35.2913,
+      "exit_family_balance_score": 0.6,
+      "large_bucket_pnl_per_notional": 0.0,
+      "target_alignment_score": 1,
+      "targeted_loss_improvement": -0.0685,
+      "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\exit_smaller_clip_guard"
+    }
+  ],
+  "winner": {
+    "variant_name": "baseline",
+    "focus": "baseline",
+    "secondary_focus": "execution",
+    "loss_ranking": [
+      "exit",
+      "execution",
+      "pricing",
+      "selection",
+      "sizing"
+    ],
+    "readiness_score": 0.75,
+    "total_profit_loss": 2.41,
+    "filtered_pnl": -0.08682539760999841,
+    "recommended_action": "review",
+    "tuning_priority": "exit",
+    "selection_loss": 0.3,
+    "pricing_loss": 0.42,
+    "execution_loss": 0.47,
+    "exit_loss": 0.99,
+    "sizing_loss": 0.23,
+    "average_loss_trade_pnl": -0.043413,
+    "large_notional_share": 0.0,
+    "average_trade_execution_drag_bps": 54.8119,
+    "average_trade_realized_pnl_bps": -35.2913,
+    "exit_family_balance_score": 0.6,
+    "large_bucket_pnl_per_notional": 0.0,
+    "target_alignment_score": 2,
+    "targeted_loss_improvement": 0.0,
+    "output_dir": "data\\research\\crypto-phase2-autoexp-btc-exit-20260401-223419\\baseline"
+  },
+  "winner_reason": "baseline remains the strongest current preset",
+  "promotion_decision": "keep_baseline",
+  "promotion_target": "baseline",
+  "promotion_reason": "baseline remains the strongest current working preset"
+}

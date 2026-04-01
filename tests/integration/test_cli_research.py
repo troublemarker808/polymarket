@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -375,7 +376,91 @@ def test_cli_crypto_phase2_final_report_prints_btc_promotion_gate_payload(tmp_pa
 
     assert "promotion_decision:" in completed.stdout
     assert "promotion_stage_label:" in completed.stdout
+    assert "route_stage_acceptance_decision:" in completed.stdout
+    assert "## Route Stage Gates" in completed.stdout
+    assert "promotion_max_single_loss_pnl:" in completed.stdout
+    assert "promotion_max_top3_loss_concentration_ratio:" in completed.stdout
+    assert "observed_max_single_loss_pnl:" in completed.stdout
+    assert "observed_top3_loss_concentration_ratio:" in completed.stdout
     assert (output_dir / "final_scorecard.json").exists()
+    scorecard = json.loads((output_dir / "final_scorecard.json").read_text(encoding="utf-8"))
+    assert "route_stage_acceptance_decision" in scorecard
+    assert "route_stage_statuses" in scorecard
+    assert "route_stage_blockers" in scorecard
+    assert "promotion_max_single_loss_pnl" in scorecard
+    assert "promotion_max_top3_loss_concentration_ratio" in scorecard
+    assert "observed_max_single_loss_pnl" in scorecard
+    assert "observed_top3_loss_concentration_ratio" in scorecard
+
+
+def test_cli_autoresearch_compare_ranks_candidates_from_bundle_paths(tmp_path: Path) -> None:
+    metrics_a = tmp_path / "metrics_a.json"
+    metrics_b = tmp_path / "metrics_b.json"
+    scorecard_a = tmp_path / "scorecard_a.json"
+    scorecard_b = tmp_path / "scorecard_b.json"
+    for path, variant_id in ((metrics_a, "candidate-a"), (metrics_b, "candidate-b")):
+        path.write_text(
+            json.dumps(
+                {
+                    "signals_generated": 10,
+                    "orders_submitted": 8,
+                    "orders_rejected": 0,
+                    "orders_filled": 6,
+                    "orders_partially_filled": 0,
+                    "orders_expired": 0,
+                    "orders_canceled": 0,
+                    "trades_closed": 2,
+                    "fill_rate": 0.75,
+                    "cancel_rate": 0.0,
+                    "avg_fill_price_vs_mid_bps": 1.0,
+                    "market_data_failures": 0,
+                    "window_set_id": "btc-window-v1",
+                    "variant_id": variant_id,
+                    "evidence_tier": "paper",
+                    "loop_stage_set": "btc-closure-v1",
+                }
+            ),
+            encoding="utf-8",
+        )
+    scorecard_a.write_text(
+        json.dumps(
+            {
+                "route_stage_acceptance_decision": "proceed",
+                "route_stage_failed_stages": [],
+                "promotion_decision": "proceed",
+                "promotion_stage_label": "shadow validation",
+                "promotion_blocking_reasons": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    scorecard_b.write_text(
+        json.dumps(
+            {
+                "route_stage_acceptance_decision": "review",
+                "route_stage_failed_stages": ["close_out_quality"],
+                "promotion_decision": "review",
+                "promotion_stage_label": "paper available",
+                "promotion_blocking_reasons": ["insufficient_closed_trade_count"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    completed = _run_cli(
+        "autoresearch-compare",
+        "--bundle-paths",
+        str(metrics_a),
+        str(metrics_b),
+        "--promotion-scorecard-paths",
+        str(scorecard_a),
+        str(scorecard_b),
+    )
+
+    assert "Autoresearch Candidate Ranking" in completed.stdout
+    assert "loop_stage_set: btc-closure-v1" in completed.stdout
+    assert "candidate-a" in completed.stdout
+    assert "candidate-b" in completed.stdout
 
 
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:

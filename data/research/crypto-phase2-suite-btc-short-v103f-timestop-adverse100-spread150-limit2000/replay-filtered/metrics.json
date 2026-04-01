@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v103f-timestop-adverse100-spread150",
+  "events_recorded": 2033,
+  "generated_at": "2026-03-27T12:40:28.171000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 17
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v103f-timestop-adverse100-spread150-limit2000\\replay-filtered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-suite-cli-filtered",
+  "signals_generated": 17,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-combined.v74.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 17
+  },
+  "submitted_orders": 17,
+  "today_pnl": -0.28701970140000066,
+  "total_equity": 24.712980298599998
+}

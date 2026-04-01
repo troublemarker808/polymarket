@@ -13,6 +13,7 @@ from pm_bot.strategies.common import parse_float
 from pm_bot.strategies.crypto.phase2.models import (
     CryptoExecutionFeedback,
     CryptoExitDecision,
+    CryptoMarketProbationState,
     CryptoPositionIntent,
     CryptoReentryState,
     CryptoRoutePolicyState,
@@ -80,6 +81,10 @@ def evaluate_exit(
     adverse_fill_exit_bps: float = 75.0,
     adverse_fill_max_remaining_edge_bps: float = 150.0,
     time_stop_max_remaining_edge_bps: float | None = None,
+    escalated_entry_tail_guard_enabled: bool = False,
+    escalated_entry_adverse_fill_exit_bps: float | None = None,
+    escalated_entry_adverse_fill_max_remaining_edge_bps: float | None = None,
+    escalated_entry_max_holding_multiplier: float | None = None,
 ) -> CryptoExitDecision:
     if position.average_entry_price is None:
         return _hold_decision(fair_value.market_id, "missing_entry_price", 0.0)
@@ -116,7 +121,31 @@ def evaluate_exit(
     ):
         expected_holding_seconds = min(expected_holding_seconds, max(execution_max_holding_seconds, 1.0))
     holding_fraction = holding_seconds / expected_holding_seconds
-    time_stop_triggered = holding_seconds >= (expected_holding_seconds * max_holding_multiplier)
+    effective_max_holding_multiplier = max_holding_multiplier
+    effective_adverse_fill_exit_bps = adverse_fill_exit_bps
+    effective_adverse_fill_max_remaining_edge_bps = adverse_fill_max_remaining_edge_bps
+    if (
+        escalated_entry_tail_guard_enabled
+        and intent.signal_type == "repricing_edge"
+        and intent.entry_fill_source == "taker"
+    ):
+        if escalated_entry_adverse_fill_exit_bps is not None:
+            effective_adverse_fill_exit_bps = min(
+                adverse_fill_exit_bps,
+                max(0.0, escalated_entry_adverse_fill_exit_bps),
+            )
+        if escalated_entry_adverse_fill_max_remaining_edge_bps is not None:
+            effective_adverse_fill_max_remaining_edge_bps = max(
+                adverse_fill_max_remaining_edge_bps,
+                max(0.0, escalated_entry_adverse_fill_max_remaining_edge_bps),
+            )
+        if escalated_entry_max_holding_multiplier is not None:
+            effective_max_holding_multiplier = min(
+                max_holding_multiplier,
+                max(0.1, escalated_entry_max_holding_multiplier),
+            )
+
+    time_stop_triggered = holding_seconds >= (expected_holding_seconds * effective_max_holding_multiplier)
     effective_exit_edge_bps = exit_edge_bps
     exit_reason = "fair_value_reached"
     if holding_fraction >= stale_start_fraction:
@@ -130,9 +159,9 @@ def evaluate_exit(
         intent.entry_fill_source == "taker"
         and intent.signal_type in {"repricing_edge", "liquidity_edge"}
         and intent.entry_fill_price is not None
-        and remaining_edge_bps <= adverse_fill_max_remaining_edge_bps
+        and remaining_edge_bps <= effective_adverse_fill_max_remaining_edge_bps
     ):
-        adverse_fill_price = intent.entry_fill_price * (1 - (adverse_fill_exit_bps / 10000))
+        adverse_fill_price = intent.entry_fill_price * (1 - (effective_adverse_fill_exit_bps / 10000))
         adverse_fill_triggered = exit_price <= adverse_fill_price
 
     if adverse_fill_triggered:
@@ -338,6 +367,74 @@ def summarize_execution_feedback_from_events(
     return summarize_execution_feedback(
         pending_orders=pending_orders,
         closed_trades=tuple(closed_trades),
+    )
+
+
+def summarize_market_probation_state_from_events(
+    *,
+    market_id: str,
+    recent_events: Sequence[Mapping[str, object]],
+    as_of: datetime,
+    loss_streak_for_probation: int = 2,
+    loss_streak_for_quarantine: int = 3,
+    recovery_win_streak_required: int = 2,
+    cooldown_seconds: float = 300.0,
+) -> CryptoMarketProbationState:
+    close_events: list[tuple[datetime, float]] = []
+    for event in recent_events:
+        event_type = str(event.get("event_type", "")).strip()
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("strategy_id", "")).strip() == "recovered.live":
+            continue
+        if str(payload.get("market_id", "")).strip() != market_id:
+            continue
+        closed_at = _parse_datetime(payload.get("closed_at"))
+        if closed_at is None:
+            continue
+        net_pnl = float(payload.get("net_pnl", payload.get("realized_pnl", 0.0)) or 0.0)
+        close_events.append((closed_at, net_pnl))
+    close_events.sort(key=lambda item: item[0])
+    recent_loss_streak = 0
+    for _, pnl in reversed(close_events):
+        if pnl < 0:
+            recent_loss_streak += 1
+            continue
+        break
+    recent_win_streak = 0
+    for _, pnl in reversed(close_events):
+        if pnl > 0:
+            recent_win_streak += 1
+            continue
+        break
+    last_loss_at = next((closed_at for closed_at, pnl in reversed(close_events) if pnl < 0), None)
+    cooldown = timedelta(seconds=max(0.0, cooldown_seconds))
+    blocked_until = None
+    if last_loss_at is not None:
+        blocked_until = last_loss_at + cooldown
+    if recent_loss_streak >= max(1, loss_streak_for_quarantine):
+        state = "quarantined"
+    elif recent_loss_streak >= max(1, loss_streak_for_probation):
+        state = "probation"
+    elif (
+        last_loss_at is not None
+        and recent_win_streak >= max(1, recovery_win_streak_required)
+        and as_of >= (blocked_until or as_of)
+    ):
+        state = "recovery"
+        blocked_until = None
+    else:
+        state = "active"
+        if state == "active":
+            blocked_until = None
+    return CryptoMarketProbationState(
+        market_id=market_id,
+        state=state,
+        recent_loss_streak=recent_loss_streak,
+        recent_win_streak=recent_win_streak,
+        last_loss_at=last_loss_at,
+        blocked_until=blocked_until if state in {"probation", "quarantined"} else None,
     )
 
 

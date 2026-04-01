@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-04-01T14:54:48.298945+00:00",
+  "baseline_candidate": "btc-r1-s165-b35-s65",
+  "dataset_split": {
+    "baseline_preset": "crypto-calibration-baseline-20260328",
+    "baseline_candidate": "btc-r1-s165-b35-s65",
+    "train": "tests\\fixtures\\crypto_phase2\\btc_runtime_ladder_window.jsonl",
+    "validation": "tests\\fixtures\\crypto_phase2\\compare_snapshots.jsonl",
+    "holdout": "tests\\fixtures\\crypto_phase1\\ladder_snapshots.jsonl"
+  },
+  "results": [
+    {
+      "candidate_name": "btc-r1-s165-b35-s65",
+      "train_score": 0.5724497686194248,
+      "validation_score": 44.05186919418032,
+      "holdout_score": 12.47750553420789,
+      "aggregate_score": 15.997286749405387,
+      "accepted": true
+    },
+    {
+      "candidate_name": "btc-r1-s160-b40-s60",
+      "train_score": -2.2302224418265304,
+      "validation_score": 43.121298860639,
+      "holdout_score": 11.307963622652766,
+      "aggregate_score": 14.082871161808988,
+      "accepted": true
+    },
+    {
+      "candidate_name": "btc-r1-s165-b40-s60",
+      "train_score": -2.7743431215778074,
+      "validation_score": 43.01166003144418,
+      "holdout_score": 10.831434896237585,
+      "aggregate_score": 13.682613427891866,
+      "accepted": true
+    },
+    {
+      "candidate_name": "btc-r1-s170-b40-s60",
+      "train_score": -3.3024566936146122,
+      "validation_score": 42.904624049584726,
+      "holdout_score": 10.36801201659471,
+      "aggregate_score": 13.293761271387053,
+      "accepted": true
+    },
+    {
+      "candidate_name": "btc-r1-s165-b45-s55",
+      "train_score": -6.121136011775022,
+      "validation_score": 41.97145086870804,
+      "holdout_score": 9.185364258267295,
+      "aggregate_score": 11.367940106378361,
+      "accepted": true
+    },
+    {
+      "candidate_name": "btc-r1-s170-b45-s55",
+      "train_score": -6.7152637803164374,
+      "validation_score": 41.851035389116156,
+      "holdout_score": 8.664013518669053,
+      "aggregate_score": 10.930481430310438,
+      "accepted": true
+    },
+    {
+      "candidate_name": "btc-r1-s175-b45-s55",
+      "train_score": -7.29158256984444,
+      "validation_score": 41.733422042372766,
+      "holdout_score": 8.157179908782318,
+      "aggregate_score": 10.505671309546074,
+      "accepted": true
+    },
+    {
+      "candidate_name": "baseline",
+      "train_score": -29.863283710488993,
+      "validation_score": 35.547819041408474,
+      "holdout_score": -6.6764880825496,
+      "aggregate_score": -5.602593759331875,
+      "accepted": true
+    }
+  ],
+  "promotion_decision": {
+    "decision": "keep_locked_baseline",
+    "locked_baseline_candidate": "btc-r1-s165-b35-s65",
+    "evaluated_locked_baseline": true,
+    "recommended_candidate": "btc-r1-s165-b35-s65",
+    "reason": "Locked baseline remains the strongest evaluated candidate on aggregate score."
+  }
+}

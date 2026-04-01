@@ -1,0 +1,84 @@
+{
+  "generated_at": "2026-04-01T14:54:04.136885+00:00",
+  "baseline_candidate": "btc-r1-s165-b35-s65",
+  "dataset_split": {
+    "baseline_preset": "crypto-calibration-baseline-20260328",
+    "baseline_candidate": "btc-r1-s165-b35-s65",
+    "train": "data\\runtime\\phase2-paper-snapshots.btc-longtail.v58.20260327.jsonl",
+    "validation": "data\\runtime\\phase2-paper-snapshots.btc-longtail.v58.overnight.20260327.jsonl",
+    "holdout": "data\\runtime\\phase2-paper-snapshots.btc-combined.v74.jsonl"
+  },
+  "results": [
+    {
+      "candidate_name": "baseline",
+      "train_score": 224.08519174848874,
+      "validation_score": -1.8496843710164939,
+      "holdout_score": 225.0214227322918,
+      "aggregate_score": 156.4919751093978,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s170-b45-s55",
+      "train_score": 219.8384706161479,
+      "validation_score": 14.49838764281581,
+      "holdout_score": 196.80760150231632,
+      "aggregate_score": 153.63027190138195,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s175-b45-s55",
+      "train_score": 219.54426567683583,
+      "validation_score": 14.049192850419402,
+      "holdout_score": 196.5137793486236,
+      "aggregate_score": 153.28964656326846,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s170-b40-s60",
+      "train_score": 205.68602616860204,
+      "validation_score": 16.60967790472517,
+      "holdout_score": 190.66552232304662,
+      "aggregate_score": 145.9590209203279,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s165-b45-s55",
+      "train_score": 196.14986315610045,
+      "validation_score": 14.957141564255757,
+      "holdout_score": 173.11835953533082,
+      "aggregate_score": 137.18574595439313,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s165-b40-s60",
+      "train_score": 181.96281953744878,
+      "validation_score": 17.017459168227333,
+      "holdout_score": 166.94175168572616,
+      "aggregate_score": 129.47499785633784,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s160-b40-s60",
+      "train_score": 176.6037356642704,
+      "validation_score": 17.43379978615747,
+      "holdout_score": 169.44480583194377,
+      "aggregate_score": 127.42096893437119,
+      "accepted": false
+    },
+    {
+      "candidate_name": "btc-r1-s165-b35-s65",
+      "train_score": 167.76910925213042,
+      "validation_score": 19.077776772198913,
+      "holdout_score": 162.95130018353643,
+      "aggregate_score": 122.19814769443218,
+      "accepted": false
+    }
+  ],
+  "promotion_decision": {
+    "decision": "keep_locked_baseline",
+    "locked_baseline_candidate": "btc-r1-s165-b35-s65",
+    "evaluated_locked_baseline": true,
+    "recommended_candidate": "btc-r1-s165-b35-s65",
+    "reason": "baseline ranked first, but it did not clear the full promotion gate against the locked baseline."
+  }
+}

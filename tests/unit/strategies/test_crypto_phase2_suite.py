@@ -49,6 +49,12 @@ def test_run_crypto_phase2_suite_writes_selection_and_replay_artifacts(tmp_path:
     assert payload["filtered_replay"]["signals_generated"] >= 0
     assert payload["unfiltered_replay"]["signals_generated"] >= 0
     assert payload["final_scorecard"]["recommended_action"] in {"proceed", "review", "pause"}
+    assert payload["final_scorecard"]["route_stage_acceptance_decision"] in {"proceed", "review", "pause"}
+    assert isinstance(payload["final_scorecard"]["route_stage_failed_stages"], list)
+    assert isinstance(payload["final_scorecard"]["route_stage_statuses"], dict)
+    assert isinstance(payload["final_scorecard"]["route_stage_blockers"], dict)
+    assert "dominant_route_stage_blocker" in payload["final_scorecard"]
+    assert "next_constrained_action" in payload["final_scorecard"]
     assert payload["final_scorecard"]["promotion_decision"] in {"proceed", "review", "pause"}
     assert payload["final_scorecard"]["promotion_stage_label"] in {"paper available", "shadow validation"}
     assert isinstance(payload["final_scorecard"]["promotion_blocking_reasons"], list)
@@ -111,9 +117,18 @@ def test_run_crypto_phase2_suite_writes_selection_and_replay_artifacts(tmp_path:
     assert "large_bucket_pnl_per_notional" in payload["final_scorecard"]
     assert "average_fusion_observed_gap_bps" in payload["final_scorecard"]
     assert "average_barrier_surface_disagreement_bps" in payload["final_scorecard"]
+    assert "top_loss_trades" in payload["filtered_replay"]
+    assert "top_loss_market_breakdown" in payload["filtered_replay"]
+    assert "top_loss_signature_breakdown" in payload["filtered_replay"]
+    assert "top_loss_trades" in payload["final_scorecard"]
+    assert "top_loss_market_breakdown" in payload["final_scorecard"]
+    assert "top_loss_signature_breakdown" in payload["final_scorecard"]
 
     final_rendered = final_scorecard_md.read_text(encoding="utf-8")
     assert "## Profit Components" in final_rendered
+    assert "## Route Stage Gates" in final_rendered
+    assert "next_constrained_action:" in final_rendered
     assert "## Profit Loss Decomposition" in final_rendered
+    assert "## Top Loss Attribution" in final_rendered
     assert "## Tuning Actions" in final_rendered
     assert "- profit_focus:" in final_rendered

@@ -107,3 +107,26 @@ class CryptoRoutePolicyState:
     taker_premium_adjustment_bps: float
     updated_at: datetime
     cooldown_until: datetime
+
+
+@dataclass(slots=True, frozen=True)
+class CryptoCounterfactualEntryResult:
+    blocked: bool
+    reason: str
+    current_market_id: str
+    current_score: float
+    best_market_id: str | None
+    best_score: float
+    current_rank: int
+    candidate_count: int
+    top_candidates: tuple[dict[str, float | str], ...]
+
+
+@dataclass(slots=True, frozen=True)
+class CryptoMarketProbationState:
+    market_id: str
+    state: str
+    recent_loss_streak: int
+    recent_win_streak: int
+    last_loss_at: datetime | None
+    blocked_until: datetime | None

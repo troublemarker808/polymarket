@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from pm_bot.adapters.in_memory import InMemoryMarketDataAdapter
 from pm_bot.config.loader import load_settings_from_directory
@@ -45,6 +45,7 @@ from pm_bot.strategies.crypto.phase1.selection import (
     recommended_runtime_blocked_market_reasons,
     recommended_runtime_blocked_series_keys,
     recommended_runtime_blocked_series_reasons,
+    runtime_scan_identify_diagnostics,
 )
 from pm_bot.strategies.crypto.phase2.execution import classify_crypto_signal
 from pm_bot.strategies.crypto.phase2.management import (
@@ -237,6 +238,7 @@ async def _run_crypto_phase2_loop_with_settings(
     strategy_config = dict(settings.category_configs[Category.CRYPTO].strategy.get("phase2", {}))
     if strategy_overrides:
         strategy_config.update(strategy_overrides)
+    runtime_policy_overrides = _runtime_selection_no_fill_overrides(strategy_config)
     strategy = CryptoPhase2Strategy(strategy_config)
     static_blocked_series_keys = (
         set(load_runtime_blocked_series_keys(selection_report_path))
@@ -274,6 +276,7 @@ async def _run_crypto_phase2_loop_with_settings(
     blocked_market_reasons: dict[str, tuple[str, ...]] = dict(static_blocked_market_reasons)
     market_selection_actions: dict[str, str] = dict(static_market_selection_actions)
     market_selection_reasons: dict[str, tuple[str, ...]] = dict(static_market_selection_reasons)
+    scan_identify_diagnostics: dict[str, object] = {}
     risk_manager = BasicRiskManager(
         settings=settings.risk,
         trading_settings=settings.trading,
@@ -324,6 +327,7 @@ async def _run_crypto_phase2_loop_with_settings(
                 runtime_blocked_market_reasons,
                 runtime_selection_actions,
                 runtime_selection_reasons,
+                runtime_scan_identify,
             ) = _runtime_blocked_selection(
                 snapshots=tuple(router.snapshot_cache.values()) + (snapshot,),
                 snapshot_path=snapshot_path,
@@ -331,6 +335,7 @@ async def _run_crypto_phase2_loop_with_settings(
                 recorder=recorder,
                 barrier_model_config=barrier_model_config,
                 fusion_model_config=fusion_model_config,
+                runtime_policy_overrides=runtime_policy_overrides,
             )
             blocked_series_keys = static_blocked_series_keys.union(runtime_blocked_series_keys)
             blocked_market_ids = static_blocked_market_ids.union(runtime_blocked_market_ids)
@@ -342,6 +347,7 @@ async def _run_crypto_phase2_loop_with_settings(
             market_selection_actions.update(runtime_selection_actions)
             market_selection_reasons = dict(static_market_selection_reasons)
             market_selection_reasons.update(runtime_selection_reasons)
+            scan_identify_diagnostics = runtime_scan_identify
         await sync_paper_execution_state(
             risk_manager=risk_manager,
             execution=execution,
@@ -368,6 +374,7 @@ async def _run_crypto_phase2_loop_with_settings(
                 "blocked_market_reasons": blocked_market_reasons,
                 "market_selection_actions": market_selection_actions,
                 "market_selection_reasons": market_selection_reasons,
+                "scan_identify_diagnostics": scan_identify_diagnostics,
             },
         )
         await sync_paper_execution_state(
@@ -462,6 +469,7 @@ def _runtime_blocked_selection(
     recorder: ResearchRecorder,
     barrier_model_config: CryptoBarrierModelConfig,
     fusion_model_config: CryptoFusionModelConfig,
+    runtime_policy_overrides: Mapping[str, int] | None,
 ) -> tuple[
     set[str],
     set[str],
@@ -469,6 +477,7 @@ def _runtime_blocked_selection(
     dict[str, tuple[str, ...]],
     dict[str, str],
     dict[str, tuple[str, ...]],
+    dict[str, object],
 ]:
     selection_report = generate_crypto_market_selection_report_from_snapshots(
         snapshots=snapshots,
@@ -477,6 +486,7 @@ def _runtime_blocked_selection(
         events=recorder.events,
         barrier_model_config=barrier_model_config,
         fusion_model_config=fusion_model_config,
+        runtime_policy_overrides=runtime_policy_overrides,
     )
     return (
         set(recommended_runtime_blocked_series_keys(selection_report)),
@@ -485,6 +495,7 @@ def _runtime_blocked_selection(
         recommended_runtime_blocked_market_reasons(selection_report),
         runtime_market_selection_actions(selection_report),
         runtime_market_selection_reasons(selection_report),
+        runtime_scan_identify_diagnostics(selection_report),
     )
 
 
@@ -555,3 +566,23 @@ def _optional_float(raw_value: object) -> float | None:
         return float(str(raw_value))
     except (TypeError, ValueError):
         return None
+
+
+def _runtime_selection_no_fill_overrides(
+    strategy_config: Mapping[str, object],
+) -> dict[str, int]:
+    overrides: dict[str, int] = {}
+    key_map = {
+        "runtime_selection_no_fill_min_expired_orders_btc_reach": "BTC:reach",
+        "runtime_selection_no_fill_min_expired_orders_btc_dip": "BTC:dip",
+        "runtime_selection_no_fill_min_expired_orders_default": "default",
+    }
+    for raw_key, mapped_key in key_map.items():
+        raw_value = strategy_config.get(raw_key)
+        if raw_value in (None, ""):
+            continue
+        try:
+            overrides[mapped_key] = max(1, int(raw_value))
+        except (TypeError, ValueError):
+            continue
+    return overrides

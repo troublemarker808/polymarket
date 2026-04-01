@@ -256,11 +256,47 @@ class AutoresearchReport:
     state_status: str | None
     total_equity: float | None
     today_pnl: float | None
+    window_set_id: str | None
+    variant_id: str | None
+    evidence_tier: str
+    loop_stage_set: str | None
     promotion_gate_decision: str | None
     promotion_gate_stage_label: str | None
+    route_stage_acceptance_decision: str | None
+    route_stage_failed_stages: tuple[str, ...]
+    route_stage_statuses: dict[str, str]
+    route_stage_blockers: dict[str, tuple[str, ...]]
     promotion_gate_blockers: tuple[str, ...]
+    top_loss_markets: tuple[str, ...]
+    top_loss_signatures: tuple[str, ...]
+    top_loss_trades: tuple[str, ...]
+    promotion_gate_max_single_loss_pnl: float | None
+    promotion_gate_observed_max_single_loss_pnl: float | None
+    promotion_gate_max_top3_loss_concentration_ratio: float | None
+    promotion_gate_observed_top3_loss_concentration_ratio: float | None
     metrics: dict[str, Any]
     event_diagnostics: EventDiagnostics
+
+
+@dataclass(slots=True, frozen=True)
+class AutoresearchCandidateRankingEntry:
+    rank: int
+    metrics_path: str
+    variant_id: str
+    acceptance_decision: str
+    failed_stage_count: int
+    score: float
+    closed_trade_net_pnl: float
+
+
+@dataclass(slots=True, frozen=True)
+class AutoresearchCandidateRanking:
+    comparable: bool
+    comparability_blockers: tuple[str, ...]
+    window_set_id: str | None
+    evidence_tier: str | None
+    loop_stage_set: str | None
+    ranked_entries: tuple[AutoresearchCandidateRankingEntry, ...]
 
 
 def generate_autoresearch_report(
@@ -269,6 +305,10 @@ def generate_autoresearch_report(
     event_path: str | Path | None = None,
     state_path: str | Path | None = None,
     promotion_scorecard_path: str | Path | None = None,
+    window_set_id: str | None = None,
+    variant_id: str | None = None,
+    evidence_tier: str | None = None,
+    loop_stage_set: str | None = None,
 ) -> AutoresearchReport:
     metrics = load_metrics_file(metrics_path)
     diagnostics = _summarize_event_log(event_path)
@@ -282,6 +322,22 @@ def generate_autoresearch_report(
     effective_trades_closed = diagnostics.effective_closed_trade_count(metrics)
     effective_fill_rate = diagnostics.effective_fill_rate(metrics)
     effective_closed_trade_net_pnl = diagnostics.effective_closed_trade_net_pnl
+    resolved_window_set_id = _resolve_optional_text(
+        preferred=window_set_id,
+        fallback=metrics.get("window_set_id"),
+    )
+    resolved_variant_id = _resolve_optional_text(
+        preferred=variant_id,
+        fallback=metrics.get("variant_id"),
+    )
+    resolved_evidence_tier = _resolve_optional_text(
+        preferred=evidence_tier,
+        fallback=metrics.get("evidence_tier"),
+    ) or "paper"
+    resolved_loop_stage_set = _resolve_optional_text(
+        preferred=loop_stage_set,
+        fallback=metrics.get("loop_stage_set"),
+    )
     return AutoresearchReport(
         generated_at=datetime.now(tz=timezone.utc),
         metrics_path=str(Path(metrics_path)),
@@ -308,9 +364,26 @@ def generate_autoresearch_report(
         state_status=(runtime_state.status.value if runtime_state is not None else None),
         total_equity=(runtime_state.total_equity if runtime_state is not None else None),
         today_pnl=(runtime_state.today_pnl if runtime_state is not None else None),
+        window_set_id=resolved_window_set_id,
+        variant_id=resolved_variant_id,
+        evidence_tier=resolved_evidence_tier,
+        loop_stage_set=resolved_loop_stage_set,
         promotion_gate_decision=promotion_gate["decision"],
         promotion_gate_stage_label=promotion_gate["stage_label"],
+        route_stage_acceptance_decision=promotion_gate["route_stage_acceptance_decision"],
+        route_stage_failed_stages=promotion_gate["route_stage_failed_stages"],
+        route_stage_statuses=promotion_gate["route_stage_statuses"],
+        route_stage_blockers=promotion_gate["route_stage_blockers"],
         promotion_gate_blockers=promotion_gate["blockers"],
+        top_loss_markets=promotion_gate["top_loss_markets"],
+        top_loss_signatures=promotion_gate["top_loss_signatures"],
+        top_loss_trades=promotion_gate["top_loss_trades"],
+        promotion_gate_max_single_loss_pnl=promotion_gate["max_single_loss_pnl"],
+        promotion_gate_observed_max_single_loss_pnl=promotion_gate["observed_max_single_loss_pnl"],
+        promotion_gate_max_top3_loss_concentration_ratio=promotion_gate["max_top3_loss_concentration_ratio"],
+        promotion_gate_observed_top3_loss_concentration_ratio=promotion_gate[
+            "observed_top3_loss_concentration_ratio"
+        ],
         metrics=metrics,
         event_diagnostics=diagnostics,
     )
@@ -326,6 +399,10 @@ def format_autoresearch_report(report: AutoresearchReport) -> str:
         f"- metrics_path: {report.metrics_path}",
         f"- event_path: {report.event_path or ''}",
         f"- state_path: {report.state_path or ''}",
+        f"- window_set_id: {report.window_set_id or ''}",
+        f"- variant_id: {report.variant_id or ''}",
+        f"- evidence_tier: {report.evidence_tier}",
+        f"- loop_stage_set: {report.loop_stage_set or ''}",
         "",
         "## Objective",
         "",
@@ -369,9 +446,47 @@ def format_autoresearch_report(report: AutoresearchReport) -> str:
                 "",
                 f"- promotion_gate_decision: {report.promotion_gate_decision}",
                 f"- promotion_gate_stage_label: {report.promotion_gate_stage_label or ''}",
+                f"- route_stage_acceptance_decision: {report.route_stage_acceptance_decision or ''}",
+                f"- route_stage_failed_stages: {', '.join(report.route_stage_failed_stages) if report.route_stage_failed_stages else 'none'}",
                 f"- promotion_gate_blockers: {', '.join(report.promotion_gate_blockers) if report.promotion_gate_blockers else 'none'}",
+                f"- top_loss_markets: {', '.join(report.top_loss_markets) if report.top_loss_markets else 'none'}",
+                f"- top_loss_signatures: {', '.join(report.top_loss_signatures) if report.top_loss_signatures else 'none'}",
+                f"- top_loss_trades: {', '.join(report.top_loss_trades) if report.top_loss_trades else 'none'}",
+                (
+                    f"- promotion_gate_max_single_loss_pnl: {report.promotion_gate_max_single_loss_pnl:.6f}"
+                    if report.promotion_gate_max_single_loss_pnl is not None
+                    else "- promotion_gate_max_single_loss_pnl: "
+                ),
+                (
+                    f"- promotion_gate_observed_max_single_loss_pnl: {report.promotion_gate_observed_max_single_loss_pnl:.6f}"
+                    if report.promotion_gate_observed_max_single_loss_pnl is not None
+                    else "- promotion_gate_observed_max_single_loss_pnl: "
+                ),
+                (
+                    f"- promotion_gate_max_top3_loss_concentration_ratio: {report.promotion_gate_max_top3_loss_concentration_ratio:.4f}"
+                    if report.promotion_gate_max_top3_loss_concentration_ratio is not None
+                    else "- promotion_gate_max_top3_loss_concentration_ratio: "
+                ),
+                (
+                    f"- promotion_gate_observed_top3_loss_concentration_ratio: {report.promotion_gate_observed_top3_loss_concentration_ratio:.4f}"
+                    if report.promotion_gate_observed_top3_loss_concentration_ratio is not None
+                    else "- promotion_gate_observed_top3_loss_concentration_ratio: "
+                ),
             ]
         )
+        if report.route_stage_statuses:
+            lines.extend(["", "### Route Stage Gates", ""])
+            for stage_name in (
+                "scan_quality",
+                "selection_pass_through",
+                "route_conversion_quality",
+                "close_out_quality",
+                "profitability_tail_risk",
+            ):
+                stage_status = report.route_stage_statuses.get(stage_name, "")
+                stage_blockers = report.route_stage_blockers.get(stage_name, ())
+                lines.append(f"- {stage_name}: {stage_status or 'unknown'}")
+                lines.append(f"- {stage_name}_blockers: {', '.join(stage_blockers) if stage_blockers else 'none'}")
     lines.extend(
         [
             "",
@@ -547,6 +662,123 @@ def _summarize_event_log(path: str | Path | None) -> EventDiagnostics:
     )
 
 
+def evaluate_report_comparability(
+    *,
+    reports: tuple[AutoresearchReport, ...],
+) -> tuple[bool, tuple[str, ...]]:
+    if len(reports) <= 1:
+        return True, ()
+    blockers: list[str] = []
+    window_ids = {str(report.window_set_id).strip() for report in reports if report.window_set_id is not None}
+    if any(report.window_set_id is None or not str(report.window_set_id).strip() for report in reports):
+        blockers.append("missing_window_set_id")
+    if len(window_ids) > 1:
+        blockers.append("mixed_window_set_id")
+    evidence_tiers = {str(report.evidence_tier).strip().lower() for report in reports if str(report.evidence_tier).strip()}
+    if len(evidence_tiers) > 1:
+        blockers.append("mixed_evidence_tier")
+    loop_stage_sets = {
+        str(report.loop_stage_set).strip().lower()
+        for report in reports
+        if report.loop_stage_set is not None and str(report.loop_stage_set).strip()
+    }
+    if any(report.loop_stage_set is None or not str(report.loop_stage_set).strip() for report in reports):
+        blockers.append("missing_loop_stage_set")
+    if len(loop_stage_sets) > 1:
+        blockers.append("mixed_loop_stage_set")
+    return len(blockers) == 0, tuple(blockers)
+
+
+def rank_autoresearch_candidates(
+    *,
+    reports: tuple[AutoresearchReport, ...],
+) -> AutoresearchCandidateRanking:
+    comparable, blockers = evaluate_report_comparability(reports=reports)
+    if not comparable:
+        return AutoresearchCandidateRanking(
+            comparable=False,
+            comparability_blockers=blockers,
+            window_set_id=None,
+            evidence_tier=None,
+            loop_stage_set=None,
+            ranked_entries=(),
+        )
+    if not reports:
+        return AutoresearchCandidateRanking(
+            comparable=True,
+            comparability_blockers=(),
+            window_set_id=None,
+            evidence_tier=None,
+            loop_stage_set=None,
+            ranked_entries=(),
+        )
+    sorted_reports = sorted(
+        reports,
+        key=lambda report: (
+            _decision_rank(report.route_stage_acceptance_decision),
+            -len(report.route_stage_failed_stages),
+            report.score,
+            report.effective_closed_trade_net_pnl,
+            report.variant_id or "",
+            report.metrics_path,
+        ),
+        reverse=True,
+    )
+    entries = tuple(
+        AutoresearchCandidateRankingEntry(
+            rank=index + 1,
+            metrics_path=report.metrics_path,
+            variant_id=report.variant_id or f"candidate-{index+1}",
+            acceptance_decision=(report.route_stage_acceptance_decision or "review"),
+            failed_stage_count=len(report.route_stage_failed_stages),
+            score=round(report.score, 6),
+            closed_trade_net_pnl=round(report.effective_closed_trade_net_pnl, 6),
+        )
+        for index, report in enumerate(sorted_reports)
+    )
+    return AutoresearchCandidateRanking(
+        comparable=True,
+        comparability_blockers=(),
+        window_set_id=sorted_reports[0].window_set_id,
+        evidence_tier=sorted_reports[0].evidence_tier,
+        loop_stage_set=sorted_reports[0].loop_stage_set,
+        ranked_entries=entries,
+    )
+
+
+def format_autoresearch_candidate_ranking(
+    ranking: AutoresearchCandidateRanking,
+) -> str:
+    lines = [
+        "# Autoresearch Candidate Ranking",
+        "",
+        f"- comparable: {str(ranking.comparable).lower()}",
+        f"- comparability_blockers: {', '.join(ranking.comparability_blockers) if ranking.comparability_blockers else 'none'}",
+        f"- window_set_id: {ranking.window_set_id or ''}",
+        f"- evidence_tier: {ranking.evidence_tier or ''}",
+        f"- loop_stage_set: {ranking.loop_stage_set or ''}",
+        "",
+        "## Ranked Candidates",
+        "",
+    ]
+    if not ranking.ranked_entries:
+        lines.append("- none")
+        return "\n".join(lines)
+    for entry in ranking.ranked_entries:
+        lines.extend(
+            [
+                f"- rank: {entry.rank}",
+                f"  variant_id: {entry.variant_id}",
+                f"  acceptance_decision: {entry.acceptance_decision}",
+                f"  failed_stage_count: {entry.failed_stage_count}",
+                f"  score: {entry.score:.4f}",
+                f"  closed_trade_net_pnl: {entry.closed_trade_net_pnl:.6f}",
+                f"  metrics_path: {entry.metrics_path}",
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _load_runtime_state(path: str | Path | None) -> RuntimeState | None:
     if path is None:
         return None
@@ -559,9 +791,41 @@ def _load_runtime_state(path: str | Path | None) -> RuntimeState | None:
     return runtime_state_from_dict(payload)
 
 
-def _load_promotion_gate_summary(path: str | Path | None) -> dict[str, str | tuple[str, ...] | None]:
+def _resolve_optional_text(*, preferred: str | None, fallback: Any) -> str | None:
+    if preferred is not None and str(preferred).strip():
+        return str(preferred).strip()
+    if isinstance(fallback, str) and fallback.strip():
+        return fallback.strip()
+    return None
+
+
+def _decision_rank(decision: str | None) -> int:
+    resolved = str(decision or "review").strip().lower()
+    if resolved == "proceed":
+        return 2
+    if resolved == "review":
+        return 1
+    return 0
+
+
+def _load_promotion_gate_summary(path: str | Path | None) -> dict[str, Any]:
     if path is None:
-        return {"decision": None, "stage_label": None, "blockers": ()}
+        return {
+            "decision": None,
+            "stage_label": None,
+            "route_stage_acceptance_decision": None,
+            "route_stage_failed_stages": (),
+            "route_stage_statuses": {},
+            "route_stage_blockers": {},
+            "blockers": (),
+            "top_loss_markets": (),
+            "top_loss_signatures": (),
+            "top_loss_trades": (),
+            "max_single_loss_pnl": None,
+            "observed_max_single_loss_pnl": None,
+            "max_top3_loss_concentration_ratio": None,
+            "observed_top3_loss_concentration_ratio": None,
+        }
     scorecard_path = Path(path)
     if not scorecard_path.exists():
         raise FileNotFoundError(scorecard_path)
@@ -570,16 +834,93 @@ def _load_promotion_gate_summary(path: str | Path | None) -> dict[str, str | tup
         raise ValueError("Promotion scorecard payload must be a JSON object")
     decision = payload.get("promotion_decision", payload.get("recommended_action"))
     stage_label = payload.get("promotion_stage_label")
+    route_stage_acceptance_decision = payload.get("route_stage_acceptance_decision")
+    raw_route_stage_failed_stages = payload.get("route_stage_failed_stages", ())
+    route_stage_failed_stages = (
+        tuple(str(item) for item in raw_route_stage_failed_stages if str(item).strip())
+        if isinstance(raw_route_stage_failed_stages, list)
+        else ()
+    )
+    raw_route_stage_statuses = payload.get("route_stage_statuses", {})
+    route_stage_statuses: dict[str, str]
+    if isinstance(raw_route_stage_statuses, dict):
+        route_stage_statuses = {
+            str(key): str(value)
+            for key, value in raw_route_stage_statuses.items()
+            if str(key).strip()
+        }
+    else:
+        route_stage_statuses = {}
+    raw_route_stage_blockers = payload.get("route_stage_blockers", {})
+    route_stage_blockers: dict[str, tuple[str, ...]]
+    if isinstance(raw_route_stage_blockers, dict):
+        parsed_blockers: dict[str, tuple[str, ...]] = {}
+        for key, value in raw_route_stage_blockers.items():
+            stage_key = str(key).strip()
+            if not stage_key:
+                continue
+            if isinstance(value, list):
+                parsed_blockers[stage_key] = tuple(str(item) for item in value if str(item).strip())
+            else:
+                parsed_blockers[stage_key] = ()
+        route_stage_blockers = parsed_blockers
+    else:
+        route_stage_blockers = {}
     raw_blockers = payload.get("promotion_blocking_reasons", ())
     blockers: tuple[str, ...]
     if isinstance(raw_blockers, list):
         blockers = tuple(str(item) for item in raw_blockers if str(item).strip())
     else:
         blockers = ()
+    top_loss_market_breakdown = payload.get("top_loss_market_breakdown", [])
+    top_loss_signature_breakdown = payload.get("top_loss_signature_breakdown", [])
+    top_loss_trades = payload.get("top_loss_trades", [])
+    extracted_markets = tuple(
+        str(item.get("market_id", "")).strip()
+        for item in top_loss_market_breakdown
+        if isinstance(item, dict) and str(item.get("market_id", "")).strip()
+    )
+    extracted_signatures = tuple(
+        str(item.get("signature", "")).strip()
+        for item in top_loss_signature_breakdown
+        if isinstance(item, dict) and str(item.get("signature", "")).strip()
+    )
+    extracted_trade_lines = tuple(
+        f"{str(item.get('market_id', 'unknown'))}:{float(item.get('net_pnl', 0.0)):.6f}"
+        for item in top_loss_trades
+        if isinstance(item, dict)
+    )
+    raw_max_single_loss = payload.get("promotion_max_single_loss_pnl")
+    raw_observed_max_single_loss = payload.get("observed_max_single_loss_pnl")
+    raw_max_top3 = payload.get("promotion_max_top3_loss_concentration_ratio")
+    raw_observed_top3 = payload.get("observed_top3_loss_concentration_ratio")
     return {
         "decision": (str(decision) if decision is not None else None),
         "stage_label": (str(stage_label) if stage_label is not None else None),
+        "route_stage_acceptance_decision": (
+            str(route_stage_acceptance_decision) if route_stage_acceptance_decision is not None else None
+        ),
+        "route_stage_failed_stages": route_stage_failed_stages,
+        "route_stage_statuses": route_stage_statuses,
+        "route_stage_blockers": route_stage_blockers,
         "blockers": blockers,
+        "top_loss_markets": extracted_markets,
+        "top_loss_signatures": extracted_signatures,
+        "top_loss_trades": extracted_trade_lines,
+        "max_single_loss_pnl": (
+            float(raw_max_single_loss) if isinstance(raw_max_single_loss, int | float) else None
+        ),
+        "observed_max_single_loss_pnl": (
+            float(raw_observed_max_single_loss)
+            if isinstance(raw_observed_max_single_loss, int | float)
+            else None
+        ),
+        "max_top3_loss_concentration_ratio": (
+            float(raw_max_top3) if isinstance(raw_max_top3, int | float) else None
+        ),
+        "observed_top3_loss_concentration_ratio": (
+            float(raw_observed_top3) if isinstance(raw_observed_top3, int | float) else None
+        ),
     }
 
 

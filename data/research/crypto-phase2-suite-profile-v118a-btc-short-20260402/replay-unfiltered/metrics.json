@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v118a-repricing-escalation",
+  "events_recorded": 8,
+  "generated_at": "2026-03-31T17:58:46.188000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 3
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-profile-v118a-btc-short-20260402\\replay-unfiltered",
+  "processed_snapshots": 50,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 3,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\20260401-015839-btc-short-repricing-fallback-snapshots.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 3
+  },
+  "submitted_orders": 3,
+  "today_pnl": -0.23839383053999885,
+  "total_equity": 24.761606169460002
+}

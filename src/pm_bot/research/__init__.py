@@ -1,9 +1,13 @@
 """Replay and backtest entry points."""
 
 from pm_bot.research.autoresearch import (
+    AutoresearchCandidateRanking,
+    AutoresearchCandidateRankingEntry,
     AutoresearchReport,
+    format_autoresearch_candidate_ranking,
     format_autoresearch_report,
     generate_autoresearch_report,
+    rank_autoresearch_candidates,
     write_autoresearch_report,
 )
 from pm_bot.research.backtest import run_backtest
@@ -63,6 +67,8 @@ from pm_bot.strategies.crypto.phase1.signal_report import (
 
 __all__ = [
     "AutoresearchReport",
+    "AutoresearchCandidateRanking",
+    "AutoresearchCandidateRankingEntry",
     "CryptoFamilyExportResult",
     "CryptoSignalReport",
     "CryptoWindowFamilyReport",
@@ -72,6 +78,7 @@ __all__ = [
     "ReplayDeterminismReport",
     "ResearchRunResult",
     "WindowMiningReport",
+    "format_autoresearch_candidate_ranking",
     "format_autoresearch_report",
     "export_crypto_family_window",
     "format_crypto_family_export_result",
@@ -82,6 +89,7 @@ __all__ = [
     "format_paper_integrity_report",
     "format_replay_determinism_report",
     "generate_autoresearch_report",
+    "rank_autoresearch_candidates",
     "generate_crypto_signal_report",
     "generate_crypto_window_family_report",
     "generate_paper_integrity_report",

@@ -320,6 +320,24 @@ def spread_cost_bps(*, snapshot: MarketSnapshot, side: SignalSide) -> float:
     return 0.0
 
 
+def counterfactual_entry_score(
+    *,
+    net_edge_bps: float,
+    confidence: float,
+    urgency_score: float,
+    spread_bps: float,
+    net_edge_weight: float = 1.0,
+    confidence_weight: float = 0.5,
+    urgency_weight: float = 0.25,
+    spread_weight: float = 1.0,
+) -> float:
+    confidence_component = max(0.0, confidence) * 1000.0 * max(0.0, confidence_weight)
+    urgency_component = max(0.0, urgency_score) * 500.0 * max(0.0, urgency_weight)
+    edge_component = max(0.0, net_edge_bps) * max(0.0, net_edge_weight)
+    spread_penalty = max(0.0, spread_bps) * max(0.0, spread_weight)
+    return round(edge_component + confidence_component + urgency_component - spread_penalty, 4)
+
+
 def _maker_price(
     *,
     snapshot: MarketSnapshot,
