@@ -45,6 +45,10 @@ class TrackedOrder:
     thesis_group_id: str | None = None
     underlying_group_id: str | None = None
     time_in_force: str = "GTC"
+    rationale_tags: tuple[str, ...] = ()
+    signal_type: str | None = None
+    execution_route: str | None = None
+    decision_reason: str | None = None
 
 
 class OrderLifecycleTracker:
@@ -74,6 +78,10 @@ class OrderLifecycleTracker:
             thesis_group_id=intent.thesis_group_id,
             underlying_group_id=intent.underlying_group_id,
             time_in_force=str(intent.time_in_force or "GTC"),
+            rationale_tags=tuple(intent.rationale_tags),
+            signal_type=intent.signal_type,
+            execution_route=intent.execution_route,
+            decision_reason=intent.decision_reason,
             matched_shares=0.0,
             matched_notional=0.0,
             fees_paid=0.0,
@@ -164,6 +172,10 @@ class OrderLifecycleTracker:
         thesis_group_id: str | None = None,
         underlying_group_id: str | None = None,
         time_in_force: str = "GTC",
+        rationale_tags: tuple[str, ...] = (),
+        signal_type: str | None = None,
+        execution_route: str | None = None,
+        decision_reason: str | None = None,
         matched_shares: float,
         matched_notional: float,
         fees_paid: float,
@@ -192,6 +204,10 @@ class OrderLifecycleTracker:
                 thesis_group_id=thesis_group_id,
                 underlying_group_id=underlying_group_id,
                 time_in_force=time_in_force,
+                rationale_tags=rationale_tags,
+                signal_type=signal_type,
+                execution_route=execution_route,
+                decision_reason=decision_reason,
                 matched_shares=matched_shares,
                 matched_notional=matched_notional,
                 fees_paid=fees_paid,
@@ -220,6 +236,10 @@ class OrderLifecycleTracker:
             thesis_group_id=thesis_group_id if thesis_group_id is not None else existing.thesis_group_id,
             underlying_group_id=underlying_group_id if underlying_group_id is not None else existing.underlying_group_id,
             time_in_force=str(time_in_force or existing.time_in_force),
+            rationale_tags=tuple(rationale_tags) if rationale_tags else existing.rationale_tags,
+            signal_type=signal_type if signal_type is not None else existing.signal_type,
+            execution_route=execution_route if execution_route is not None else existing.execution_route,
+            decision_reason=decision_reason if decision_reason is not None else existing.decision_reason,
             matched_shares=max(existing.matched_shares, matched_shares),
             matched_notional=max(existing.matched_notional, matched_notional),
             fees_paid=max(existing.fees_paid, fees_paid),

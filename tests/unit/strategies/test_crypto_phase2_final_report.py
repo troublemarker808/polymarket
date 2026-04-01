@@ -22,6 +22,7 @@ def test_final_scorecard_promotion_gate_proceeds_when_profitability_and_stabilit
     scorecard = build_crypto_phase2_final_scorecard(_suite(filtered=filtered, unfiltered=_digest(label="unfiltered")))
 
     assert scorecard.recommended_action == "proceed"
+    assert scorecard.operator_verdict == "go_next_maturity_step"
     assert scorecard.promotion_decision == "proceed"
     assert scorecard.promotion_stage_label == "shadow validation"
     assert scorecard.promotion_blocking_reasons == ()
@@ -47,6 +48,7 @@ def test_final_scorecard_promotion_gate_reviews_when_evidence_is_thin() -> None:
     assert scorecard.recommended_action == "review"
     assert scorecard.promotion_decision == "review"
     assert "insufficient_closed_trade_count" in scorecard.promotion_blocking_reasons
+    assert "close_out_insufficient_closed_trade_density" in scorecard.route_stage_blockers["close_out_quality"]
     assert scorecard.route_stage_acceptance_decision in {"proceed", "review"}
 
 
@@ -64,6 +66,7 @@ def test_final_scorecard_promotion_gate_pauses_on_halted_status_even_if_profitab
     scorecard = build_crypto_phase2_final_scorecard(_suite(filtered=filtered, unfiltered=_digest(label="unfiltered")))
 
     assert scorecard.recommended_action == "pause"
+    assert scorecard.operator_verdict == "review_required"
     assert scorecard.promotion_decision == "pause"
     assert "risk_status_halted" in scorecard.promotion_blocking_reasons
     assert scorecard.route_stage_statuses["route_conversion_quality"] == "blocked"
@@ -142,6 +145,38 @@ def test_final_scorecard_route_stage_flags_sizing_large_bucket_underperformance(
     assert scorecard.route_stage_acceptance_decision == "review"
 
 
+def test_final_scorecard_route_stage_flags_signature_concentration_and_maps_action() -> None:
+    filtered = _digest(
+        label="filtered",
+        status="running",
+        closed_trade_count=10,
+        closed_trade_net_pnl=0.4,
+        submitted_notional=10.0,
+        edge_capture_ratio=0.7,
+        average_trade_expected_edge_bps=100.0,
+        average_trade_execution_drag_bps=20.0,
+        winning_trade_rate=0.8,
+        average_loss_trade_pnl=-0.1,
+        top_loss_signature_breakdown=(
+            {"signature": "exit|taker|btc_dip_short_shadow|sell_no", "total_abs_loss": 0.19, "loss_count": 2},
+        ),
+    )
+    filtered = replace(
+        filtered,
+        average_adverse_fill_bps=10.0,
+        stop_out_rate=0.2,
+        average_trade_realized_pnl_bps=10.0,
+        passive_cleanup_exit_share=0.2,
+    )
+    scorecard = build_crypto_phase2_final_scorecard(_suite(filtered=filtered, unfiltered=_digest(label="unfiltered")))
+
+    assert "tail_loss_signature_concentration_breach" in scorecard.route_stage_blockers["profitability_tail_risk"]
+    assert scorecard.next_constrained_action == (
+        "tighten signature-level loss caps and reduce repeat exposure on the dominant losing signature."
+    )
+    assert scorecard.operator_summary.startswith("Primary blocker is signature-level loss concentration")
+
+
 def _suite(*, filtered: CryptoPhase2ReplayDigest, unfiltered: CryptoPhase2ReplayDigest) -> CryptoPhase2SuiteResult:
     return CryptoPhase2SuiteResult(
         generated_at=datetime(2026, 4, 1, tzinfo=UTC),
@@ -167,6 +202,7 @@ def _digest(
     winning_trade_rate: float = 0.6,
     average_loss_trade_pnl: float = -0.05,
     top_loss_trades: tuple[dict[str, Any], ...] = (),
+    top_loss_signature_breakdown: tuple[dict[str, Any], ...] = (),
 ) -> CryptoPhase2ReplayDigest:
     return CryptoPhase2ReplayDigest(
         label=label,
@@ -211,5 +247,5 @@ def _digest(
         execution_feedback_bias="stable",
         top_loss_trades=top_loss_trades,
         top_loss_market_breakdown=(),
-        top_loss_signature_breakdown=(),
+        top_loss_signature_breakdown=top_loss_signature_breakdown,
     )

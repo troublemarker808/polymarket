@@ -63,4 +63,8 @@ def signal_to_order_intent(
         exposure_group_id=exposure_keys.exposure_group_id,
         thesis_group_id=exposure_keys.thesis_group_id,
         underlying_group_id=exposure_keys.underlying_group_id,
+        rationale_tags=tuple(signal.rationale_tags),
+        signal_type=str(signal.diagnostics.get("signal_type", "")).strip() or None,
+        execution_route=str(signal.diagnostics.get("execution_route", "")).strip() or None,
+        decision_reason=(signal.rationale_tags[0] if signal.rationale_tags else None),
     )

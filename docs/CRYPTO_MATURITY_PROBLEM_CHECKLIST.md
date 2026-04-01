@@ -1,6 +1,6 @@
 # Crypto Maturity Problem Checklist
 
-Last updated: 2026-04-01
+Last updated: 2026-04-02
 
 This checklist is the control document for the crypto module.
 
@@ -211,3 +211,73 @@ Resolution evidence:
 - Protocol comparability baseline lock:
   - `src/pm_bot/research/autoresearch.py` now emits `window_set_id`, `variant_id`, `evidence_tier`
   - mixed-window comparison blockers are now machine-evaluable via `evaluate_report_comparability(...)`
+
+### P7. BTC Closed-Loop Route Still Fails Deterministic Acceptance
+
+Status: `in_progress`
+
+Observed behavior:
+
+- Fixed-window BTC suite still returns `recommended_action=review`.
+- Dominant blocker is stable: `route_adverse_fill_too_high`.
+- Close-out and tail-risk are now better attributed but still failing:
+  - `close_out_insufficient_closed_trade_density`
+  - `close_out_stop_out_pressure`
+  - `close_out_negative_realized_pnl_bps`
+  - `close_out_cleanup_dominance`
+  - `tail_loss_top3_concentration_breach`
+  - `tail_loss_top1_concentration_breach`
+  - `tail_loss_market_concentration_breach`
+  - `tail_loss_signature_concentration_breach`
+
+Root cause:
+
+- Execution conversion drag (adverse fill) remains the first-order loss source.
+- Current close-outs are dominated by passive cleanup/time-stop behavior with negative realized outcomes.
+- Losses remain concentrated in one BTC dip signature bucket.
+
+Latest verification note (2026-04-02):
+
+- After tightening taker-entry tolerance in profile and forcing more passive time-stop handling, adverse-fill blocker was removed on the same fixed window.
+- Dominant blocker shifted to `route_maker_expire_dominance` with `0` closed trades.
+- Conclusion: current phase has moved from "adverse-fill dominated loss" to "maker conversion starvation"; still not promotion-ready.
+- Controlled probe-conversion path has now been implemented and verified in replay diagnostics:
+  - probe eligibility/activation fields are emitted and observed on the same fixed window.
+  - after adding a probe notional floor tied to market `min_order_size`, probe taker signals are now executable submissions.
+  - current stage outcome is still `review`, but `closed_trade_count` moved from `0` to `1` on `u8f`.
+- Latest root-cause refinement:
+  - conversion starvation has been partially addressed, but the blocker shifted back to adverse-fill drag:
+    - `dominant_route_stage_blocker=route_adverse_fill_too_high`
+    - `average_adverse_fill_bps=147.6341`
+    - closed-trade net pnl remains negative.
+
+Bounded next fix:
+
+- Prioritize route conversion containment before further alpha expansion:
+  - tighten fallback taker escalation and premium caps
+  - tighten maker repost loop and no-fill suppression on fragile signatures
+- Add explicit pending-order replacement path for probe-taker conversion so activated probes can become executable submissions.
+- Keep probe execution floor, then tighten probe premium/net-edge thresholds to reduce adverse-fill drag while preserving minimal conversion.
+- Keep close-out quality guard and attribution blockers as hard evidence gates.
+- Require comparable replay windows and deterministic blocker-to-action mapping in each iteration.
+
+Primary code targets (already landed for attribution + verdict packaging):
+
+- `src/pm_bot/strategies/crypto/phase2/final_report.py`
+- `src/pm_bot/strategies/crypto/phase2/strategy.py`
+- `src/pm_bot/strategies/crypto/phase2/management.py`
+- `src/pm_bot/research/autoresearch.py`
+
+Current evidence bundle:
+
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u4`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u5`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u6`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8b`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8c`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8d`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8e`
+- `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8f`
+- comparability report:
+  - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u6/autoresearch_compare.md`

@@ -266,6 +266,8 @@ class AutoresearchReport:
     route_stage_failed_stages: tuple[str, ...]
     route_stage_statuses: dict[str, str]
     route_stage_blockers: dict[str, tuple[str, ...]]
+    dominant_route_stage_blocker: str | None
+    next_constrained_action: str | None
     promotion_gate_blockers: tuple[str, ...]
     top_loss_markets: tuple[str, ...]
     top_loss_signatures: tuple[str, ...]
@@ -322,6 +324,10 @@ def generate_autoresearch_report(
     effective_trades_closed = diagnostics.effective_closed_trade_count(metrics)
     effective_fill_rate = diagnostics.effective_fill_rate(metrics)
     effective_closed_trade_net_pnl = diagnostics.effective_closed_trade_net_pnl
+    if not diagnostics.has_session_scope and effective_closed_trade_net_pnl == 0.0:
+        raw_closed_trade_net_pnl = metrics.get("closed_trade_net_pnl")
+        if isinstance(raw_closed_trade_net_pnl, int | float):
+            effective_closed_trade_net_pnl = float(raw_closed_trade_net_pnl)
     resolved_window_set_id = _resolve_optional_text(
         preferred=window_set_id,
         fallback=metrics.get("window_set_id"),
@@ -374,6 +380,8 @@ def generate_autoresearch_report(
         route_stage_failed_stages=promotion_gate["route_stage_failed_stages"],
         route_stage_statuses=promotion_gate["route_stage_statuses"],
         route_stage_blockers=promotion_gate["route_stage_blockers"],
+        dominant_route_stage_blocker=promotion_gate["dominant_route_stage_blocker"],
+        next_constrained_action=promotion_gate["next_constrained_action"],
         promotion_gate_blockers=promotion_gate["blockers"],
         top_loss_markets=promotion_gate["top_loss_markets"],
         top_loss_signatures=promotion_gate["top_loss_signatures"],
@@ -448,6 +456,8 @@ def format_autoresearch_report(report: AutoresearchReport) -> str:
                 f"- promotion_gate_stage_label: {report.promotion_gate_stage_label or ''}",
                 f"- route_stage_acceptance_decision: {report.route_stage_acceptance_decision or ''}",
                 f"- route_stage_failed_stages: {', '.join(report.route_stage_failed_stages) if report.route_stage_failed_stages else 'none'}",
+                f"- dominant_route_stage_blocker: {report.dominant_route_stage_blocker or ''}",
+                f"- next_constrained_action: {report.next_constrained_action or ''}",
                 f"- promotion_gate_blockers: {', '.join(report.promotion_gate_blockers) if report.promotion_gate_blockers else 'none'}",
                 f"- top_loss_markets: {', '.join(report.top_loss_markets) if report.top_loss_markets else 'none'}",
                 f"- top_loss_signatures: {', '.join(report.top_loss_signatures) if report.top_loss_signatures else 'none'}",
@@ -817,6 +827,8 @@ def _load_promotion_gate_summary(path: str | Path | None) -> dict[str, Any]:
             "route_stage_failed_stages": (),
             "route_stage_statuses": {},
             "route_stage_blockers": {},
+            "dominant_route_stage_blocker": None,
+            "next_constrained_action": None,
             "blockers": (),
             "top_loss_markets": (),
             "top_loss_signatures": (),
@@ -903,6 +915,16 @@ def _load_promotion_gate_summary(path: str | Path | None) -> dict[str, Any]:
         "route_stage_failed_stages": route_stage_failed_stages,
         "route_stage_statuses": route_stage_statuses,
         "route_stage_blockers": route_stage_blockers,
+        "dominant_route_stage_blocker": (
+            str(payload.get("dominant_route_stage_blocker"))
+            if payload.get("dominant_route_stage_blocker") not in (None, "")
+            else None
+        ),
+        "next_constrained_action": (
+            str(payload.get("next_constrained_action"))
+            if payload.get("next_constrained_action") not in (None, "")
+            else None
+        ),
         "blockers": blockers,
         "top_loss_markets": extracted_markets,
         "top_loss_signatures": extracted_signatures,

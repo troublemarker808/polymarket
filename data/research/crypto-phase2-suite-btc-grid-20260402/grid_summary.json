@@ -1,0 +1,306 @@
+[
+  {
+    "name": "g01",
+    "overrides": {
+      "replay_final_settlement_passes": 2,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g02",
+    "overrides": {
+      "replay_final_settlement_passes": 2,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g03",
+    "overrides": {
+      "replay_final_settlement_passes": 2,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g04",
+    "overrides": {
+      "replay_final_settlement_passes": 2,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g05",
+    "overrides": {
+      "replay_final_settlement_passes": 4,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g06",
+    "overrides": {
+      "replay_final_settlement_passes": 4,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g07",
+    "overrides": {
+      "replay_final_settlement_passes": 4,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g08",
+    "overrides": {
+      "replay_final_settlement_passes": 4,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10302499999999926,
+    "closed": 1,
+    "pnl_per_notional": -0.0024832134292565944,
+    "avg_adverse_fill_bps": 132.5836,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g09",
+    "overrides": {
+      "replay_final_settlement_passes": 6,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g10",
+    "overrides": {
+      "replay_final_settlement_passes": 6,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g11",
+    "overrides": {
+      "replay_final_settlement_passes": 6,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g12",
+    "overrides": {
+      "replay_final_settlement_passes": 6,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g13",
+    "overrides": {
+      "replay_final_settlement_passes": 8,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g14",
+    "overrides": {
+      "replay_final_settlement_passes": 8,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": false,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g15",
+    "overrides": {
+      "replay_final_settlement_passes": 8,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 2
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  },
+  {
+    "name": "g16",
+    "overrides": {
+      "replay_final_settlement_passes": 8,
+      "replay_final_settlement_step_seconds": 1.0,
+      "time_stop_force_ioc_for_repricing_taker": true,
+      "time_stop_force_ioc_after_expiries": 4
+    },
+    "pnl": -0.10424999999999951,
+    "closed": 2,
+    "pnl_per_notional": -0.0044742489270386265,
+    "avg_adverse_fill_bps": 125.9276,
+    "route_blocker": "route_adverse_fill_too_high",
+    "promotion_blockers": [
+      "insufficient_closed_trade_count",
+      "top3_loss_concentration_above_ceiling",
+      "pnl_per_notional_not_positive"
+    ]
+  }
+]

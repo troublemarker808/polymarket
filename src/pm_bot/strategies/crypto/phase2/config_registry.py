@@ -21,6 +21,7 @@ class CryptoPhase2ResolvedConfig:
     min_contract_price: float
     repricing_max_net_edge_bps: float
     taker_urgency_threshold: float
+    repricing_fallback_escalation_taker_urgency_floor: float
     maker_min_edge_bps: float
     resolution_maker_min_edge_bps: float
     high_edge_taker_min_edge_bps: float
@@ -28,6 +29,11 @@ class CryptoPhase2ResolvedConfig:
     taker_max_entry_premium_bps: float
     repricing_taker_max_entry_premium_bps: float
     repricing_fallback_taker_after_no_fill_attempts: int
+    repricing_fallback_probe_taker_enabled: bool
+    repricing_fallback_probe_after_no_fill_attempts: int
+    repricing_fallback_probe_taker_max_entry_premium_bps: float
+    repricing_fallback_probe_min_net_edge_bps: float
+    repricing_fallback_probe_notional_multiplier: float
     repricing_fallback_taker_retry_max_entry_premium_bps: float | None
     repricing_fallback_taker_escalation_max_spread_bps: float | None
     repricing_fallback_taker_escalation_min_net_edge_bps: float | None
@@ -65,6 +71,7 @@ class CryptoPhase2ResolvedConfig:
     entry_failure_cooldown_seconds: float
     entry_market_cooldown_seconds: float
     repricing_fallback_entry_market_cooldown_seconds: float
+    entry_no_fill_cooldown_seconds: float
     entry_family_cooldown_seconds: float
     entry_family_cooldown_seconds_reach: float | None
     entry_family_cooldown_seconds_dip: float | None
@@ -79,6 +86,8 @@ class CryptoPhase2ResolvedConfig:
     market_probation_cooldown_seconds: float
     time_stop_force_ioc_after_expiries: int
     time_stop_force_ioc_for_repricing_taker: bool
+    time_stop_force_ioc_suspension_on_passive_feedback_enabled: bool
+    time_stop_force_ioc_suspension_min_taker_shortfall_bps: float
     time_stop_force_ioc_min_adverse_move_bps: float | None
     time_stop_force_ioc_max_spread_bps: float | None
     time_stop_force_ioc_max_remaining_edge_bps: float | None
@@ -98,7 +107,9 @@ class CryptoPhase2ResolvedConfig:
     thesis_entry_cooldown_seconds: float
     single_active_market_per_thesis: bool
     max_no_fill_entry_attempts_per_market: int
+    enforce_exposure_group_conflict_guard: bool
     skip_selective_wide_spread_markets: bool
+    selective_repricing_taker_max_quote_age_seconds: float
     dynamic_gates_enabled: bool
     dynamic_gate_min_samples: int
     dynamic_min_net_edge_floor_bps: float
@@ -155,6 +166,14 @@ class CryptoPhase2ResolvedConfig:
     fragile_closer_notional_haircut_expired_ratio_threshold: float
     fragile_closer_notional_haircut_min_samples: int
     fragile_closer_notional_haircut_lookback_events: int
+    close_out_quality_guard_enabled: bool
+    close_out_quality_guard_lookback_events: int
+    close_out_quality_guard_min_closed_samples: int
+    close_out_quality_guard_max_stop_out_share: float
+    close_out_quality_guard_min_realized_pnl_bps: float
+    close_out_quality_guard_notional_min_multiplier: float
+    close_out_quality_guard_notional_max_multiplier: float
+    close_out_quality_guard_entry_cooldown_seconds: float
 
 
 @dataclass(slots=True, frozen=True)
@@ -226,6 +245,7 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         min_contract_price=base.min_contract_price,
         repricing_max_net_edge_bps=base.repricing_max_net_edge_bps,
         taker_urgency_threshold=base.taker_urgency_threshold,
+        repricing_fallback_escalation_taker_urgency_floor=base.repricing_fallback_escalation_taker_urgency_floor,
         maker_min_edge_bps=base.maker_min_edge_bps,
         resolution_maker_min_edge_bps=base.resolution_maker_min_edge_bps,
         high_edge_taker_min_edge_bps=base.high_edge_taker_min_edge_bps,
@@ -233,6 +253,11 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         taker_max_entry_premium_bps=base.taker_max_entry_premium_bps,
         repricing_taker_max_entry_premium_bps=base.repricing_taker_max_entry_premium_bps,
         repricing_fallback_taker_after_no_fill_attempts=base.repricing_fallback_taker_after_no_fill_attempts,
+        repricing_fallback_probe_taker_enabled=base.repricing_fallback_probe_taker_enabled,
+        repricing_fallback_probe_after_no_fill_attempts=base.repricing_fallback_probe_after_no_fill_attempts,
+        repricing_fallback_probe_taker_max_entry_premium_bps=base.repricing_fallback_probe_taker_max_entry_premium_bps,
+        repricing_fallback_probe_min_net_edge_bps=base.repricing_fallback_probe_min_net_edge_bps,
+        repricing_fallback_probe_notional_multiplier=base.repricing_fallback_probe_notional_multiplier,
         repricing_fallback_taker_retry_max_entry_premium_bps=base.repricing_fallback_taker_retry_max_entry_premium_bps,
         repricing_fallback_taker_escalation_max_spread_bps=base.repricing_fallback_taker_escalation_max_spread_bps,
         repricing_fallback_taker_escalation_min_net_edge_bps=base.repricing_fallback_taker_escalation_min_net_edge_bps,
@@ -270,6 +295,7 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         entry_failure_cooldown_seconds=base.entry_failure_cooldown_seconds,
         entry_market_cooldown_seconds=base.entry_market_cooldown_seconds,
         repricing_fallback_entry_market_cooldown_seconds=base.repricing_fallback_entry_market_cooldown_seconds,
+        entry_no_fill_cooldown_seconds=base.entry_no_fill_cooldown_seconds,
         entry_family_cooldown_seconds=base.entry_family_cooldown_seconds,
         entry_family_cooldown_seconds_reach=base.entry_family_cooldown_seconds_reach,
         entry_family_cooldown_seconds_dip=base.entry_family_cooldown_seconds_dip,
@@ -284,6 +310,12 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         market_probation_cooldown_seconds=base.market_probation_cooldown_seconds,
         time_stop_force_ioc_after_expiries=base.time_stop_force_ioc_after_expiries,
         time_stop_force_ioc_for_repricing_taker=base.time_stop_force_ioc_for_repricing_taker,
+        time_stop_force_ioc_suspension_on_passive_feedback_enabled=(
+            base.time_stop_force_ioc_suspension_on_passive_feedback_enabled
+        ),
+        time_stop_force_ioc_suspension_min_taker_shortfall_bps=(
+            base.time_stop_force_ioc_suspension_min_taker_shortfall_bps
+        ),
         time_stop_force_ioc_min_adverse_move_bps=base.time_stop_force_ioc_min_adverse_move_bps,
         time_stop_force_ioc_max_spread_bps=base.time_stop_force_ioc_max_spread_bps,
         time_stop_force_ioc_max_remaining_edge_bps=base.time_stop_force_ioc_max_remaining_edge_bps,
@@ -313,7 +345,9 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         thesis_entry_cooldown_seconds=base.thesis_entry_cooldown_seconds,
         single_active_market_per_thesis=base.single_active_market_per_thesis,
         max_no_fill_entry_attempts_per_market=base.max_no_fill_entry_attempts_per_market,
+        enforce_exposure_group_conflict_guard=base.enforce_exposure_group_conflict_guard,
         skip_selective_wide_spread_markets=base.skip_selective_wide_spread_markets,
+        selective_repricing_taker_max_quote_age_seconds=base.selective_repricing_taker_max_quote_age_seconds,
         dynamic_gates_enabled=base.dynamic_gates_enabled,
         dynamic_gate_min_samples=base.dynamic_gate_min_samples,
         dynamic_min_net_edge_floor_bps=base.dynamic_min_net_edge_floor_bps,
@@ -378,6 +412,14 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         ),
         fragile_closer_notional_haircut_min_samples=base.fragile_closer_notional_haircut_min_samples,
         fragile_closer_notional_haircut_lookback_events=base.fragile_closer_notional_haircut_lookback_events,
+        close_out_quality_guard_enabled=base.close_out_quality_guard_enabled,
+        close_out_quality_guard_lookback_events=base.close_out_quality_guard_lookback_events,
+        close_out_quality_guard_min_closed_samples=base.close_out_quality_guard_min_closed_samples,
+        close_out_quality_guard_max_stop_out_share=base.close_out_quality_guard_max_stop_out_share,
+        close_out_quality_guard_min_realized_pnl_bps=base.close_out_quality_guard_min_realized_pnl_bps,
+        close_out_quality_guard_notional_min_multiplier=base.close_out_quality_guard_notional_min_multiplier,
+        close_out_quality_guard_notional_max_multiplier=base.close_out_quality_guard_notional_max_multiplier,
+        close_out_quality_guard_entry_cooldown_seconds=base.close_out_quality_guard_entry_cooldown_seconds,
     )
 
 
@@ -405,6 +447,7 @@ def _apply_overrides(
             "dynamic_gate_min_samples",
             "route_adaptation_min_samples",
             "repricing_fallback_taker_after_no_fill_attempts",
+            "repricing_fallback_probe_after_no_fill_attempts",
             "time_stop_passive_quote_ttl_seconds",
             "counterfactual_entry_top_k",
             "counterfactual_entry_min_candidates",
@@ -417,6 +460,8 @@ def _apply_overrides(
             "family_pnl_notional_haircut_lookback_events",
             "fragile_closer_notional_haircut_min_samples",
             "fragile_closer_notional_haircut_lookback_events",
+            "close_out_quality_guard_lookback_events",
+            "close_out_quality_guard_min_closed_samples",
         }:
             allowed[field_name] = int(cast(Any, raw_value))
         elif field_name == "taker_time_in_force":
@@ -425,6 +470,7 @@ def _apply_overrides(
             allowed[field_name] = str(cast(Any, raw_value))
         elif field_name in {
             "single_active_market_per_thesis",
+            "enforce_exposure_group_conflict_guard",
             "skip_selective_wide_spread_markets",
             "dynamic_gates_enabled",
             "route_adaptation_enabled",
@@ -440,9 +486,12 @@ def _apply_overrides(
             "time_stop_force_ioc_for_repricing_taker",
             "counterfactual_entry_gate_enabled",
             "market_probation_enabled",
+            "repricing_fallback_probe_taker_enabled",
             "family_trade_budget_enabled",
             "family_pnl_notional_haircut_enabled",
             "fragile_closer_notional_haircut_enabled",
+            "time_stop_force_ioc_suspension_on_passive_feedback_enabled",
+            "close_out_quality_guard_enabled",
             "escalated_entry_exit_containment_enabled",
             "escalated_entry_exit_containment_enabled_reach",
             "escalated_entry_exit_containment_enabled_dip",
@@ -451,6 +500,7 @@ def _apply_overrides(
         elif field_name in {
             "execution_max_holding_seconds",
             "time_stop_max_remaining_edge_bps",
+            "entry_no_fill_cooldown_seconds",
             "entry_family_cooldown_seconds_reach",
             "entry_family_cooldown_seconds_dip",
             "repricing_fallback_taker_retry_max_entry_premium_bps",
@@ -469,6 +519,7 @@ def _apply_overrides(
             "escalated_entry_adverse_fill_max_remaining_edge_bps_dip",
             "escalated_entry_max_holding_multiplier_reach",
             "escalated_entry_max_holding_multiplier_dip",
+            "time_stop_force_ioc_suspension_min_taker_shortfall_bps",
         }:
             allowed[field_name] = None if raw_value in (None, "") else float(cast(Any, raw_value))
         else:

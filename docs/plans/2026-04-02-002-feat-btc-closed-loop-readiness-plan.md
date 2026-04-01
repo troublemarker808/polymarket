@@ -100,11 +100,11 @@ Stage acceptance contract:
 - [x] Step 0: Lock BTC Closure Protocol and Baseline Windows
 - [x] Step 1: Harden Scan/Identify Contract and Diagnostics
 - [x] Step 2: Tighten Selection/Decision Transparency
-- [ ] Step 3: Stabilize Execution Conversion (Expiry Loop Suppression)
-- [ ] Step 4: Improve Exit/Close Quality and Sample Density
-- [ ] Step 5: Add Attribution-Level Tail-Loss Controls
-- [ ] Step 6: Gate Packaging and Deterministic Closure Verdict
-- [ ] Step 7: Replay/Paper Verification Bundle and Go/No-Go
+- [x] Step 3: Stabilize Execution Conversion (Expiry Loop Suppression)
+- [x] Step 4: Improve Exit/Close Quality and Sample Density
+- [x] Step 5: Add Attribution-Level Tail-Loss Controls
+- [x] Step 6: Gate Packaging and Deterministic Closure Verdict
+- [x] Step 7: Replay/Paper Verification Bundle and Go/No-Go
 
 ## Implementation Units
 
@@ -223,7 +223,7 @@ Acceptance:
 
 - Every emitted entry signal has a deterministic decision trace payload.
 
-- [ ] **Unit 3: Conversion Stabilization (Expiry Loop Suppression)**
+- [x] **Unit 3: Conversion Stabilization (Expiry Loop Suppression)**
 
 Goal:
 
@@ -263,7 +263,7 @@ Acceptance:
 
 - `route_conversion_quality` no longer fails on repeated expiry dominance in target windows.
 
-- [ ] **Unit 4: Close-Out Quality and Sample Density**
+- [x] **Unit 4: Close-Out Quality and Sample Density**
 
 Goal:
 
@@ -302,7 +302,7 @@ Acceptance:
 
 - `close_out_quality` passes or degrades to a single clearly bounded blocker.
 
-- [ ] **Unit 5: Attribution and Tail-Loss Control Layer**
+- [x] **Unit 5: Attribution and Tail-Loss Control Layer**
 
 Goal:
 
@@ -341,7 +341,7 @@ Acceptance:
 
 - `profitability_tail_risk` is evaluable with explicit concentration and pnl-per-notional evidence.
 
-- [ ] **Unit 6: Gate Packaging and Deterministic Verdict**
+- [x] **Unit 6: Gate Packaging and Deterministic Verdict**
 
 Goal:
 
@@ -380,7 +380,7 @@ Acceptance:
 
 - Operator can determine go/no-go without manual interpretation.
 
-- [ ] **Unit 7: Verification Bundle and Promotion Readiness Review**
+- [x] **Unit 7: Verification Bundle and Promotion Readiness Review**
 
 Goal:
 
@@ -487,3 +487,168 @@ This plan is complete when all are true:
   - covered with targeted tests:
     - `tests/unit/strategies/test_crypto_phase2_strategy.py` (`81 passed`)
     - `tests/unit/strategies/test_crypto_phase2_execution.py` (`22 passed`)
+- Unit 3 delivered:
+  - added market no-fill suppression controls:
+    - `entry_no_fill_cooldown_seconds` (config + resolved config wiring)
+    - no-fill attempt accounting now includes `order.expired` and stale/exchange cancels.
+  - added skip path `entry_no_fill_cooldown_active` with explicit diagnostics.
+  - signal diagnostics now include `recent_no_fill_attempts`.
+  - covered with targeted tests:
+    - `tests/unit/strategies/test_crypto_phase2_strategy.py` (`83 passed`)
+    - `tests/unit/strategies/test_crypto_phase2_replay.py` + `test_crypto_phase2_runtime_context.py` + `test_crypto_phase2_execution.py` (`35 passed`)
+  - replay check on BTC fixed window remained `review` with unchanged blocker set; this unit improved control semantics but did not yet move stage-gate outcome on the current evidence window.
+- Unit 4 delivered:
+  - added close-out quality diagnostics helper in management layer:
+    - `summarize_close_out_quality_from_events(...)`
+    - emits `closed_count`, `stop_out_share`, `average_realized_pnl_bps`, `dominant_close_reason`, `latest_closed_at`
+  - added strategy-level close-out quality guard controls (default off):
+    - `close_out_quality_guard_enabled`
+    - `close_out_quality_guard_lookback_events`
+    - `close_out_quality_guard_min_closed_samples`
+    - `close_out_quality_guard_max_stop_out_share`
+    - `close_out_quality_guard_min_realized_pnl_bps`
+    - `close_out_quality_guard_notional_min_multiplier`
+    - `close_out_quality_guard_notional_max_multiplier`
+    - `close_out_quality_guard_entry_cooldown_seconds`
+  - entry path now supports:
+    - quality-aware notional haircut (`close_out_quality_guard_notional_haircut_applied`)
+    - bounded entry block under active cooldown (`close_out_quality_guard_cooldown_active`)
+    - explicit skip reason `close_out_quality_guard_blocked`
+  - final scorecard close-out stage now surfaces sample-density and cleanup-pressure blockers:
+    - `close_out_insufficient_closed_trade_density`
+    - `close_out_cleanup_dominance`
+  - covered with targeted tests:
+    - `tests/unit/strategies/test_crypto_phase2_management.py` (`24 passed`)
+    - `tests/unit/strategies/test_crypto_phase2_strategy.py` (`85 passed`)
+    - `tests/unit/strategies/test_crypto_phase2_final_report.py` (`6 passed`)
+  - replay check on BTC fixed window:
+    - output: `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u4`
+    - decision remains `review` with failed stages:
+      - `route_conversion_quality`
+      - `close_out_quality`
+      - `profitability_tail_risk`
+    - dominant blocker remains `route_adverse_fill_too_high`
+    - unit outcome: close-out blocker attribution is now more explicit and machine-readable, but acceptance did not yet pass on this window.
+- Unit 5 delivered:
+  - added attribution-level tail-loss concentration controls in route-stage gating:
+    - `tail_loss_top1_concentration_breach`
+    - `tail_loss_market_concentration_breach`
+    - `tail_loss_signature_concentration_breach`
+  - profitability stage now evaluates concentration from:
+    - trade-level top losses
+    - market bucket loss concentration
+    - signature bucket loss concentration
+  - added blocker-to-action mapping for tail-loss concentration in constrained action synthesis.
+  - extended autoresearch promotion-gate summary extraction/reporting:
+    - `dominant_route_stage_blocker`
+    - `next_constrained_action`
+  - covered with targeted tests:
+    - `tests/unit/strategies/test_crypto_phase2_final_report.py` (`7 passed`)
+    - `tests/unit/research/test_autoresearch.py` (`9 passed`)
+    - `tests/unit/strategies/test_crypto_phase2_suite.py` (`1 passed`)
+  - replay check on BTC fixed window:
+    - output: `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u5`
+    - decision remains `review`
+    - dominant blocker remains `route_adverse_fill_too_high`
+    - profitability blocker set now explicitly includes concentration breakdown:
+      - `tail_loss_top3_concentration_breach`
+      - `tail_loss_top1_concentration_breach`
+      - `tail_loss_market_concentration_breach`
+      - `tail_loss_signature_concentration_breach`
+- Unit 6 delivered:
+  - added deterministic operator-facing gate package fields in final scorecard:
+    - `operator_verdict`
+    - `operator_summary`
+  - strengthened deterministic dominant-blocker selection via explicit blocker-priority ranking.
+  - upgraded constrained-action synthesis from stage-only to blocker-specific mapping, including:
+    - `route_adverse_fill_too_high`
+    - `route_maker_expire_dominance`
+    - `close_out_stop_out_pressure`
+    - `close_out_negative_realized_pnl_bps`
+    - tail-loss concentration blocker family
+  - extended autoresearch promotion-gate ingestion/formatting to include:
+    - `dominant_route_stage_blocker`
+    - `next_constrained_action`
+  - covered with targeted tests:
+    - `tests/unit/strategies/test_crypto_phase2_final_report.py` (`7 passed`)
+    - `tests/unit/research/test_autoresearch.py` (`9 passed`)
+    - `tests/unit/strategies/test_crypto_phase2_suite.py` (`1 passed`)
+  - replay check on BTC fixed window:
+    - output: `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u6`
+    - decision remains `review`
+    - dominant blocker remains `route_adverse_fill_too_high`
+    - next constrained action is now blocker-specific and deterministic:
+      - `reduce taker adverse-fill drag first by tightening premium caps and fallback taker escalation rules.`
+- Unit 7 delivered:
+  - produced verification bundle iterations on fixed BTC window:
+    - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u4`
+    - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u5`
+    - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u6`
+    - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u7`
+  - generated comparability-aware ranking artifact:
+    - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u6/autoresearch_compare.md`
+  - integrated checklist update for current maturity blocker framing:
+    - `docs/CRYPTO_MATURITY_PROBLEM_CHECKLIST.md` now records P7 (`in_progress`) and current blocker/action map.
+  - verification and integration checks passed:
+    - `tests/integration/test_cli_research.py -k "crypto_phase2_suite or autoresearch"` (`2 passed`)
+  - final go/no-go verdict on current fixed window:
+    - `No-Go` (`recommended_action=review`, `operator_verdict=review_required`)
+    - dominant blocker remains `route_adverse_fill_too_high`
+    - current implementation is closure-auditable and deterministic, but not promotion-ready on this evidence window.
+  - added targeted conversion containment iteration (u7b/u7c):
+    - strategy update:
+      - time-stop IOC suspension hook under passive adverse-fill regime in `strategy.py`
+    - profile update:
+      - tightened BTC taker-entry tolerance in `configs/profiles/v118a-repricing-escalation/crypto.v1.example.toml`
+      - delayed time-stop force IOC and disabled repricing taker force IOC in same profile
+    - evidence:
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u7b`
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u7c`
+    - outcome:
+      - `route_adverse_fill_too_high` was removed in `u7c` (`average_adverse_fill_bps=0.0`)
+      - new dominant blocker became `route_maker_expire_dominance`
+      - still `No-Go` because close sample density/profitability gates remain `review`.
+  - additional conversion iterations (u7d/u7e/u7f/u7g):
+    - `u7d` validated strategy-level fallback urgency-floor logic; outcome unchanged from `u7c` on this window.
+    - `u7e` (moderate taker relaxation) recovered one closed trade but reintroduced adverse-fill dominance.
+    - `u7f/u7g` (narrow fallback + stronger maker) moved back to zero closed trades and maker-expiry dominance.
+    - current evidence indicates a constrained frontier on this fixed window:
+      - too passive -> `route_maker_expire_dominance`
+      - slightly more aggressive -> `route_adverse_fill_too_high`
+    - next bounded action should introduce controlled probe-conversion logic (limited taker probes under strict premium/notional caps), not broad threshold loosening.
+  - controlled probe-conversion implementation + verification (u8/u8b/u8c/u8d/u8e/u8f):
+    - strategy update:
+      - added constrained probe-taker path for repricing fallback in `strategy.py`:
+        - guarded by no-fill attempts, probe premium cap, probe min-net-edge, and probe notional multiplier
+        - emits explicit diagnostics:
+          - `repricing_fallback_probe_taker_eligible`
+          - `repricing_fallback_probe_taker_active`
+          - `repricing_fallback_probe_taker_block_reason`
+          - `repricing_fallback_probe_notional_multiplier`
+      - added unit tests for probe activation and probe net-edge floor block:
+        - `tests/unit/strategies/test_crypto_phase2_strategy.py`
+    - profile iteration:
+      - enabled probe controls in `configs/profiles/v118a-repricing-escalation/crypto.v1.example.toml`
+      - tested multiple probe thresholds (attempt gate, premium cap, notional multiplier)
+    - evidence:
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8`
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8b`
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8c`
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8d`
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8e`
+      - `data/research/crypto-phase2-suite-btc-closure-progress-20260402-u8f`
+    - outcome:
+      - probe path is now observable and does activate on this fixed window (`u8c/u8d/u8e/u8f` diagnostics).
+      - after adding probe-notional min-order floor in strategy (`u8f`), probe signals were translated into executable submissions:
+        - `probe_active=2`
+        - `probe_notional_floor_applied=2`
+        - `submitted_orders=6`
+        - `closed_trade_count=1`
+      - frontier shifted back from pure conversion starvation to adverse-fill/exit drag:
+        - dominant blocker became `route_adverse_fill_too_high`
+        - `average_adverse_fill_bps=147.6341`
+        - realized close remained negative (`closed_trade_net_pnl=-0.0571`)
+    - next bounded action:
+      - keep probe-notional floor and narrow taker drag:
+        - tighten probe premium cap and/or probe min net-edge floor family-wise
+        - pair with stricter adverse-fill/time-stop containment to avoid converting starvation into lossful closes

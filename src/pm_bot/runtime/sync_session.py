@@ -91,6 +91,10 @@ class ShadowPaperCoordinator:
                 "price": intent.price,
                 "size": intent.size,
                 "notional": intent.notional,
+                "rationale_tags": list(intent.rationale_tags),
+                "signal_type": intent.signal_type,
+                "execution_route": intent.execution_route,
+                "decision_reason": intent.decision_reason,
                 "created_at": intent.created_at.isoformat(),
                 "replaced_order_id": None,
             },
@@ -367,10 +371,21 @@ async def run_crypto_sync_session(
     )
     runtime_context_builder = None
     if "crypto.phase2" in enabled_strategy_ids:
+        crypto_phase2_config = dict(crypto_config.strategy.get("phase2", {})) if crypto_config is not None else {}
+        reentry_cooldown_seconds = _resolve_positive_int(
+            crypto_phase2_config.get("loss_reentry_cooldown_seconds"),
+            default=300,
+        )
+        reentry_quarantine_after_stopouts = _resolve_positive_int(
+            crypto_phase2_config.get("max_loss_trades_per_market"),
+            default=3,
+        )
         phase2_context_builder = CryptoPhase2PaperContextBuilder(
             underlying_state_path=cast(str, resolved_underlying_state_path),
             apply_series_filter=True,
             selection_report_path=selection_report_path,
+            reentry_cooldown_seconds=reentry_cooldown_seconds,
+            reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
         )
         def runtime_context_builder(
             *,
@@ -1131,3 +1146,12 @@ def _parse_optional_int(value: object) -> int | None:
     if isinstance(value, str):
         return int(value.strip())
     raise TypeError(f"expected int-like value, got {type(value).__name__}")
+
+
+def _resolve_positive_int(raw_value: object, *, default: int) -> int:
+    if raw_value in (None, ""):
+        return default
+    try:
+        return max(1, int(float(raw_value)))
+    except (TypeError, ValueError):
+        return default

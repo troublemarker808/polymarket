@@ -531,6 +531,9 @@ class LiveSessionRunner:
                         "exposure_group_id": closed_trade.exposure_group_id,
                         "thesis_group_id": closed_trade.thesis_group_id,
                         "underlying_group_id": closed_trade.underlying_group_id,
+                        "close_reason": closed_trade.close_reason,
+                        "entry_route": closed_trade.entry_route,
+                        "execution_route": closed_trade.exit_route,
                         "closed_at": closed_trade.closed_at.isoformat(),
                     },
                 )
@@ -893,9 +896,20 @@ async def run_crypto_live_session(
                 "run_crypto_live_session requires underlying_state_path when crypto.phase2 is enabled"
             )
         resolved_underlying_state_path = str(resolve_underlying_state_path(underlying_state_path))
+        crypto_phase2_config = dict(crypto_config.strategy.get("phase2", {})) if crypto_config is not None else {}
+        reentry_cooldown_seconds = _resolve_positive_int(
+            crypto_phase2_config.get("loss_reentry_cooldown_seconds"),
+            default=300,
+        )
+        reentry_quarantine_after_stopouts = _resolve_positive_int(
+            crypto_phase2_config.get("max_loss_trades_per_market"),
+            default=3,
+        )
         phase2_context_builder = CryptoPhase2PaperContextBuilder(
             underlying_state_path=resolved_underlying_state_path,
             apply_series_filter=True,
+            reentry_cooldown_seconds=reentry_cooldown_seconds,
+            reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
         )
         def runtime_context_builder(
             *,
@@ -1343,3 +1357,12 @@ def _should_ignore_historical_user_event(
         return False
     event_time = event.timestamp or event.last_update or event.matchtime
     return event_time is not None and event_time.astimezone(UTC) < session_start
+
+
+def _resolve_positive_int(raw_value: object, *, default: int) -> int:
+    if raw_value in (None, ""):
+        return default
+    try:
+        return max(1, int(float(raw_value)))
+    except (TypeError, ValueError):
+        return default

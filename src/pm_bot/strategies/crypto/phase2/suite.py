@@ -150,6 +150,8 @@ async def run_crypto_phase2_suite(
             readiness_score=0.0,
             execution_quality="unknown",
             evidence_status="pending",
+            operator_verdict="review_required",
+            operator_summary="pending final scorecard",
             route_stage_acceptance_decision="review",
             route_stage_failed_stages=("scan_quality",),
             route_stage_statuses={"scan_quality": "review"},

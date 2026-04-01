@@ -297,7 +297,17 @@ def summarize_execution_feedback(
         if maker_orders
         else 0.0
     )
-    stop_out_trades = sum(1 for trade in closed_trades if trade.net_pnl < 0)
+    stop_out_trades = sum(
+        1
+        for trade in closed_trades
+        if (
+            str(trade.close_reason or "").strip().lower() in {"stop_loss", "adverse_fill_reversal"}
+            or (
+                str(trade.close_reason or "").strip() == ""
+                and trade.net_pnl < 0
+            )
+        )
+    )
     repeated_stop_out_rate = (stop_out_trades / len(closed_trades)) if closed_trades else 0.0
     taker_shortfall_bps = (
         sum(abs(order.signal_edge_bps or 0.0) for order in taker_orders) / len(taker_orders) * 0.1
@@ -362,12 +372,103 @@ def summarize_execution_feedback_from_events(
                     if payload.get("underlying_group_id") not in (None, "")
                     else None
                 ),
+                close_reason=(
+                    str(payload.get("close_reason", payload.get("reason", ""))).strip() or None
+                ),
+                entry_route=(str(payload.get("entry_route", "")).strip() or None),
+                exit_route=(str(payload.get("execution_route", "")).strip() or None),
             )
         )
     return summarize_execution_feedback(
         pending_orders=pending_orders,
         closed_trades=tuple(closed_trades),
     )
+
+
+def summarize_close_out_quality_from_events(
+    *,
+    recent_events: Sequence[Mapping[str, object]],
+    market_id: str,
+) -> dict[str, object]:
+    closed_count = 0
+    stop_out_count = 0
+    negative_close_count = 0
+    realized_pnl_bps_sum = 0.0
+    realized_pnl_bps_count = 0
+    latest_closed_at: datetime | None = None
+    reason_counts: dict[str, int] = {}
+
+    for event in recent_events:
+        event_type = str(event.get("event_type", "")).strip()
+        payload = event.get("payload")
+        if event_type != "trade.closed" or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("strategy_id", "")).strip() == "recovered.live":
+            continue
+        if str(payload.get("market_id", "")).strip() != market_id:
+            continue
+        closed_at = _parse_datetime(payload.get("closed_at"))
+        if closed_at is None:
+            continue
+        closed_count += 1
+        if latest_closed_at is None or closed_at > latest_closed_at:
+            latest_closed_at = closed_at
+
+        close_reason = str(payload.get("close_reason", payload.get("reason", "unknown"))).strip() or "unknown"
+        reason_counts[close_reason] = reason_counts.get(close_reason, 0) + 1
+
+        try:
+            net_pnl = float(payload.get("net_pnl", payload.get("realized_pnl", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            net_pnl = 0.0
+        if net_pnl < 0:
+            negative_close_count += 1
+
+        if close_reason in {"stop_loss", "adverse_fill_reversal"} or (
+            close_reason in {"unknown", ""}
+            and net_pnl < 0
+        ):
+            stop_out_count += 1
+
+        raw_realized_pnl_bps = payload.get("realized_pnl_bps")
+        realized_pnl_bps: float | None = None
+        if raw_realized_pnl_bps not in (None, ""):
+            try:
+                realized_pnl_bps = float(raw_realized_pnl_bps)
+            except (TypeError, ValueError):
+                realized_pnl_bps = None
+        if realized_pnl_bps is None:
+            raw_notional = payload.get("entry_notional", payload.get("submitted_notional", payload.get("notional")))
+            try:
+                notional = float(raw_notional or 0.0)
+            except (TypeError, ValueError):
+                notional = 0.0
+            if notional > 0:
+                realized_pnl_bps = (net_pnl / notional) * 10000.0
+        if realized_pnl_bps is not None:
+            realized_pnl_bps_sum += realized_pnl_bps
+            realized_pnl_bps_count += 1
+
+    dominant_close_reason = "none"
+    if reason_counts:
+        dominant_close_reason = sorted(reason_counts.items(), key=lambda item: (-item[1], item[0]))[0][0]
+    stop_out_share = (stop_out_count / closed_count) if closed_count > 0 else 0.0
+    negative_close_share = (negative_close_count / closed_count) if closed_count > 0 else 0.0
+    average_realized_pnl_bps = (
+        realized_pnl_bps_sum / realized_pnl_bps_count
+        if realized_pnl_bps_count > 0
+        else 0.0
+    )
+    return {
+        "closed_count": closed_count,
+        "stop_out_count": stop_out_count,
+        "stop_out_share": round(stop_out_share, 4),
+        "negative_close_count": negative_close_count,
+        "negative_close_share": round(negative_close_share, 4),
+        "average_realized_pnl_bps": round(average_realized_pnl_bps, 4),
+        "dominant_close_reason": dominant_close_reason,
+        "latest_closed_at": latest_closed_at,
+    }
 
 
 def summarize_market_probation_state_from_events(

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 from pm_bot.adapters.in_memory import InMemoryMarketDataAdapter
 from pm_bot.config.loader import load_settings_from_directory
@@ -239,6 +241,26 @@ async def _run_crypto_phase2_loop_with_settings(
     if strategy_overrides:
         strategy_config.update(strategy_overrides)
     runtime_policy_overrides = _runtime_selection_no_fill_overrides(strategy_config)
+    reentry_cooldown_seconds = _positive_int_from_strategy_config(
+        strategy_config,
+        key="loss_reentry_cooldown_seconds",
+        default=300,
+    )
+    reentry_quarantine_after_stopouts = _positive_int_from_strategy_config(
+        strategy_config,
+        key="max_loss_trades_per_market",
+        default=3,
+    )
+    final_settlement_passes = _non_negative_int_from_strategy_config(
+        strategy_config,
+        key="replay_final_settlement_passes",
+        default=0,
+    )
+    final_settlement_step_seconds = _positive_float_from_strategy_config(
+        strategy_config,
+        key="replay_final_settlement_step_seconds",
+        default=1.0,
+    )
     strategy = CryptoPhase2Strategy(strategy_config)
     static_blocked_series_keys = (
         set(load_runtime_blocked_series_keys(selection_report_path))
@@ -310,6 +332,20 @@ async def _run_crypto_phase2_loop_with_settings(
     processed_event_count = 0
     processed = 0
 
+    def _runtime_context_payload() -> dict[str, object]:
+        return {
+            "fair_values_by_market_id": fair_values_by_market_id,
+            "position_intents_by_market_id": position_intents_by_market_id,
+            "reentry_state_by_market_id": reentry_state_by_market_id,
+            "blocked_series_keys": blocked_series_keys,
+            "blocked_market_ids": blocked_market_ids,
+            "blocked_series_reasons": blocked_series_reasons,
+            "blocked_market_reasons": blocked_market_reasons,
+            "market_selection_actions": market_selection_actions,
+            "market_selection_reasons": market_selection_reasons,
+            "scan_identify_diagnostics": scan_identify_diagnostics,
+        }
+
     for snapshot in snapshots:
         risk_manager.record_data_success(snapshot.timestamp)
         recorder.note_snapshot(snapshot.timestamp)
@@ -361,21 +397,12 @@ async def _run_crypto_phase2_loop_with_settings(
             position_intents_by_market_id=position_intents_by_market_id,
             reentry_state_by_market_id=reentry_state_by_market_id,
             start_index=processed_event_count,
+            reentry_cooldown_seconds=reentry_cooldown_seconds,
+            reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
         )
         await router.run_once(
             snapshot=snapshot,
-            context={
-                "fair_values_by_market_id": fair_values_by_market_id,
-                "position_intents_by_market_id": position_intents_by_market_id,
-                "reentry_state_by_market_id": reentry_state_by_market_id,
-                "blocked_series_keys": blocked_series_keys,
-                "blocked_market_ids": blocked_market_ids,
-                "blocked_series_reasons": blocked_series_reasons,
-                "blocked_market_reasons": blocked_market_reasons,
-                "market_selection_actions": market_selection_actions,
-                "market_selection_reasons": market_selection_reasons,
-                "scan_identify_diagnostics": scan_identify_diagnostics,
-            },
+            context=_runtime_context_payload(),
         )
         await sync_paper_execution_state(
             risk_manager=risk_manager,
@@ -390,8 +417,66 @@ async def _run_crypto_phase2_loop_with_settings(
             position_intents_by_market_id=position_intents_by_market_id,
             reentry_state_by_market_id=reentry_state_by_market_id,
             start_index=processed_event_count,
+            reentry_cooldown_seconds=reentry_cooldown_seconds,
+            reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
         )
         processed += 1
+
+    if final_settlement_passes > 0 and snapshots:
+        final_timestamp = snapshots[-1].timestamp
+        for sweep_index in range(final_settlement_passes):
+            dashboard = risk_manager.dashboard_state()
+            active_market_ids = sorted(
+                {
+                    position.market_id for position in dashboard.open_positions
+                }.union(order.market_id for order in dashboard.pending_orders)
+            )
+            if not active_market_ids:
+                break
+            sweep_timestamp = final_timestamp + timedelta(
+                seconds=final_settlement_step_seconds * (sweep_index + 1)
+            )
+            for market_id in active_market_ids:
+                market_snapshot = router.snapshot_cache.get(market_id)
+                if market_snapshot is None:
+                    continue
+                refreshed_snapshot = replace(market_snapshot, timestamp=sweep_timestamp)
+                await sync_paper_execution_state(
+                    risk_manager=risk_manager,
+                    execution=execution,
+                    snapshot=refreshed_snapshot,
+                    ttl_seconds=settings.trading.default_quote_ttl_seconds,
+                    recorder=recorder,
+                )
+                processed_event_count = _update_runtime_context_from_events(
+                    recorder=recorder,
+                    fair_values_by_market_id=fair_values_by_market_id,
+                    position_intents_by_market_id=position_intents_by_market_id,
+                    reentry_state_by_market_id=reentry_state_by_market_id,
+                    start_index=processed_event_count,
+                    reentry_cooldown_seconds=reentry_cooldown_seconds,
+                    reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
+                )
+                await router.run_once(
+                    snapshot=refreshed_snapshot,
+                    context=_runtime_context_payload(),
+                )
+                await sync_paper_execution_state(
+                    risk_manager=risk_manager,
+                    execution=execution,
+                    snapshot=refreshed_snapshot,
+                    ttl_seconds=settings.trading.default_quote_ttl_seconds,
+                    recorder=recorder,
+                )
+                processed_event_count = _update_runtime_context_from_events(
+                    recorder=recorder,
+                    fair_values_by_market_id=fair_values_by_market_id,
+                    position_intents_by_market_id=position_intents_by_market_id,
+                    reentry_state_by_market_id=reentry_state_by_market_id,
+                    start_index=processed_event_count,
+                    reentry_cooldown_seconds=reentry_cooldown_seconds,
+                    reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
+                )
 
     replay_result = ResearchRunResult(
         mode="replay",
@@ -506,6 +591,8 @@ def _update_runtime_context_from_events(
     position_intents_by_market_id: dict[str, CryptoPositionIntent],
     reentry_state_by_market_id: dict[str, CryptoReentryState],
     start_index: int,
+    reentry_cooldown_seconds: int,
+    reentry_quarantine_after_stopouts: int,
 ) -> int:
     for event in recorder.events[start_index:]:
         payload = event.get("payload", {})
@@ -527,8 +614,12 @@ def _update_runtime_context_from_events(
             )
         elif event.get("event_type") == "trade.closed":
             position_intents_by_market_id.pop(market_id, None)
+            close_reason = str(payload.get("close_reason", payload.get("reason", ""))).strip().lower()
             realized_pnl = parse_float(payload, "realized_pnl") or 0.0
-            if realized_pnl < 0:
+            is_stop_out = close_reason in {"stop_loss", "adverse_fill_reversal"}
+            if not close_reason:
+                is_stop_out = realized_pnl < 0
+            if is_stop_out:
                 reentry_state_by_market_id[market_id] = update_reentry_state(
                     market_id=market_id,
                     previous=reentry_state_by_market_id.get(market_id),
@@ -536,12 +627,14 @@ def _update_runtime_context_from_events(
                         market_id=market_id,
                         should_exit=True,
                         exit_side=SignalSide.SELL_YES,
-                        reason="stop_loss",
+                        reason=close_reason or "stop_loss",
                         target_price=None,
                         remaining_edge_bps=0.0,
-                        rationale_tags=("stop_loss",),
+                        rationale_tags=((close_reason or "stop_loss"),),
                     ),
                     as_of=_parse_event_timestamp(payload.get("closed_at")),
+                    cooldown_seconds=reentry_cooldown_seconds,
+                    quarantine_after_stopouts=reentry_quarantine_after_stopouts,
                 )
     return len(recorder.events)
 
@@ -586,3 +679,48 @@ def _runtime_selection_no_fill_overrides(
         except (TypeError, ValueError):
             continue
     return overrides
+
+
+def _positive_int_from_strategy_config(
+    strategy_config: Mapping[str, object],
+    *,
+    key: str,
+    default: int,
+) -> int:
+    raw_value = strategy_config.get(key)
+    if raw_value in (None, ""):
+        return default
+    try:
+        return max(1, int(float(cast(Any, raw_value))))
+    except (TypeError, ValueError):
+        return default
+
+
+def _non_negative_int_from_strategy_config(
+    strategy_config: Mapping[str, object],
+    *,
+    key: str,
+    default: int,
+) -> int:
+    raw_value = strategy_config.get(key)
+    if raw_value in (None, ""):
+        return max(0, int(default))
+    try:
+        return max(0, int(float(cast(Any, raw_value))))
+    except (TypeError, ValueError):
+        return max(0, int(default))
+
+
+def _positive_float_from_strategy_config(
+    strategy_config: Mapping[str, object],
+    *,
+    key: str,
+    default: float,
+) -> float:
+    raw_value = strategy_config.get(key)
+    if raw_value in (None, ""):
+        return max(float(default), 1e-6)
+    try:
+        return max(float(cast(Any, raw_value)), 1e-6)
+    except (TypeError, ValueError):
+        return max(float(default), 1e-6)

@@ -80,6 +80,9 @@ class ClosedTrade:
     exposure_group_id: str | None = None
     thesis_group_id: str | None = None
     underlying_group_id: str | None = None
+    close_reason: str | None = None
+    entry_route: str | None = None
+    exit_route: str | None = None
 
     @property
     def net_pnl(self) -> float:

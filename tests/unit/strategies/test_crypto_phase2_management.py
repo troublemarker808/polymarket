@@ -14,6 +14,7 @@ from pm_bot.strategies.crypto.phase2 import (
     classify_crypto_signal,
     evaluate_exit,
     is_reentry_blocked,
+    summarize_close_out_quality_from_events,
     summarize_market_probation_state_from_events,
     summarize_execution_feedback,
     summarize_execution_feedback_from_events,
@@ -782,6 +783,45 @@ def test_summarize_execution_feedback_from_events_ignores_recovered_live_closed_
 
     assert feedback.repeated_stop_out_rate == 0.0
     assert feedback.recommended_route_bias == "stable"
+
+
+def test_summarize_close_out_quality_from_events_reports_stop_out_share_and_realized_pnl_bps() -> None:
+    recent_events = (
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": -0.4,
+                "entry_notional": 4.0,
+                "close_reason": "stop_loss",
+                "closed_at": "2026-03-28T00:01:00+00:00",
+            },
+        },
+        {
+            "event_type": "trade.closed",
+            "payload": {
+                "market_id": "eth-dip-1000",
+                "strategy_id": "crypto.phase2",
+                "net_pnl": 0.2,
+                "entry_notional": 4.0,
+                "close_reason": "fair_value_reached",
+                "closed_at": "2026-03-28T00:02:00+00:00",
+            },
+        },
+    )
+
+    summary = summarize_close_out_quality_from_events(
+        recent_events=recent_events,
+        market_id="eth-dip-1000",
+    )
+
+    assert summary["closed_count"] == 2
+    assert summary["stop_out_count"] == 1
+    assert summary["stop_out_share"] == 0.5
+    assert summary["average_realized_pnl_bps"] == -250.0
+    assert summary["dominant_close_reason"] in {"fair_value_reached", "stop_loss"}
+    assert summary["latest_closed_at"] is not None
 
 
 def test_update_route_policy_state_switches_to_more_aggressive_after_expiry_cluster() -> None:

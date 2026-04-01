@@ -264,6 +264,8 @@ def test_generate_autoresearch_report_includes_promotion_gate_summary_when_score
                     "close_out_quality": ["close_out_no_closed_trades"],
                     "profitability_tail_risk": ["profitability_non_positive_pnl_per_notional"],
                 },
+                "dominant_route_stage_blocker": "profitability_non_positive_pnl_per_notional",
+                "next_constrained_action": "reduce sizing and tail-loss concentration before seeking promotion.",
                 "promotion_blocking_reasons": ["insufficient_closed_trade_count"],
                 "promotion_max_single_loss_pnl": -0.2,
                 "observed_max_single_loss_pnl": -0.13697,
@@ -295,6 +297,8 @@ def test_generate_autoresearch_report_includes_promotion_gate_summary_when_score
     assert report.route_stage_failed_stages == ("close_out_quality", "profitability_tail_risk")
     assert report.route_stage_statuses["close_out_quality"] == "blocked"
     assert report.route_stage_blockers["close_out_quality"] == ("close_out_no_closed_trades",)
+    assert report.dominant_route_stage_blocker == "profitability_non_positive_pnl_per_notional"
+    assert report.next_constrained_action == "reduce sizing and tail-loss concentration before seeking promotion."
     assert report.promotion_gate_blockers == ("insufficient_closed_trade_count",)
     assert report.top_loss_markets == ("701496",)
     assert report.top_loss_signatures == ("entry|maker|default|buy_no",)
@@ -303,6 +307,34 @@ def test_generate_autoresearch_report_includes_promotion_gate_summary_when_score
     assert report.promotion_gate_observed_max_single_loss_pnl == -0.13697
     assert report.promotion_gate_max_top3_loss_concentration_ratio == 0.75
     assert report.promotion_gate_observed_top3_loss_concentration_ratio == 0.52
+
+
+def test_generate_autoresearch_report_falls_back_to_metrics_closed_trade_net_pnl_without_events(tmp_path) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "signals_generated": 5,
+                "orders_submitted": 4,
+                "orders_rejected": 0,
+                "orders_filled": 2,
+                "orders_partially_filled": 0,
+                "orders_expired": 1,
+                "orders_canceled": 0,
+                "trades_closed": 2,
+                "closed_trade_net_pnl": -0.1234,
+                "fill_rate": 0.5,
+                "cancel_rate": 0.25,
+                "avg_fill_price_vs_mid_bps": 2.0,
+                "market_data_failures": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = generate_autoresearch_report(metrics_path=metrics_path)
+
+    assert report.effective_closed_trade_net_pnl == -0.1234
 
 
 def test_generate_autoresearch_report_resolves_protocol_metadata_from_arguments_or_metrics(tmp_path) -> None:

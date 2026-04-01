@@ -59,6 +59,9 @@ async def sync_paper_execution_state(
                     "exposure_group_id": trade.exposure_group_id,
                     "thesis_group_id": trade.thesis_group_id,
                     "underlying_group_id": trade.underlying_group_id,
+                    "close_reason": trade.close_reason,
+                    "entry_route": trade.entry_route,
+                    "execution_route": trade.exit_route,
                     "closed_at": trade.closed_at.isoformat(),
                 },
             )

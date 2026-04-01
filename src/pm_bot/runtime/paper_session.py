@@ -529,10 +529,22 @@ async def run_crypto_phase2_paper_session(
     count_initial_snapshots_toward_limit: bool = True,
     cancel_pending_orders_on_stop: bool = False,
 ) -> dict[str, object]:
+    settings = load_settings_from_directory(config_dir)
+    crypto_phase2_config = dict(settings.category_configs[Category.CRYPTO].strategy.get("phase2", {}))
+    reentry_cooldown_seconds = _resolve_positive_int(
+        crypto_phase2_config.get("loss_reentry_cooldown_seconds"),
+        default=300,
+    )
+    reentry_quarantine_after_stopouts = _resolve_positive_int(
+        crypto_phase2_config.get("max_loss_trades_per_market"),
+        default=3,
+    )
     context_builder = CryptoPhase2PaperContextBuilder(
         underlying_state_path=underlying_state_path,
         apply_series_filter=True,
         selection_report_path=selection_report_path,
+        reentry_cooldown_seconds=reentry_cooldown_seconds,
+        reentry_quarantine_after_stopouts=reentry_quarantine_after_stopouts,
     )
     return await _run_crypto_paper_session(
         config_dir=config_dir,
@@ -552,6 +564,15 @@ async def run_crypto_phase2_paper_session(
             recorder=kwargs["recorder"],
         ),
     )
+
+
+def _resolve_positive_int(raw_value: object, *, default: int) -> int:
+    if raw_value in (None, ""):
+        return default
+    try:
+        return max(1, int(float(raw_value)))
+    except (TypeError, ValueError):
+        return default
 
 
 async def _run_crypto_paper_session(

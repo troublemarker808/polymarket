@@ -27,6 +27,7 @@ class LivePosition:
     exposure_group_id: str | None = None
     thesis_group_id: str | None = None
     underlying_group_id: str | None = None
+    entry_route: str | None = None
 
 
 @dataclass(slots=True, frozen=True)
@@ -181,6 +182,7 @@ class PositionLedger:
                 exposure_group_id=tracked.exposure_group_id,
                 thesis_group_id=tracked.thesis_group_id,
                 underlying_group_id=tracked.underlying_group_id,
+                entry_route=_resolve_execution_route(tracked.last_event, tracked.execution_route),
             )
             self._positions[key] = updated
             return updated
@@ -194,6 +196,7 @@ class PositionLedger:
             average_entry_price=(total_cost_basis / total_shares) if total_shares > 0 else 0.0,
             total_fees=existing.total_fees + delta_fees,
             updated_at=tracked.updated_at,
+            entry_route=existing.entry_route or _resolve_execution_route(tracked.last_event, tracked.execution_route),
         )
         self._positions[key] = updated
         return updated
@@ -236,6 +239,9 @@ class PositionLedger:
                     exposure_group_id=existing.exposure_group_id or tracked.exposure_group_id,
                     thesis_group_id=existing.thesis_group_id or tracked.thesis_group_id,
                     underlying_group_id=existing.underlying_group_id or tracked.underlying_group_id,
+                    close_reason=_resolve_close_reason(tracked.decision_reason, tracked.rationale_tags),
+                    entry_route=existing.entry_route,
+                    exit_route=_resolve_execution_route(tracked.last_event, tracked.execution_route),
                 )
             )
 
@@ -346,3 +352,26 @@ def _infer_complement_ask(best_bid: float | None) -> float | None:
     if best_bid is None:
         return None
     return round(1.0 - best_bid, 6)
+
+
+def _resolve_execution_route(last_event: str, fallback_route: str | None) -> str | None:
+    normalized_event = str(last_event or "").strip().lower()
+    if "maker" in normalized_event:
+        return "maker"
+    if "taker" in normalized_event:
+        return "taker"
+    normalized_fallback = str(fallback_route or "").strip().lower()
+    if normalized_fallback in {"maker", "taker"}:
+        return normalized_fallback
+    return None
+
+
+def _resolve_close_reason(decision_reason: str | None, rationale_tags: tuple[str, ...]) -> str:
+    normalized_reason = str(decision_reason or "").strip()
+    if normalized_reason:
+        return normalized_reason
+    if rationale_tags:
+        first_tag = str(rationale_tags[0]).strip()
+        if first_tag:
+            return first_tag
+    return "unknown"

@@ -63,6 +63,8 @@ class CryptoPhase2PaperContextBuilder:
         underlying_state_path: str | Path,
         apply_series_filter: bool = True,
         selection_report_path: str | Path | None = None,
+        reentry_cooldown_seconds: int = 300,
+        reentry_quarantine_after_stopouts: int = 3,
     ) -> None:
         self.provider = FileBackedUnderlyingStateProvider(underlying_state_path)
         self.apply_series_filter = apply_series_filter
@@ -99,6 +101,8 @@ class CryptoPhase2PaperContextBuilder:
         self.position_intents_by_market_id: dict[str, CryptoPositionIntent] = {}
         self.reentry_state_by_market_id: dict[str, CryptoReentryState] = {}
         self.route_policy_state_by_key: dict[str, CryptoRoutePolicyState] = {}
+        self.reentry_cooldown_seconds = max(1, int(reentry_cooldown_seconds))
+        self.reentry_quarantine_after_stopouts = max(1, int(reentry_quarantine_after_stopouts))
         self._processed_event_count = 0
 
     def build_context(
@@ -146,6 +150,8 @@ class CryptoPhase2PaperContextBuilder:
             position_intents_by_market_id=self.position_intents_by_market_id,
             reentry_state_by_market_id=self.reentry_state_by_market_id,
             start_index=self._processed_event_count,
+            reentry_cooldown_seconds=self.reentry_cooldown_seconds,
+            reentry_quarantine_after_stopouts=self.reentry_quarantine_after_stopouts,
         )
         recent_events = tuple(
             event
@@ -223,6 +229,8 @@ def _update_runtime_context_from_events(
     position_intents_by_market_id: dict[str, CryptoPositionIntent],
     reentry_state_by_market_id: dict[str, CryptoReentryState],
     start_index: int,
+    reentry_cooldown_seconds: int,
+    reentry_quarantine_after_stopouts: int,
 ) -> int:
     for event in recorder.events[start_index:]:
         payload = event.get("payload", {})
@@ -246,8 +254,12 @@ def _update_runtime_context_from_events(
             )
         elif event.get("event_type") == "trade.closed":
             position_intents_by_market_id.pop(market_id, None)
+            close_reason = str(payload.get("close_reason", payload.get("reason", ""))).strip().lower()
             realized_pnl = parse_float(payload, "realized_pnl") or 0.0
-            if realized_pnl < 0:
+            is_stop_out = close_reason in {"stop_loss", "adverse_fill_reversal"}
+            if not close_reason:
+                is_stop_out = realized_pnl < 0
+            if is_stop_out:
                 reentry_state_by_market_id[market_id] = update_reentry_state(
                     market_id=market_id,
                     previous=reentry_state_by_market_id.get(market_id),
@@ -255,12 +267,14 @@ def _update_runtime_context_from_events(
                         market_id=market_id,
                         should_exit=True,
                         exit_side=SignalSide.SELL_YES,
-                        reason="stop_loss",
+                        reason=close_reason or "stop_loss",
                         target_price=None,
                         remaining_edge_bps=0.0,
-                        rationale_tags=("stop_loss",),
+                        rationale_tags=((close_reason or "stop_loss"),),
                     ),
                     as_of=_parse_event_timestamp(payload.get("closed_at")),
+                    cooldown_seconds=reentry_cooldown_seconds,
+                    quarantine_after_stopouts=reentry_quarantine_after_stopouts,
                 )
     return len(recorder.events)
 

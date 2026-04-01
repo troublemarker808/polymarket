@@ -42,6 +42,8 @@ _PROMOTION_MAX_EXECUTION_LOSS_RATIO = 0.65
 _PROMOTION_MIN_PNL_PER_NOTIONAL = 0.0
 _PROMOTION_MAX_SINGLE_LOSS_PNL = -0.20
 _PROMOTION_MAX_TOP3_LOSS_CONCENTRATION_RATIO = 0.75
+_TAIL_MAX_TOP1_LOSS_CONCENTRATION_RATIO = 0.55
+_TAIL_MAX_TOP3_LOSS_BUCKET_CONCENTRATION_RATIO = 0.75
 
 
 @dataclass(slots=True, frozen=True)
@@ -51,6 +53,8 @@ class CryptoPhase2FinalScorecard:
     readiness_score: float
     execution_quality: str
     evidence_status: str
+    operator_verdict: str
+    operator_summary: str
     route_stage_acceptance_decision: str
     route_stage_failed_stages: tuple[str, ...]
     route_stage_statuses: dict[str, str]
@@ -209,6 +213,11 @@ def build_crypto_phase2_final_scorecard(
     )
     dominant_route_stage_blocker = _dominant_route_stage_blocker(route_stage_gate)
     next_constrained_action = _next_constrained_action(route_stage_gate)
+    operator_verdict, operator_summary = _operator_verdict_summary(
+        recommended_action=recommended_action,
+        dominant_route_stage_blocker=dominant_route_stage_blocker,
+        promotion_blocking_reasons=promotion_gate.blocking_reasons,
+    )
 
     return CryptoPhase2FinalScorecard(
         generated_at=suite_result.generated_at,
@@ -216,6 +225,8 @@ def build_crypto_phase2_final_scorecard(
         readiness_score=readiness_score,
         execution_quality=execution_quality,
         evidence_status=evidence_status,
+        operator_verdict=operator_verdict,
+        operator_summary=operator_summary,
         route_stage_acceptance_decision=route_stage_gate.acceptance_decision,
         route_stage_failed_stages=route_stage_gate.failed_stages,
         route_stage_statuses=route_stage_gate.statuses,
@@ -298,6 +309,8 @@ def format_crypto_phase2_final_scorecard(scorecard: CryptoPhase2FinalScorecard) 
         f"- readiness_score: {scorecard.readiness_score:.4f}",
         f"- execution_quality: {scorecard.execution_quality}",
         f"- evidence_status: {scorecard.evidence_status}",
+        f"- operator_verdict: {scorecard.operator_verdict}",
+        f"- operator_summary: {scorecard.operator_summary}",
         f"- route_stage_acceptance_decision: {scorecard.route_stage_acceptance_decision}",
         f"- route_stage_failed_stages: {', '.join(scorecard.route_stage_failed_stages) if scorecard.route_stage_failed_stages else 'none'}",
         f"- dominant_route_stage_blocker: {scorecard.dominant_route_stage_blocker or 'none'}",
@@ -530,10 +543,17 @@ def _evaluate_route_stage_gates(
     close_out_blockers: list[str] = []
     if filtered.closed_trade_count <= 0:
         close_out_blockers.append("close_out_no_closed_trades")
+    if 0 < filtered.closed_trade_count < _PROMOTION_MIN_CLOSED_TRADES:
+        close_out_blockers.append("close_out_insufficient_closed_trade_density")
     if filtered.stop_out_rate >= 0.5:
         close_out_blockers.append("close_out_stop_out_pressure")
     if filtered.average_trade_realized_pnl_bps < 0:
         close_out_blockers.append("close_out_negative_realized_pnl_bps")
+    if (
+        filtered.passive_cleanup_exit_share >= 0.6
+        and filtered.average_trade_realized_pnl_bps < 0
+    ):
+        close_out_blockers.append("close_out_cleanup_dominance")
     statuses["close_out_quality"] = _gate_status(close_out_blockers)
     blockers["close_out_quality"] = tuple(close_out_blockers)
 
@@ -543,12 +563,27 @@ def _evaluate_route_stage_gates(
         if filtered.submitted_notional > 0
         else 0.0
     )
+    top1_loss_concentration_ratio = _top1_loss_concentration_ratio(filtered=filtered)
+    top3_market_concentration_ratio = _top3_bucket_concentration_ratio(
+        breakdown=filtered.top_loss_market_breakdown,
+        filtered=filtered,
+    )
+    top3_signature_concentration_ratio = _top3_bucket_concentration_ratio(
+        breakdown=filtered.top_loss_signature_breakdown,
+        filtered=filtered,
+    )
     if pnl_per_notional <= 0:
         profitability_blockers.append("profitability_non_positive_pnl_per_notional")
     if "single_loss_breach" in promotion_gate.blocking_reasons:
         profitability_blockers.append("tail_loss_single_loss_breach")
     if "top3_loss_concentration_above_ceiling" in promotion_gate.blocking_reasons:
         profitability_blockers.append("tail_loss_top3_concentration_breach")
+    if top1_loss_concentration_ratio > _TAIL_MAX_TOP1_LOSS_CONCENTRATION_RATIO:
+        profitability_blockers.append("tail_loss_top1_concentration_breach")
+    if top3_market_concentration_ratio > _TAIL_MAX_TOP3_LOSS_BUCKET_CONCENTRATION_RATIO:
+        profitability_blockers.append("tail_loss_market_concentration_breach")
+    if top3_signature_concentration_ratio > _TAIL_MAX_TOP3_LOSS_BUCKET_CONCENTRATION_RATIO:
+        profitability_blockers.append("tail_loss_signature_concentration_breach")
     if (
         filtered.submitted_notional > 0
         and filtered.large_notional_share >= 0.3
@@ -599,16 +634,47 @@ def _merge_decisions(first: str, second: str) -> str:
 def _dominant_route_stage_blocker(
     route_stage_gate: _CryptoRouteStageGateEvaluation,
 ) -> str | None:
+    priority = {
+        "route_halted": 0,
+        "route_adverse_fill_too_high": 1,
+        "route_maker_expire_dominance": 2,
+        "close_out_stop_out_pressure": 3,
+        "close_out_negative_realized_pnl_bps": 4,
+        "close_out_insufficient_closed_trade_density": 5,
+        "tail_loss_signature_concentration_breach": 6,
+        "tail_loss_market_concentration_breach": 7,
+        "tail_loss_top1_concentration_breach": 8,
+        "tail_loss_top3_concentration_breach": 9,
+        "profitability_non_positive_pnl_per_notional": 10,
+    }
+    candidates: list[str] = []
     for stage in route_stage_gate.failed_stages:
-        blockers = route_stage_gate.blockers.get(stage, ())
-        if blockers:
-            return blockers[0]
-    return None
+        candidates.extend(route_stage_gate.blockers.get(stage, ()))
+    if not candidates:
+        return None
+    return sorted(candidates, key=lambda blocker: (priority.get(blocker, 100), blocker))[0]
 
 
 def _next_constrained_action(
     route_stage_gate: _CryptoRouteStageGateEvaluation,
 ) -> str:
+    dominant_blocker = _dominant_route_stage_blocker(route_stage_gate)
+    if dominant_blocker == "route_adverse_fill_too_high":
+        return "reduce taker adverse-fill drag first by tightening premium caps and fallback taker escalation rules."
+    if dominant_blocker == "route_maker_expire_dominance":
+        return "reduce maker expiry loops via stricter repost/cooldown policy before expanding order flow."
+    if dominant_blocker == "close_out_stop_out_pressure":
+        return "tighten stop-out containment and cut repeat losing close patterns before adding new entries."
+    if dominant_blocker == "close_out_negative_realized_pnl_bps":
+        return "tighten close timing and route policy until average realized close pnl turns non-negative."
+    if dominant_blocker == "tail_loss_signature_concentration_breach":
+        return "tighten signature-level loss caps and reduce repeat exposure on the dominant losing signature."
+    if dominant_blocker == "tail_loss_market_concentration_breach":
+        return "tighten market-level concentration limits and spread risk away from the dominant losing markets."
+    if dominant_blocker == "tail_loss_top1_concentration_breach":
+        return "cap single-trade downside and reduce notional on setups that generate outsized top-loss events."
+    if dominant_blocker == "tail_loss_top3_concentration_breach":
+        return "reduce top3 loss concentration via per-signature throttles before expanding activity."
     if not route_stage_gate.failed_stages:
         return "collect another comparable evidence window and confirm stability before promotion."
     primary_stage = route_stage_gate.failed_stages[0]
@@ -623,6 +689,30 @@ def _next_constrained_action(
     if primary_stage == "profitability_tail_risk":
         return "reduce sizing and tail-loss concentration before seeking promotion."
     return "resolve the dominant route-stage blocker before next tuning iteration."
+
+
+def _operator_verdict_summary(
+    *,
+    recommended_action: str,
+    dominant_route_stage_blocker: str | None,
+    promotion_blocking_reasons: tuple[str, ...],
+) -> tuple[str, str]:
+    if recommended_action == "proceed":
+        return ("go_next_maturity_step", "Route-stage and promotion gates are passing on this evidence window.")
+    primary_blocker = dominant_route_stage_blocker or (promotion_blocking_reasons[0] if promotion_blocking_reasons else None)
+    if primary_blocker is None:
+        return ("review_required", "Evidence is not strong enough yet; keep constrained replay iterations.")
+    summary_map = {
+        "route_adverse_fill_too_high": "Primary blocker is adverse fill; execution conversion still loses too much edge.",
+        "route_maker_expire_dominance": "Primary blocker is maker expiry dominance; conversion loop remains unstable.",
+        "close_out_stop_out_pressure": "Primary blocker is stop-out pressure; close behavior is not preserving outcomes.",
+        "close_out_negative_realized_pnl_bps": "Primary blocker is negative close realized PnL; exits are not converting edge.",
+        "tail_loss_signature_concentration_breach": "Primary blocker is signature-level loss concentration; repeated loss signature must be capped.",
+        "tail_loss_market_concentration_breach": "Primary blocker is market-level loss concentration; risk is too clustered by market.",
+        "tail_loss_top1_concentration_breach": "Primary blocker is single-loss concentration; one loss event dominates tail risk.",
+        "tail_loss_top3_concentration_breach": "Primary blocker is top3 loss concentration; tail losses are too concentrated.",
+    }
+    return ("review_required", summary_map.get(primary_blocker, f"Primary blocker is {primary_blocker}; resolve before promotion."))
 
 
 def _execution_loss_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> float:
@@ -668,6 +758,56 @@ def _top3_loss_concentration_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> f
         return 0.0
     top3_abs_loss = sum(sorted(losses, reverse=True)[:3])
     return max(0.0, min(1.0, top3_abs_loss / gross_negative_pnl))
+
+
+def _top1_loss_concentration_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> float:
+    losses: list[float] = []
+    for trade in filtered.top_loss_trades:
+        if not isinstance(trade, dict):
+            continue
+        raw_pnl = trade.get("net_pnl", trade.get("realized_pnl"))
+        try:
+            pnl = float(raw_pnl)
+        except (TypeError, ValueError):
+            continue
+        if pnl < 0:
+            losses.append(abs(pnl))
+    if not losses:
+        return 0.0
+    gross_negative_pnl = _gross_negative_pnl(filtered=filtered)
+    if gross_negative_pnl <= 0:
+        return 0.0
+    return max(0.0, min(1.0, max(losses) / gross_negative_pnl))
+
+
+def _top3_bucket_concentration_ratio(
+    *,
+    breakdown: tuple[dict[str, Any], ...],
+    filtered: "CryptoPhase2ReplayDigest",
+) -> float:
+    losses: list[float] = []
+    for item in breakdown:
+        if not isinstance(item, dict):
+            continue
+        raw_total = item.get("total_abs_loss")
+        try:
+            value = float(raw_total)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            losses.append(value)
+    if not losses:
+        return 0.0
+    gross_negative_pnl = _gross_negative_pnl(filtered=filtered)
+    if gross_negative_pnl <= 0:
+        return 0.0
+    top3_abs_loss = sum(sorted(losses, reverse=True)[:3])
+    return max(0.0, min(1.0, top3_abs_loss / gross_negative_pnl))
+
+
+def _gross_negative_pnl(*, filtered: "CryptoPhase2ReplayDigest") -> float:
+    negative_trade_count = int(round(max(0.0, (1.0 - filtered.winning_trade_rate) * filtered.closed_trade_count)))
+    return abs(filtered.average_loss_trade_pnl) * float(max(1, negative_trade_count))
 
 
 def _promotion_stage_label(*, decision: str) -> str:

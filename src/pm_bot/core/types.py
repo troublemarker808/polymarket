@@ -106,6 +106,10 @@ class OrderIntent:
     exposure_group_id: str | None = None
     thesis_group_id: str | None = None
     underlying_group_id: str | None = None
+    rationale_tags: tuple[str, ...] = ()
+    signal_type: str | None = None
+    execution_route: str | None = None
+    decision_reason: str | None = None
 
 
 @dataclass(slots=True)

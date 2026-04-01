@@ -17,7 +17,7 @@ paper_place_latency_ms = 0
 paper_cancel_latency_ms = 0
 paper_replace_latency_ms = 250
 paper_fee_bps = 0.0
-paper_taker_slippage_bps = 20.0
+paper_taker_slippage_bps = 5.0
 max_notional_per_market = 12.0
 max_notional_per_exposure_group = 60.0
 max_notional_per_thesis_group = 60.0
@@ -33,7 +33,7 @@ live_allowed_categories = ["crypto"]
 [risk]
 max_daily_drawdown_pct = 40.0
 max_consecutive_losses = 40
-max_open_orders = 4
+max_open_orders = 8
 open_order_replacement_min_edge_improvement_bps = 50.0
 kill_switch_on_stale_data_seconds = 30
 manual_resume_required = true
