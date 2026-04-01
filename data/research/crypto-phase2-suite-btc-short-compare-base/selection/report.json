@@ -1,0 +1,13 @@
+{
+  "generated_at": "2026-03-31T21:37:31.195799+00:00",
+  "snapshot_path": "tests\\fixtures\\crypto_phase2\\compare_snapshots.jsonl",
+  "model_parameters": {
+    "baseline_preset": "crypto-calibration-baseline-20260328",
+    "baseline_candidate": "btc-r1-s165-b35-s65",
+    "barrier_steepness": 1.65,
+    "fusion_barrier_weight": 0.35,
+    "fusion_surface_weight": 0.65
+  },
+  "series_reports": [],
+  "market_rows": []
+}

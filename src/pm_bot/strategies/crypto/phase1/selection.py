@@ -28,6 +28,7 @@ class CryptoRuntimeTradabilityPolicy:
     max_quote_age_seconds: float
     min_tradeable_contract_price: float
     watch_thin_liquidity: bool = False
+    execution_no_fill_min_expired_orders: int = 2
 
 
 @dataclass(slots=True, frozen=True)
@@ -698,6 +699,7 @@ def _market_action(
         submitted_order_count=submitted_order_count,
         filled_order_count=filled_order_count,
         expired_order_count=expired_order_count,
+        min_expired_orders=policy.execution_no_fill_min_expired_orders,
     )
     if accepting_orders is False:
         return "skip_market"
@@ -768,6 +770,7 @@ def _market_reasons(
         submitted_order_count=submitted_order_count,
         filled_order_count=filled_order_count,
         expired_order_count=expired_order_count,
+        min_expired_orders=policy.execution_no_fill_min_expired_orders,
     )
     if accepting_orders is False:
         reasons.append("orders_disabled")
@@ -824,12 +827,13 @@ def _has_execution_no_fill(
     submitted_order_count: int,
     filled_order_count: int,
     expired_order_count: int,
+    min_expired_orders: int = _EXECUTION_NO_FILL_MIN_EXPIRED_ORDERS,
 ) -> bool:
     return (
         signal_count > 0
         and submitted_order_count > 0
         and filled_order_count == 0
-        and expired_order_count >= _EXECUTION_NO_FILL_MIN_EXPIRED_ORDERS
+        and expired_order_count >= max(1, int(min_expired_orders))
     )
 
 
@@ -856,21 +860,23 @@ def _decoded_series_has_runtime_actionable_market(
 def _runtime_tradability_policy(*, underlying: str, event_family: str) -> CryptoRuntimeTradabilityPolicy:
     if underlying == "BTC" and event_family == "reach":
         return CryptoRuntimeTradabilityPolicy(
-            max_runtime_spread_bps=200.0,
+            max_runtime_spread_bps=250.0,
             min_top_book_depth=15.0,
             min_nearby_book_depth=100.0,
-            max_quote_age_seconds=180.0,
+            max_quote_age_seconds=780.0,
             min_tradeable_contract_price=0.10,
-            watch_thin_liquidity=True,
+            watch_thin_liquidity=False,
+            execution_no_fill_min_expired_orders=3,
         )
     if underlying == "BTC" and event_family == "dip":
         return CryptoRuntimeTradabilityPolicy(
-            max_runtime_spread_bps=175.0,
+            max_runtime_spread_bps=250.0,
             min_top_book_depth=5.0,
             min_nearby_book_depth=50.0,
-            max_quote_age_seconds=180.0,
+            max_quote_age_seconds=780.0,
             min_tradeable_contract_price=0.10,
             watch_thin_liquidity=True,
+            execution_no_fill_min_expired_orders=3,
         )
     if underlying == "ETH" and event_family == "reach":
         return CryptoRuntimeTradabilityPolicy(

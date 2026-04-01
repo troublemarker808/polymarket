@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/paper-btc-short-shadow-v1",
+  "events_recorded": 186,
+  "generated_at": "2026-03-28T12:31:49.865000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 5
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 1,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-grid-eb90-edge100\\replay-unfiltered",
+  "processed_snapshots": 177,
+  "run_id": "btc-grid-eb90-edge100-unfiltered",
+  "signals_generated": 5,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\research\\family-export-phase2-v35-btc-reach\\snapshots.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 4
+  },
+  "submitted_orders": 4,
+  "today_pnl": 0.0,
+  "total_equity": 25.0
+}

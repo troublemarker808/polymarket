@@ -1,0 +1,95 @@
+# Crypto Phase 2 Final Scorecard
+
+- recommended_action: review
+- readiness_score: 0.4500
+- execution_quality: fragile
+- evidence_status: thin
+- filtered_orders: 0
+- filtered_signals: 0
+- filtered_pnl: 0.000000
+- filtered_status: completed
+- filter_order_delta: -1
+- profit_focus: selection
+- secondary_profit_focus: pricing
+- loss_ranking: selection, pricing, execution, exit, sizing
+- blocked_series_keys: what-price-will-bitcoin-hit-before-2027
+
+## BTC Promotion Gate
+
+- promotion_decision: review
+- promotion_stage_label: paper available
+- promotion_min_closed_trades: 3
+- promotion_min_edge_capture_ratio: 0.3500
+- promotion_max_execution_loss_ratio: 0.6500
+- promotion_min_pnl_per_notional: 0.000000
+- observed_execution_loss_ratio: 0.0000
+- promotion_blocking_reasons: insufficient_closed_trade_count, edge_capture_ratio_below_floor, pnl_per_notional_not_positive
+
+## Profit Components
+
+- selection_quality_score: 0.1500
+- pricing_quality_score: 0.3100
+- execution_quality_score: 0.8000
+- exit_quality_score: 1.0000
+- sizing_quality_score: 1.0000
+- average_signal_edge_bps: 0.0000
+- average_adverse_fill_bps: 0.0000
+- expected_edge_capture_bps: 0.0000
+- edge_capture_ratio: 0.0000
+- average_trade_expected_edge_bps: 0.0000
+- average_trade_execution_drag_bps: 0.0000
+- average_trade_realized_pnl_bps: 0.0000
+- average_barrier_observed_gap_bps: 501.7566
+- average_surface_observed_gap_bps: 1300.0000
+- average_fusion_observed_gap_bps: 830.3736
+- average_barrier_surface_disagreement_bps: 1341.7898
+- closed_trade_count: 0
+- winning_trade_rate: 0.0000
+- average_win_trade_pnl: 0.000000
+- average_loss_trade_pnl: 0.000000
+- average_submitted_notional: 0.000000
+- large_notional_share: 0.0000
+- dominant_exit_reason: none
+- stop_loss_exit_share: 0.0000
+- passive_cleanup_exit_share: 0.0000
+- exit_family_balance_score: 0.0000
+- small_bucket_pnl_per_notional: 0.000000
+- medium_bucket_pnl_per_notional: 0.000000
+- large_bucket_pnl_per_notional: 0.000000
+- submitted_notional: 0.000000
+- pnl_per_notional: 0.000000
+
+## Profit Loss Decomposition
+
+- selection_loss: 0.8500
+- pricing_loss: 0.6900
+- execution_loss: 0.2000
+- exit_loss: 0.0000
+- sizing_loss: 0.0000
+- total_profit_loss: 1.7400
+
+- tuning_priority: selection
+
+## Tuning Actions
+
+- raise min_net_edge_bps for the weakest family preset before adding more order flow
+- tighten runtime tradability gates for markets that remain watch_only or blocked
+- design the next variant to also address secondary loss in pricing instead of retuning selection in isolation
+
+## Reasons
+
+- filtered replay produced no submitted orders
+- filtered replay produced no signals
+- selection filter removed more orders than it stabilized
+- selection filter still blocks runtime ladder families
+- promotion gate blocked: insufficient_closed_trade_count
+- promotion gate blocked: edge_capture_ratio_below_floor
+- promotion gate blocked: pnl_per_notional_not_positive
+
+## Component Reasons
+
+- selection: runtime still blocks ladder families, no filtered signals, selection yields no submitted trades, filter removes more orders than it preserves
+- pricing: flat filtered pnl, filled trades do not preserve positive modeled edge, captured edge is too small versus modeled edge, fused fair values remain far from observed pricing without enough realized capture, barrier and surface models disagree too much
+- execution: low signal-to-order capture ratio
+- exit: exit stable
+- sizing: sizing stable

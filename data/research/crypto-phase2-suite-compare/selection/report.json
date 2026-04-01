@@ -1,0 +1,119 @@
+{
+  "generated_at": "2026-03-31T21:07:07.981323+00:00",
+  "snapshot_path": "tests\\fixtures\\crypto_phase2\\compare_snapshots.jsonl",
+  "model_parameters": {
+    "baseline_preset": "crypto-calibration-baseline-20260328",
+    "baseline_candidate": "btc-r1-s165-b35-s65",
+    "barrier_steepness": 1.65,
+    "fusion_barrier_weight": 0.35,
+    "fusion_surface_weight": 0.65
+  },
+  "series_reports": [
+    {
+      "series_key": "eth-dip-ladder-2026",
+      "underlying": "ETH",
+      "event_family": "dip",
+      "market_count": 3,
+      "runtime_actionable_market_count": 3,
+      "positive_net_edge_count": 3,
+      "mean_net_edge_bps": 519.0735860388745,
+      "median_net_edge_bps": 323.385256581043,
+      "mean_entry_cost_bps": 66.66666666666663,
+      "min_liquidity_score": 0.0,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "tradable",
+      "reasons": [
+        "thin_liquidity"
+      ],
+      "profit_quality_score": 0.6264,
+      "selection_rank": 1
+    }
+  ],
+  "market_rows": [
+    {
+      "market_id": "eth-dip-1000",
+      "series_key": "eth-dip-ladder-2026",
+      "instrument_key": "ETH:dip:2026-12-31:1000",
+      "underlying": "ETH",
+      "event_family": "dip",
+      "observed_probability": 0.16,
+      "fair_probability": 0.19031707840731582,
+      "net_edge_bps": 188.1707840731581,
+      "entry_cost_bps": 50.00000000000004,
+      "spread_bps": 100.00000000000009,
+      "liquidity_score": 0.0,
+      "tick_size": null,
+      "min_order_size": null,
+      "top_book_depth": null,
+      "nearby_book_depth": null,
+      "quote_age_seconds": null,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "selective_market",
+      "reasons": [
+        "thin_liquidity"
+      ],
+      "profit_quality_score": 0.6542
+    },
+    {
+      "market_id": "eth-dip-1500",
+      "series_key": "eth-dip-ladder-2026",
+      "instrument_key": "ETH:dip:2026-12-31:1500",
+      "underlying": "ETH",
+      "event_family": "dip",
+      "observed_probability": 0.71,
+      "fair_probability": 0.5839335282537578,
+      "net_edge_bps": 1045.6647174624225,
+      "entry_cost_bps": 99.99999999999982,
+      "spread_bps": 199.99999999999963,
+      "liquidity_score": 0.0,
+      "tick_size": null,
+      "min_order_size": null,
+      "top_book_depth": null,
+      "nearby_book_depth": null,
+      "quote_age_seconds": null,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "selective_market",
+      "reasons": [
+        "wide_spread",
+        "thin_liquidity"
+      ],
+      "profit_quality_score": 0.5708
+    },
+    {
+      "market_id": "eth-dip-800",
+      "series_key": "eth-dip-ladder-2026",
+      "instrument_key": "ETH:dip:2026-12-31:800",
+      "underlying": "ETH",
+      "event_family": "dip",
+      "observed_probability": 0.195,
+      "fair_probability": 0.1511614743418957,
+      "net_edge_bps": 323.385256581043,
+      "entry_cost_bps": 50.00000000000004,
+      "spread_bps": 100.00000000000009,
+      "liquidity_score": 0.0,
+      "tick_size": null,
+      "min_order_size": null,
+      "top_book_depth": null,
+      "nearby_book_depth": null,
+      "quote_age_seconds": null,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "selective_market",
+      "reasons": [
+        "thin_liquidity"
+      ],
+      "profit_quality_score": 0.6542
+    }
+  ]
+}

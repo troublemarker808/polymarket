@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/paper-btc-short-shadow-v1",
+  "events_recorded": 16,
+  "generated_at": "2026-03-23T12:02:03+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 3
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-compare\\replay-unfiltered",
+  "processed_snapshots": 11,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 3,
+  "signals_rejected": 0,
+  "snapshot_path": "tests\\fixtures\\crypto_phase2\\compare_snapshots.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 3
+  },
+  "submitted_orders": 3,
+  "today_pnl": 0.0,
+  "total_equity": 25.0
+}

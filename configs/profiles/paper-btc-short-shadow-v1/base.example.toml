@@ -11,13 +11,14 @@ weather = false
 [trading]
 starting_equity = 25.0
 default_order_notional = 5.0
+max_order_notional = 6.0
 default_quote_ttl_seconds = 20
 paper_place_latency_ms = 0
 paper_cancel_latency_ms = 0
 paper_replace_latency_ms = 250
 paper_fee_bps = 0.0
 paper_taker_slippage_bps = 20.0
-max_notional_per_market = 5.0
+max_notional_per_market = 6.0
 max_notional_per_exposure_group = 12.0
 max_notional_per_thesis_group = 12.0
 max_notional_per_underlying_group = 12.0

@@ -148,6 +148,50 @@ def test_generate_crypto_market_selection_report_does_not_block_market_after_sin
     assert row.recommended_action != "watch_market"
 
 
+def test_generate_crypto_market_selection_report_does_not_block_btc_market_after_two_no_fill_attempts() -> None:
+    snapshots = load_market_snapshots(Path("tests/fixtures/crypto_phase2/btc_runtime_ladder_window.jsonl"))
+    report = generate_crypto_market_selection_report_from_snapshots(
+        snapshots=snapshots,
+        snapshot_label="two-no-fill-btc",
+        events=[
+            {
+                "event_type": "signal.generated",
+                "payload": {"market_id": "1339768"},
+            },
+            {
+                "event_type": "order.submitted",
+                "payload": {"market_id": "1339768"},
+            },
+            {
+                "event_type": "order.expired",
+                "payload": {"market_id": "1339768"},
+            },
+            {
+                "event_type": "order.expired",
+                "payload": {"market_id": "1339768"},
+            },
+        ],
+        underlying_states={
+            "BTC": build_underlying_state(
+                underlying="BTC",
+                as_of=datetime.fromisoformat("2026-03-27T15:15:00+00:00"),
+                spot_price=79000.0,
+                daily_return=-0.028,
+                realized_volatility=0.58,
+                implied_volatility=0.66,
+            )
+        },
+        barrier_model_config=CryptoBarrierModelConfig(steepness=1.65),
+        fusion_model_config=CryptoFusionModelConfig(barrier_weight=0.35, surface_weight=0.65),
+    )
+
+    row = next(row for row in report.market_rows if row.market_id == "1339768")
+
+    assert row.expired_order_count == 2
+    assert "execution_no_fill" not in row.reasons
+    assert row.recommended_action != "watch_market"
+
+
 def test_recommended_runtime_blocked_series_keys_keeps_watch_only_series_open_when_actionable_markets_remain(tmp_path: Path) -> None:
     report = generate_crypto_market_selection_report(
         snapshot_path=Path("data/research/family-export-phase2-v35-btc-reach/snapshots.jsonl"),
@@ -332,7 +376,51 @@ def test_market_selection_blocks_btc_thin_liquidity_as_watch_market() -> None:
         expired_order_count=0,
     )
 
+    assert action == "selective_market"
+
+
+def test_market_selection_still_blocks_non_btc_after_two_no_fill_attempts() -> None:
+    policy = _runtime_tradability_policy(underlying="ETH", event_family="reach")
+
+    action = _market_action(
+        observed_probability=0.42,
+        fair_probability=0.30,
+        net_edge_bps=350.0,
+        entry_cost_bps=25.0,
+        spread_bps=80.0,
+        liquidity_score=0.99,
+        top_book_depth=30.0,
+        nearby_book_depth=150.0,
+        quote_age_seconds=10.0,
+        accepting_orders=True,
+        min_order_size=5.0,
+        policy=policy,
+        signal_count=1,
+        submitted_order_count=1,
+        filled_order_count=0,
+        expired_order_count=2,
+    )
+    reasons = _market_reasons(
+        observed_probability=0.42,
+        fair_probability=0.30,
+        net_edge_bps=350.0,
+        entry_cost_bps=25.0,
+        spread_bps=80.0,
+        liquidity_score=0.99,
+        top_book_depth=30.0,
+        nearby_book_depth=150.0,
+        quote_age_seconds=10.0,
+        accepting_orders=True,
+        min_order_size=5.0,
+        policy=policy,
+        signal_count=1,
+        submitted_order_count=1,
+        filled_order_count=0,
+        expired_order_count=2,
+    )
+
     assert action == "watch_market"
+    assert "execution_no_fill" in reasons
 
 
 def test_market_selection_uses_no_book_side_for_buy_no_runtime_checks() -> None:
@@ -442,7 +530,7 @@ def test_generate_crypto_market_selection_report_uses_locked_baseline_by_default
     assert report.model_parameters["fusion_surface_weight"] == preset.fusion_model_config.surface_weight
 
 
-def test_recommended_runtime_blocked_market_ids_marks_execution_no_fill_rungs(tmp_path: Path) -> None:
+def test_recommended_runtime_blocked_market_ids_applies_btc_execution_no_fill_threshold(tmp_path: Path) -> None:
     report = generate_crypto_market_selection_report(
         snapshot_path=Path("data/research/family-export-phase2-v35-btc-reach/snapshots.jsonl"),
         event_path=Path("data/research/family-export-phase2-v35-btc-reach/events.jsonl"),
@@ -465,6 +553,10 @@ def test_recommended_runtime_blocked_market_ids_marks_execution_no_fill_rungs(tm
 
     assert "701495" in blocked_market_ids
     row = next(row for row in report.market_rows if row.market_id == "701495")
+    policy = _runtime_tradability_policy(underlying="BTC", event_family="reach")
     assert row.signal_count >= 1
     assert row.expired_order_count >= 1
-    assert "execution_no_fill" in row.reasons
+    if row.expired_order_count >= policy.execution_no_fill_min_expired_orders:
+        assert "execution_no_fill" in row.reasons
+    else:
+        assert "execution_no_fill" not in row.reasons

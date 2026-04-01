@@ -1,6 +1,6 @@
 # Crypto Maturity Problem Checklist
 
-Last updated: 2026-03-28
+Last updated: 2026-04-01
 
 This checklist is the control document for the crypto module.
 
@@ -151,3 +151,48 @@ Problem:
 Goal:
 
 - Add underlying-level and ladder-level exposure aggregation before promotion beyond paper.
+
+### P6. BTC Promotion Decision Still Relies On Manual Interpretation
+
+Status: `completed`
+
+Observed behavior:
+
+- Phase2 suite produced rich metrics, but promotion decisions still required manual reading and ad-hoc interpretation.
+- Operator workflows lacked a stable machine-readable BTC go/no-go field.
+
+Root cause:
+
+- Final scorecard emphasized descriptive diagnostics but did not enforce explicit BTC promotion thresholds and stage labels.
+- Autoresearch and CLI outputs did not consistently carry promotion gate payloads.
+
+Bounded fix:
+
+- Add a BTC promotion gate in phase2 final scorecard with explicit `proceed/review/pause` decision.
+- Encode gate thresholds and observed values in scorecard JSON fields.
+- Surface promotion gate payload in suite markdown, final report CLI output, and autoresearch when scorecard is provided.
+
+Primary code targets:
+
+- `src/pm_bot/strategies/crypto/phase2/final_report.py`
+- `src/pm_bot/strategies/crypto/phase2/suite.py`
+- `src/pm_bot/research/autoresearch.py`
+- `src/pm_bot/cli.py`
+
+Acceptance criteria:
+
+- Final scorecard JSON includes machine-readable promotion decision, stage label, blocking reasons, thresholds, and observed execution-loss ratio.
+- Gate semantics satisfy:
+  - `pause` when runtime status is halted.
+  - `review` when evidence is insufficient or profitability/edge-capture thresholds are not met.
+  - `proceed` only when all BTC gate thresholds pass.
+- CLI final report output includes promotion decision fields.
+
+Resolution evidence:
+
+- Unit tests:
+  - `tests/unit/strategies/test_crypto_phase2_final_report.py`
+  - `tests/unit/strategies/test_crypto_phase2_suite.py`
+  - `tests/unit/research/test_autoresearch.py`
+- Integration test:
+  - `tests/integration/test_cli_research.py::test_cli_crypto_phase2_final_report_prints_btc_promotion_gate_payload`

@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/research-btc-short-evidence-v1",
+  "events_recorded": 9211,
+  "generated_at": "2026-03-27T13:15:07.820000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 88
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 12,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v58-longtail-baseline-l10000\\replay-unfiltered",
+  "processed_snapshots": 10000,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 88,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-longtail.v58.20260327.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 48
+  },
+  "submitted_orders": 48,
+  "today_pnl": -0.66572691648,
+  "total_equity": 24.33427308352
+}

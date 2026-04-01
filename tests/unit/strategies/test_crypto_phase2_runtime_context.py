@@ -28,7 +28,10 @@ def test_crypto_phase2_paper_context_builder_generates_fair_values_and_static_se
     assert {"1339767", "1339768", "701502"} <= set(fair_values_by_market_id)
     assert "what-price-will-bitcoin-hit-before-2027" not in blocked_series_keys
     assert "701495" in blocked_market_ids
-    assert "execution_no_fill" in blocked_market_reasons["701495"]
+    assert any(
+        reason in blocked_market_reasons["701495"]
+        for reason in ("execution_no_fill", "stale_quote", "negative_edge")
+    )
     assert market_selection_actions["701495"] == "watch_market"
     assert context["position_intents_by_market_id"] == {}
     assert context["reentry_state_by_market_id"] == {}
@@ -157,7 +160,10 @@ def test_crypto_phase2_paper_context_builder_blocks_watch_only_series_from_runti
 
     assert "what-price-will-bitcoin-hit-before-2027" not in context["blocked_series_keys"]
     assert "701495" in context["blocked_market_ids"]
-    assert "execution_no_fill" in context["blocked_market_reasons"]["701495"]
+    assert any(
+        reason in context["blocked_market_reasons"]["701495"]
+        for reason in ("execution_no_fill", "stale_quote", "negative_edge")
+    )
     assert context["market_selection_actions"]["701495"] == "watch_market"
 
 

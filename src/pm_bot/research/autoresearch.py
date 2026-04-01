@@ -256,6 +256,9 @@ class AutoresearchReport:
     state_status: str | None
     total_equity: float | None
     today_pnl: float | None
+    promotion_gate_decision: str | None
+    promotion_gate_stage_label: str | None
+    promotion_gate_blockers: tuple[str, ...]
     metrics: dict[str, Any]
     event_diagnostics: EventDiagnostics
 
@@ -265,10 +268,12 @@ def generate_autoresearch_report(
     metrics_path: str | Path,
     event_path: str | Path | None = None,
     state_path: str | Path | None = None,
+    promotion_scorecard_path: str | Path | None = None,
 ) -> AutoresearchReport:
     metrics = load_metrics_file(metrics_path)
     diagnostics = _summarize_event_log(event_path)
     runtime_state = _load_runtime_state(state_path)
+    promotion_gate = _load_promotion_gate_summary(promotion_scorecard_path)
     classification = _classify_baseline(metrics=metrics, diagnostics=diagnostics)
     score = _compute_score(metrics=metrics, diagnostics=diagnostics)
     effective_orders_submitted = diagnostics.effective_orders_submitted(metrics)
@@ -303,6 +308,9 @@ def generate_autoresearch_report(
         state_status=(runtime_state.status.value if runtime_state is not None else None),
         total_equity=(runtime_state.total_equity if runtime_state is not None else None),
         today_pnl=(runtime_state.today_pnl if runtime_state is not None else None),
+        promotion_gate_decision=promotion_gate["decision"],
+        promotion_gate_stage_label=promotion_gate["stage_label"],
+        promotion_gate_blockers=promotion_gate["blockers"],
         metrics=metrics,
         event_diagnostics=diagnostics,
     )
@@ -351,6 +359,17 @@ def format_autoresearch_report(report: AutoresearchReport) -> str:
                 f"- runtime_status: {report.state_status}",
                 f"- total_equity: {report.total_equity:.4f}" if report.total_equity is not None else "- total_equity: ",
                 f"- today_pnl: {report.today_pnl:.4f}" if report.today_pnl is not None else "- today_pnl: ",
+            ]
+        )
+    if report.promotion_gate_decision is not None:
+        lines.extend(
+            [
+                "",
+                "## BTC Promotion Gate",
+                "",
+                f"- promotion_gate_decision: {report.promotion_gate_decision}",
+                f"- promotion_gate_stage_label: {report.promotion_gate_stage_label or ''}",
+                f"- promotion_gate_blockers: {', '.join(report.promotion_gate_blockers) if report.promotion_gate_blockers else 'none'}",
             ]
         )
     lines.extend(
@@ -538,6 +557,30 @@ def _load_runtime_state(path: str | Path | None) -> RuntimeState | None:
     if not isinstance(payload, dict):
         raise ValueError("Runtime state payload must be a JSON object")
     return runtime_state_from_dict(payload)
+
+
+def _load_promotion_gate_summary(path: str | Path | None) -> dict[str, str | tuple[str, ...] | None]:
+    if path is None:
+        return {"decision": None, "stage_label": None, "blockers": ()}
+    scorecard_path = Path(path)
+    if not scorecard_path.exists():
+        raise FileNotFoundError(scorecard_path)
+    payload = json.loads(scorecard_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("Promotion scorecard payload must be a JSON object")
+    decision = payload.get("promotion_decision", payload.get("recommended_action"))
+    stage_label = payload.get("promotion_stage_label")
+    raw_blockers = payload.get("promotion_blocking_reasons", ())
+    blockers: tuple[str, ...]
+    if isinstance(raw_blockers, list):
+        blockers = tuple(str(item) for item in raw_blockers if str(item).strip())
+    else:
+        blockers = ()
+    return {
+        "decision": (str(decision) if decision is not None else None),
+        "stage_label": (str(stage_label) if stage_label is not None else None),
+        "blockers": blockers,
+    }
 
 
 def _classify_baseline(*, metrics: dict[str, Any], diagnostics: EventDiagnostics) -> str:

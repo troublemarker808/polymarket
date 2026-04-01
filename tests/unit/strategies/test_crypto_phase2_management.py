@@ -230,7 +230,7 @@ def test_build_position_intent_raises_holding_window_for_long_horizon_market() -
     assert intent.expected_holding_seconds == 6 * 3600
 
 
-def test_evaluate_exit_does_not_apply_minute_cap_to_long_horizon_market() -> None:
+def test_evaluate_exit_applies_minute_cap_to_long_horizon_repricing_market() -> None:
     fair_value = FairValueEstimate(
         market_id="btc-dip-50000",
         category=Category.CRYPTO,
@@ -272,6 +272,59 @@ def test_evaluate_exit_does_not_apply_minute_cap_to_long_horizon_market() -> Non
         intent=intent,
         best_bid_yes=0.331,
         best_bid_no=0.669,
+        as_of=created_at + timedelta(minutes=2),
+        execution_max_holding_seconds=60.0,
+        max_holding_multiplier=1.0,
+        aging_start_fraction=0.5,
+        stale_start_fraction=1.0,
+    )
+
+    assert exit_decision.should_exit
+    assert exit_decision.reason == "stale_position_cleanup"
+
+
+def test_evaluate_exit_keeps_long_horizon_resolution_market_on_horizon_window() -> None:
+    fair_value = FairValueEstimate(
+        market_id="btc-resolution-90000",
+        category=Category.CRYPTO,
+        fair_probability=0.62,
+        confidence=0.80,
+        half_life_seconds=24 * 3600,
+        observed_probability=0.56,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model", "surface_consistency"),
+        supporting_values={
+            "net_edge_bps": 400.0,
+            "gross_edge_bps": 500.0,
+            "effective_horizon_days": 120.0,
+        },
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    created_at = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-resolution-90000-yes",
+        created_at=created_at,
+    )
+    position = PositionState(
+        market_id="btc-resolution-90000",
+        token_id="btc-resolution-90000-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2.execution",
+        notional=5.0,
+        opened_at=created_at,
+        shares=8.9,
+        average_entry_price=0.56,
+        mark_price=0.60,
+    )
+
+    exit_decision = evaluate_exit(
+        fair_value=fair_value,
+        position=position,
+        intent=intent,
+        best_bid_yes=0.60,
+        best_bid_no=0.40,
         as_of=created_at + timedelta(minutes=2),
         execution_max_holding_seconds=60.0,
         max_holding_multiplier=1.0,

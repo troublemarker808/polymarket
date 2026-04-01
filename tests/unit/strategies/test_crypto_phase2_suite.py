@@ -49,6 +49,9 @@ def test_run_crypto_phase2_suite_writes_selection_and_replay_artifacts(tmp_path:
     assert payload["filtered_replay"]["signals_generated"] >= 0
     assert payload["unfiltered_replay"]["signals_generated"] >= 0
     assert payload["final_scorecard"]["recommended_action"] in {"proceed", "review", "pause"}
+    assert payload["final_scorecard"]["promotion_decision"] in {"proceed", "review", "pause"}
+    assert payload["final_scorecard"]["promotion_stage_label"] in {"paper available", "shadow validation"}
+    assert isinstance(payload["final_scorecard"]["promotion_blocking_reasons"], list)
     assert payload["final_scorecard"]["profit_focus"] in {"selection", "pricing", "execution", "exit", "sizing"}
     assert payload["final_scorecard"]["tuning_priority"] in {"selection", "pricing", "execution", "exit", "sizing"}
     assert 0.0 <= payload["final_scorecard"]["selection_quality_score"] <= 1.0

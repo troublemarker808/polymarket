@@ -455,6 +455,11 @@ def main() -> None:
         help="Path to the persisted runtime state JSON file.",
     )
     parser.add_argument(
+        "--promotion-scorecard-path",
+        default=None,
+        help="Optional crypto phase2 final_scorecard.json path used to include promotion gate status in autoresearch reports.",
+    )
+    parser.add_argument(
         "--shadow-state-path",
         default="data/runtime/shadow-runtime-state.json",
         help="Path to the persisted shadow runtime state JSON file.",
@@ -1380,6 +1385,7 @@ def main() -> None:
             metrics_path=args.metrics_path,
             event_path=args.event_path,
             state_path=args.state_path if args.state_path else None,
+            promotion_scorecard_path=args.promotion_scorecard_path if args.promotion_scorecard_path else None,
         )
         if args.report_path is not None:
             write_autoresearch_report(autoresearch_report, args.report_path)

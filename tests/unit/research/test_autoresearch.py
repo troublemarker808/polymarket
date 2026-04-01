@@ -214,3 +214,49 @@ def test_generate_autoresearch_report_excludes_recovered_live_noise_from_effecti
     assert report.effective_closed_trade_net_pnl == 0.0
     assert report.recovered_closed_trade_count == 1
     assert report.recovered_closed_trade_net_pnl == -1.5
+
+
+def test_generate_autoresearch_report_includes_promotion_gate_summary_when_scorecard_is_provided(tmp_path) -> None:
+    metrics_path = tmp_path / "metrics.json"
+    metrics_path.write_text(
+        json.dumps(
+            {
+                "signals_generated": 1,
+                "orders_submitted": 1,
+                "orders_rejected": 0,
+                "orders_filled": 1,
+                "orders_partially_filled": 0,
+                "orders_expired": 0,
+                "orders_canceled": 0,
+                "trades_closed": 1,
+                "fill_rate": 1.0,
+                "cancel_rate": 0.0,
+                "avg_fill_price_vs_mid_bps": 1.0,
+                "market_data_failures": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    event_path = tmp_path / "events.jsonl"
+    event_path.write_text("", encoding="utf-8")
+    scorecard_path = tmp_path / "final_scorecard.json"
+    scorecard_path.write_text(
+        json.dumps(
+            {
+                "promotion_decision": "review",
+                "promotion_stage_label": "paper available",
+                "promotion_blocking_reasons": ["insufficient_closed_trade_count"],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    report = generate_autoresearch_report(
+        metrics_path=metrics_path,
+        event_path=event_path,
+        promotion_scorecard_path=scorecard_path,
+    )
+
+    assert report.promotion_gate_decision == "review"
+    assert report.promotion_gate_stage_label == "paper available"
+    assert report.promotion_gate_blockers == ("insufficient_closed_trade_count",)

@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from pm_bot.strategies.common import current_position, dashboard_state, parse_float, recent_runtime_events
 from pm_bot.strategies.crypto.phase2.config_registry import (
+    CryptoPhase2ResolvedConfig,
     build_phase2_preset_rules,
     resolve_phase2_config_for_snapshot,
 )
@@ -21,8 +22,13 @@ from pm_bot.strategies.crypto.phase2.execution import (
     classify_crypto_signal,
     evaluate_trade_eligibility,
     route_execution,
+    spread_cost_bps,
 )
-from pm_bot.strategies.crypto.phase2.management import evaluate_exit, is_reentry_blocked
+from pm_bot.strategies.crypto.phase2.management import (
+    build_position_intent,
+    evaluate_exit,
+    is_reentry_blocked,
+)
 from pm_bot.strategies.crypto.phase2.models import (
     CryptoDynamicEligibilityGate,
     CryptoExecutionFeedback,
@@ -30,6 +36,8 @@ from pm_bot.strategies.crypto.phase2.models import (
     CryptoReentryState,
     CryptoRoutePolicyState,
 )
+
+_SELECTIVE_REPRICING_TAKER_MAX_QUOTE_AGE_SECONDS = 600.0
 
 
 class CryptoPhase2Config:
@@ -39,6 +47,7 @@ class CryptoPhase2Config:
         self.max_spread_bps = float(config.get("max_spread_bps", 250.0))
         self.min_liquidity_score = float(config.get("min_liquidity_score", 0.0))
         self.min_contract_price = float(config.get("min_contract_price", 0.05))
+        self.repricing_max_net_edge_bps = float(config.get("repricing_max_net_edge_bps", 5000.0))
         self.taker_urgency_threshold = float(config.get("taker_urgency_threshold", 0.72))
         self.maker_min_edge_bps = float(config.get("maker_min_edge_bps", 100.0))
         self.resolution_maker_min_edge_bps = float(config.get("resolution_maker_min_edge_bps", 150.0))
@@ -47,6 +56,17 @@ class CryptoPhase2Config:
         self.taker_max_entry_premium_bps = float(config.get("taker_max_entry_premium_bps", 750.0))
         self.repricing_taker_max_entry_premium_bps = float(
             config.get("repricing_taker_max_entry_premium_bps", self.taker_max_entry_premium_bps)
+        )
+        self.repricing_fallback_taker_after_no_fill_attempts = int(
+            config.get("repricing_fallback_taker_after_no_fill_attempts", 0)
+        )
+        raw_repricing_fallback_taker_retry_max_entry_premium_bps = config.get(
+            "repricing_fallback_taker_retry_max_entry_premium_bps"
+        )
+        self.repricing_fallback_taker_retry_max_entry_premium_bps = (
+            None
+            if raw_repricing_fallback_taker_retry_max_entry_premium_bps in (None, "")
+            else float(raw_repricing_fallback_taker_retry_max_entry_premium_bps)
         )
         self.taker_slippage_guard_bps = float(config.get("taker_slippage_guard_bps", 0.0))
         self.taker_min_net_edge_after_premium_bps = float(
@@ -78,6 +98,7 @@ class CryptoPhase2Config:
         self.adverse_fill_max_remaining_edge_bps = float(
             config.get("adverse_fill_max_remaining_edge_bps", 150.0)
         )
+        self.adverse_fill_force_ioc = bool(config.get("adverse_fill_force_ioc", False))
         raw_time_stop_max_remaining_edge_bps = config.get("time_stop_max_remaining_edge_bps")
         self.time_stop_max_remaining_edge_bps = (
             None
@@ -86,6 +107,10 @@ class CryptoPhase2Config:
         )
         self.max_holding_multiplier = float(config.get("max_holding_multiplier", 2.0))
         self.exit_repost_cooldown_seconds = float(config.get("exit_repost_cooldown_seconds", 30.0))
+        self.exit_scaleout_enabled = bool(config.get("exit_scaleout_enabled", False))
+        self.time_stop_scaleout_fraction = float(config.get("time_stop_scaleout_fraction", 1.0))
+        self.adverse_fill_scaleout_fraction = float(config.get("adverse_fill_scaleout_fraction", 1.0))
+        self.exit_scaleout_min_notional = float(config.get("exit_scaleout_min_notional", 0.0))
         self.entry_repost_cooldown_seconds = float(config.get("entry_repost_cooldown_seconds", 120.0))
         self.repricing_fallback_entry_repost_cooldown_seconds = float(
             config.get("repricing_fallback_entry_repost_cooldown_seconds", self.entry_repost_cooldown_seconds)
@@ -108,6 +133,9 @@ class CryptoPhase2Config:
             config.get("max_loss_trades_per_exposure_group", 0)
         )
         self.time_stop_force_ioc_after_expiries = int(config.get("time_stop_force_ioc_after_expiries", 2))
+        self.time_stop_force_ioc_for_repricing_taker = bool(
+            config.get("time_stop_force_ioc_for_repricing_taker", True)
+        )
         self.thesis_entry_cooldown_seconds = float(
             config.get("thesis_entry_cooldown_seconds", self.entry_failure_cooldown_seconds)
         )
@@ -134,9 +162,17 @@ class CryptoPhase2Config:
         self.dynamic_repricing_taker_max_entry_premium_ceiling_bps = float(
             config.get("dynamic_repricing_taker_max_entry_premium_ceiling_bps", 300.0)
         )
+        self.entry_execution_drag_bps = float(config.get("entry_execution_drag_bps", 0.0))
+        self.entry_execution_spread_weight = float(config.get("entry_execution_spread_weight", 0.0))
+        self.entry_execution_feedback_weight = float(config.get("entry_execution_feedback_weight", 0.0))
+        self.entry_execution_drag_cap_bps = float(config.get("entry_execution_drag_cap_bps", 1000.0))
         self.route_adaptation_enabled = bool(config.get("route_adaptation_enabled", True))
         self.route_adaptation_min_samples = int(config.get("route_adaptation_min_samples", 3))
         self.route_adaptation_cooldown_seconds = float(config.get("route_adaptation_cooldown_seconds", 120.0))
+        self.selective_market_allow_taker = bool(config.get("selective_market_allow_taker", False))
+        self.selective_market_allow_taker_when_aggressive = bool(
+            config.get("selective_market_allow_taker_when_aggressive", False)
+        )
         self.quality_sizing_enabled = bool(config.get("quality_sizing_enabled", True))
         self.quality_sizing_min_multiplier = float(config.get("quality_sizing_min_multiplier", 0.75))
         self.quality_sizing_max_multiplier = float(config.get("quality_sizing_max_multiplier", 1.15))
@@ -164,13 +200,14 @@ class CryptoPhase2Strategy:
             _record_runtime_skip(context=context, snapshot=snapshot, reason="non_crypto_snapshot")
             return []
 
+        dashboard = dashboard_state(context)
+        position = current_position(snapshot=snapshot, dashboard=dashboard)
         fair_value = _fair_value_for_market(snapshot=snapshot, context=context)
+        if fair_value is None and position is not None:
+            fair_value = _fallback_exit_fair_value(snapshot=snapshot, position=position)
         if fair_value is None:
             _record_runtime_skip(context=context, snapshot=snapshot, reason="missing_fair_value")
             return []
-
-        dashboard = dashboard_state(context)
-        position = current_position(snapshot=snapshot, dashboard=dashboard)
         if position is not None:
             return self._exit_signals(
                 snapshot=snapshot,
@@ -261,6 +298,19 @@ class CryptoPhase2Strategy:
             base_min_net_edge_bps=resolved_config.min_net_edge_bps,
             effective_min_net_edge_bps=dynamic_min_net_edge_bps,
         )
+        entry_execution_drag_bps = _entry_execution_drag_bps(
+            snapshot=snapshot,
+            classification=classification,
+            feedback=execution_feedback,
+            config=resolved_config,
+        )
+        effective_min_net_edge_bps = dynamic_min_net_edge_bps + entry_execution_drag_bps
+        effective_min_net_edge_reason = _min_net_edge_reason_for_dynamic_gate_and_drag(
+            base_min_net_edge_bps=resolved_config.min_net_edge_bps,
+            dynamic_min_net_edge_bps=dynamic_min_net_edge_bps,
+            effective_min_net_edge_bps=effective_min_net_edge_bps,
+            dynamic_reason=dynamic_min_net_edge_reason,
+        )
         dynamic_taker_max_entry_premium_bps = _effective_dynamic_taker_max_entry_premium_bps(
             base_taker_max_entry_premium_bps=resolved_config.taker_max_entry_premium_bps,
             gate=dynamic_gate,
@@ -271,8 +321,45 @@ class CryptoPhase2Strategy:
             gate=dynamic_gate,
             config=resolved_config,
         )
+        repricing_fallback_no_fill_attempts = _repricing_maker_fallback_no_fill_attempts(
+            snapshot=snapshot,
+            context=context,
+            side=classification.side,
+        )
+        repricing_fallback_taker_escalated = False
+        if (
+            classification.signal_type == "repricing_edge"
+            and resolved_config.repricing_fallback_taker_after_no_fill_attempts > 0
+            and repricing_fallback_no_fill_attempts >= resolved_config.repricing_fallback_taker_after_no_fill_attempts
+        ):
+            retry_taker_cap = resolved_config.repricing_fallback_taker_retry_max_entry_premium_bps
+            if retry_taker_cap is None:
+                retry_taker_cap = dynamic_taker_max_entry_premium_bps
+            dynamic_repricing_taker_max_entry_premium_bps = max(
+                dynamic_repricing_taker_max_entry_premium_bps,
+                retry_taker_cap,
+            )
+            repricing_fallback_taker_escalated = True
         selection_action = _selection_action_for_market(snapshot=snapshot, context=context)
         selection_reasons = _selection_reasons_for_market(snapshot=snapshot, context=context)
+        signal_net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
+        if (
+            classification.signal_type == "repricing_edge"
+            and signal_net_edge_bps > resolved_config.repricing_max_net_edge_bps
+        ):
+            _record_runtime_skip(
+                context=context,
+                snapshot=snapshot,
+                reason="repricing_extreme_mispricing_filtered",
+                extra={
+                    "phase2_preset": resolved_config.preset_name,
+                    "signal_net_edge_bps": signal_net_edge_bps,
+                    "repricing_max_net_edge_bps": resolved_config.repricing_max_net_edge_bps,
+                    "selection_action": selection_action,
+                    "selection_reasons": list(selection_reasons),
+                },
+            )
+            return []
         if (
             resolved_config.skip_selective_wide_spread_markets
             and selection_action == "selective_market"
@@ -294,18 +381,28 @@ class CryptoPhase2Strategy:
             snapshot=snapshot,
             classification=classification,
             min_confidence=resolved_config.min_confidence,
-            min_net_edge_bps=dynamic_min_net_edge_bps,
+            min_net_edge_bps=effective_min_net_edge_bps,
             max_spread_bps=resolved_config.max_spread_bps,
             min_liquidity_score=resolved_config.min_liquidity_score,
             min_contract_price=resolved_config.min_contract_price,
-            min_net_edge_reason=dynamic_min_net_edge_reason,
+            min_net_edge_reason=effective_min_net_edge_reason,
+        )
+        route_policy_bias = _route_policy_bias_for_snapshot(
+            snapshot=snapshot,
+            signal_type=classification.signal_type,
+            context=context,
         )
         decision = route_execution(
             fair_value=fair_value,
             snapshot=snapshot,
             classification=classification,
             eligibility=eligibility,
-            allow_taker_routes=selection_action != "selective_market",
+            allow_taker_routes=_allow_taker_routes_for_selection(
+                selection_action=selection_action,
+                route_policy_bias=route_policy_bias,
+                feedback=execution_feedback,
+                config=resolved_config,
+            ),
             taker_urgency_threshold=_feedback_taker_urgency_threshold(
                 base_threshold=resolved_config.taker_urgency_threshold,
                 feedback=execution_feedback,
@@ -334,12 +431,30 @@ class CryptoPhase2Strategy:
                 base_aggressiveness=resolved_config.maker_aggressiveness,
                 feedback=execution_feedback,
             ),
-            route_policy_bias=_route_policy_bias_for_snapshot(
-                snapshot=snapshot,
-                signal_type=classification.signal_type,
-                context=context,
-            ),
+            route_policy_bias=route_policy_bias,
         )
+        quote_age_seconds = _snapshot_quote_age_seconds(snapshot)
+        if _should_block_selective_repricing_taker_due_quote_age(
+            decision=decision,
+            classification=classification,
+            selection_action=selection_action,
+            quote_age_seconds=quote_age_seconds,
+        ):
+            _record_runtime_skip(
+                context=context,
+                snapshot=snapshot,
+                reason="selective_repricing_taker_stale_quote_blocked",
+                extra={
+                    "phase2_preset": resolved_config.preset_name,
+                    "selection_action": selection_action,
+                    "selection_reasons": list(selection_reasons),
+                    "quote_age_seconds": quote_age_seconds,
+                    "quote_age_threshold_seconds": _SELECTIVE_REPRICING_TAKER_MAX_QUOTE_AGE_SECONDS,
+                    "decision_route": decision.route,
+                    "decision_rationale_tags": list(decision.rationale_tags),
+                },
+            )
+            return []
         if decision.route == "skip" or decision.target_price is None:
             _record_runtime_skip(
                 context=context,
@@ -354,6 +469,10 @@ class CryptoPhase2Strategy:
                     "selection_action": selection_action,
                     "selection_reasons": list(selection_reasons),
                     "dynamic_gate_reason": (dynamic_gate.reason_tag if dynamic_gate is not None else "dynamic_disabled"),
+                    "entry_execution_drag_bps": entry_execution_drag_bps,
+                    "effective_min_net_edge_bps": effective_min_net_edge_bps,
+                    "repricing_fallback_no_fill_attempts": repricing_fallback_no_fill_attempts,
+                    "repricing_fallback_taker_escalated": repricing_fallback_taker_escalated,
                 },
             )
             return []
@@ -473,9 +592,13 @@ class CryptoPhase2Strategy:
                     "selection_action": selection_action,
                     "selection_reasons": list(selection_reasons),
                     "dynamic_min_net_edge_bps": dynamic_min_net_edge_bps,
+                    "entry_execution_drag_bps": entry_execution_drag_bps,
+                    "effective_min_net_edge_bps": effective_min_net_edge_bps,
                     "dynamic_taker_max_entry_premium_bps": dynamic_taker_max_entry_premium_bps,
                     "dynamic_repricing_taker_max_entry_premium_bps": dynamic_repricing_taker_max_entry_premium_bps,
                     "dynamic_gate_reason": (dynamic_gate.reason_tag if dynamic_gate is not None else "dynamic_disabled"),
+                    "repricing_fallback_no_fill_attempts": repricing_fallback_no_fill_attempts,
+                    "repricing_fallback_taker_escalated": repricing_fallback_taker_escalated,
                 },
             )
         ]
@@ -490,7 +613,33 @@ class CryptoPhase2Strategy:
     ) -> Sequence[StrategySignal]:
         intent = _position_intent_for_market(snapshot=snapshot, context=context)
         if intent is None:
-            return []
+            # Fallback: if runtime context missed the entry intent, reconstruct from live position data
+            # so exit logic keeps running and positions can still close safely.
+            classification = classify_crypto_signal(fair_value=fair_value)
+            no_token_id = str(snapshot.metadata.get("no_token_id", "")).strip()
+            inferred_entry_side = (
+                SignalSide.BUY_NO
+                if no_token_id and position.token_id == no_token_id
+                else SignalSide.BUY_YES
+            )
+            if classification.side != inferred_entry_side:
+                classification = type(classification)(
+                    market_id=classification.market_id,
+                    signal_type=classification.signal_type,
+                    side=inferred_entry_side,
+                    urgency_score=classification.urgency_score,
+                    expected_exit_mode=classification.expected_exit_mode,
+                    rationale_tags=classification.rationale_tags,
+                )
+            intent = build_position_intent(
+                fair_value=fair_value,
+                classification=classification,
+                token_id=position.token_id,
+                created_at=position.opened_at,
+                entry_fill_price=position.average_entry_price,
+                entry_mid_price=position.mark_price,
+                entry_fill_source=None,
+            )
         resolved_config = resolve_phase2_config_for_snapshot(base=self.config, snapshot=snapshot)
 
         exit_decision = evaluate_exit(
@@ -527,15 +676,23 @@ class CryptoPhase2Strategy:
             position=position,
             context=context,
         )
-        if exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop"}:
+        if exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop", "adverse_fill_reversal"}:
             if (
                 _should_force_immediate_time_stop_exit(
                     intent=intent,
                     exit_reason=exit_decision.reason,
+                    force_ioc_for_repricing_taker=resolved_config.time_stop_force_ioc_for_repricing_taker,
                 )
                 or (
                     exit_decision.reason == "time_stop"
                     and exit_retry_count >= resolved_config.time_stop_force_ioc_after_expiries
+                )
+                or (
+                    exit_decision.reason == "adverse_fill_reversal"
+                    and (
+                        resolved_config.adverse_fill_force_ioc
+                        or exit_retry_count >= max(1, resolved_config.time_stop_force_ioc_after_expiries)
+                    )
                 )
             ):
                 exit_price = exit_decision.target_price
@@ -553,6 +710,12 @@ class CryptoPhase2Strategy:
                 time_in_force = "GTC"
 
         target_notional = (position.shares or 0.0) * exit_price
+        target_notional = _scaled_exit_notional(
+            full_notional=target_notional,
+            reason=exit_decision.reason,
+            retry_count=exit_retry_count,
+            config=resolved_config,
+        )
         if target_notional <= 0:
             return []
 
@@ -563,12 +726,12 @@ class CryptoPhase2Strategy:
         )
         if (
             existing_exit_order is not None
-            and exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop"}
+            and exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop", "adverse_fill_reversal"}
         ):
             return []
         if (
             existing_exit_order is None
-            and exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop"}
+            and exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop", "adverse_fill_reversal"}
             and _recent_active_exit_submission(
                 snapshot=snapshot,
                 context=context,
@@ -587,7 +750,7 @@ class CryptoPhase2Strategy:
         ):
             return []
         if (
-            exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop"}
+            exit_decision.reason in {"aging_exit", "stale_position_cleanup", "time_stop", "adverse_fill_reversal"}
             and _recently_reposted_exit(
                 snapshot=snapshot,
                 position=position,
@@ -645,6 +808,50 @@ def _fair_value_for_market(
         if isinstance(fair_value, FairValueEstimate):
             return fair_value
     return None
+
+
+def _fallback_exit_fair_value(
+    *,
+    snapshot: MarketSnapshot,
+    position: PositionState,
+) -> FairValueEstimate:
+    observed_probability = _observed_probability_for_token(
+        snapshot=snapshot,
+        token_id=position.token_id,
+    )
+    return FairValueEstimate(
+        market_id=snapshot.market_id,
+        category=snapshot.category,
+        fair_probability=observed_probability,
+        confidence=0.0,
+        half_life_seconds=60,
+        observed_probability=observed_probability,
+        model_id="crypto.phase2.fallback_exit_no_fair",
+        rationale_tags=("fallback_exit_no_fair_value",),
+        supporting_values={
+            "gross_edge_bps": 0.0,
+            "net_edge_bps": 0.0,
+            "fallback_exit_no_fair_value": True,
+        },
+    )
+
+
+def _observed_probability_for_token(
+    *,
+    snapshot: MarketSnapshot,
+    token_id: str,
+) -> float:
+    no_token_id = str(snapshot.metadata.get("no_token_id", "")).strip()
+    is_no_token = bool(no_token_id and token_id == no_token_id)
+    best_bid = snapshot.best_bid_no if is_no_token else snapshot.best_bid_yes
+    best_ask = snapshot.best_ask_no if is_no_token else snapshot.best_ask_yes
+    if best_bid is not None and best_ask is not None:
+        return max(0.01, min(0.99, (best_bid + best_ask) / 2.0))
+    if best_bid is not None:
+        return max(0.01, min(0.99, best_bid))
+    if best_ask is not None:
+        return max(0.01, min(0.99, best_ask))
+    return 0.5
 
 
 def _position_intent_for_market(
@@ -846,8 +1053,11 @@ def _should_force_immediate_time_stop_exit(
     *,
     intent: CryptoPositionIntent,
     exit_reason: str,
+    force_ioc_for_repricing_taker: bool,
 ) -> bool:
     return (
+        force_ioc_for_repricing_taker
+        and
         exit_reason == "time_stop"
         and intent.signal_type == "repricing_edge"
         and intent.entry_fill_source == "taker"
@@ -956,6 +1166,66 @@ def _min_net_edge_reason_for_dynamic_gate(
     if effective_min_net_edge_bps > base_min_net_edge_bps:
         return "cost_regime_min_net_edge"
     return "insufficient_net_edge"
+
+
+def _min_net_edge_reason_for_dynamic_gate_and_drag(
+    *,
+    base_min_net_edge_bps: float,
+    dynamic_min_net_edge_bps: float,
+    effective_min_net_edge_bps: float,
+    dynamic_reason: str,
+) -> str:
+    if effective_min_net_edge_bps > dynamic_min_net_edge_bps:
+        return "execution_drag_min_net_edge"
+    return _min_net_edge_reason_for_dynamic_gate(
+        base_min_net_edge_bps=base_min_net_edge_bps,
+        effective_min_net_edge_bps=dynamic_min_net_edge_bps,
+    ) if dynamic_reason == "insufficient_net_edge" else dynamic_reason
+
+
+def _entry_execution_drag_bps(
+    *,
+    snapshot: MarketSnapshot,
+    classification: CryptoSignalClassification,
+    feedback: CryptoExecutionFeedback | None,
+    config: CryptoPhase2ResolvedConfig,
+) -> float:
+    spread_component = max(0.0, config.entry_execution_spread_weight) * spread_cost_bps(
+        snapshot=snapshot,
+        side=classification.side,
+    )
+    feedback_shortfall = feedback.taker_shortfall_bps if feedback is not None else 0.0
+    feedback_component = max(0.0, config.entry_execution_feedback_weight) * max(0.0, feedback_shortfall)
+    explicit_component = max(0.0, config.entry_execution_drag_bps)
+    drag = explicit_component + spread_component + feedback_component
+    cap = max(0.0, config.entry_execution_drag_cap_bps)
+    return _clamp(drag, floor=0.0, ceiling=cap)
+
+
+def _scaled_exit_notional(
+    *,
+    full_notional: float,
+    reason: str,
+    retry_count: int,
+    config: CryptoPhase2ResolvedConfig,
+) -> float:
+    if full_notional <= 0:
+        return 0.0
+    if not config.exit_scaleout_enabled or retry_count > 0:
+        return full_notional
+    fraction = 1.0
+    if reason == "time_stop":
+        fraction = config.time_stop_scaleout_fraction
+    elif reason == "adverse_fill_reversal":
+        fraction = config.adverse_fill_scaleout_fraction
+    fraction = _clamp(fraction, floor=0.05, ceiling=1.0)
+    if fraction >= 0.999:
+        return full_notional
+    scaled = full_notional * fraction
+    min_notional = max(0.0, config.exit_scaleout_min_notional)
+    if min_notional > 0.0:
+        scaled = max(scaled, min_notional)
+    return min(full_notional, scaled)
 
 
 def _quality_weighted_default_notional(
@@ -1117,6 +1387,26 @@ def _route_policy_bias_for_snapshot(
     if isinstance(state, CryptoRoutePolicyState):
         return state.route_bias
     return "stable"
+
+
+def _allow_taker_routes_for_selection(
+    *,
+    selection_action: str,
+    route_policy_bias: str,
+    feedback: CryptoExecutionFeedback | None,
+    config: CryptoPhase2Config,
+) -> bool:
+    if selection_action != "selective_market":
+        return True
+    if config.selective_market_allow_taker:
+        return True
+    if not config.selective_market_allow_taker_when_aggressive:
+        return False
+    if route_policy_bias == "more_aggressive":
+        return True
+    if feedback is not None and feedback.recommended_route_bias == "more_aggressive":
+        return True
+    return False
 
 
 def _is_repricing_maker_fallback(decision: Any) -> bool:
@@ -1543,6 +1833,46 @@ def _market_no_fill_quarantined(
     return False
 
 
+def _repricing_maker_fallback_no_fill_attempts(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+    side: SignalSide,
+) -> int:
+    target_side = side.value
+    attempts = 0
+    seen_order_ids: set[str] = set()
+    for event in reversed(recent_runtime_events(context)):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if not isinstance(event_type, str) or not isinstance(payload, Mapping):
+            continue
+        if str(payload.get("market_id", "")) != snapshot.market_id:
+            continue
+        if str(payload.get("side", "")).lower() != target_side:
+            continue
+        if event_type in {"order.filled", "trade.closed", "position.closed"}:
+            break
+        if event_type != "order.submitted":
+            continue
+        raw_tags = payload.get("rationale_tags")
+        if not isinstance(raw_tags, Sequence) or isinstance(raw_tags, (str, bytes, bytearray)):
+            continue
+        normalized_tags = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
+        if normalized_tags not in {
+            ("repricing_taker_too_expensive", "maker_fallback"),
+            ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
+        }:
+            continue
+        order_id = str(payload.get("order_id", "")).strip()
+        if order_id and order_id in seen_order_ids:
+            continue
+        if order_id:
+            seen_order_ids.add(order_id)
+        attempts += 1
+    return attempts
+
+
 def _exposure_group_conflict_active(
     *,
     snapshot: MarketSnapshot,
@@ -1666,6 +1996,37 @@ def _event_timestamp(payload: Mapping[str, object]) -> datetime | None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
     return None
+
+
+def _snapshot_quote_age_seconds(snapshot: MarketSnapshot) -> float | None:
+    for key in ("clob_timestamp", "updated_at"):
+        raw_value = snapshot.metadata.get(key, "")
+        if not isinstance(raw_value, str) or not raw_value:
+            continue
+        try:
+            observed_at = datetime.fromisoformat(raw_value.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+        return max(0.0, (snapshot.timestamp - observed_at).total_seconds())
+    return None
+
+
+def _should_block_selective_repricing_taker_due_quote_age(
+    *,
+    decision: Any,
+    classification: Any,
+    selection_action: str,
+    quote_age_seconds: float | None,
+) -> bool:
+    if selection_action != "selective_market":
+        return False
+    if quote_age_seconds is None or quote_age_seconds <= _SELECTIVE_REPRICING_TAKER_MAX_QUOTE_AGE_SECONDS:
+        return False
+    if str(getattr(classification, "signal_type", "")) != "repricing_edge":
+        return False
+    return str(getattr(decision, "route", "")) == "taker"
 
 
 def _snapshot_thesis_group_id(

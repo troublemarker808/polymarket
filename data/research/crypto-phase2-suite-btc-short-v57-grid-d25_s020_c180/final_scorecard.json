@@ -1,0 +1,114 @@
+{
+  "generated_at": "2026-04-01T05:00:38.895709+00:00",
+  "recommended_action": "review",
+  "readiness_score": 0.75,
+  "execution_quality": "fragile",
+  "evidence_status": "ready",
+  "reasons": [
+    "filtered replay pnl is negative",
+    "selection filter removed more orders than it stabilized",
+    "selection filter still blocks runtime ladder families",
+    "promotion gate blocked: insufficient_closed_trade_count",
+    "promotion gate blocked: pnl_per_notional_not_positive"
+  ],
+  "blocked_series_keys": [
+    "when-will-bitcoin-hit-150k"
+  ],
+  "filtered_orders": 8,
+  "filtered_signals": 8,
+  "filtered_pnl": -0.561012695780001,
+  "filtered_status": "completed",
+  "filter_order_delta": -8,
+  "selection_quality_score": 0.7,
+  "pricing_quality_score": 0.58,
+  "execution_quality_score": 0.53,
+  "exit_quality_score": 0.09,
+  "sizing_quality_score": 0.77,
+  "average_signal_edge_bps": 604.7461,
+  "average_adverse_fill_bps": 194.0373,
+  "expected_edge_capture_bps": 410.7089,
+  "edge_capture_ratio": 0.6791,
+  "average_trade_expected_edge_bps": 601.8203,
+  "average_trade_execution_drag_bps": 183.8783,
+  "average_trade_realized_pnl_bps": -70.7665,
+  "average_barrier_observed_gap_bps": 1862.3949,
+  "average_surface_observed_gap_bps": 111.1667,
+  "average_fusion_observed_gap_bps": 674.6581,
+  "average_barrier_surface_disagreement_bps": 1850.9094,
+  "closed_trade_count": 1,
+  "winning_trade_rate": 0.0,
+  "average_win_trade_pnl": 0.0,
+  "average_loss_trade_pnl": -0.13697,
+  "average_submitted_notional": 3.984848,
+  "large_notional_share": 0.0,
+  "dominant_exit_reason": "adverse_fill_reversal",
+  "stop_loss_exit_share": 0.0,
+  "passive_cleanup_exit_share": 0.0,
+  "exit_family_balance_score": 1.0,
+  "small_bucket_pnl_per_notional": -0.004297,
+  "medium_bucket_pnl_per_notional": 0.0,
+  "large_bucket_pnl_per_notional": 0.0,
+  "submitted_notional": 31.878788,
+  "pnl_per_notional": -0.0042965874361346485,
+  "profit_focus": "exit",
+  "secondary_profit_focus": "execution",
+  "loss_ranking": [
+    "exit",
+    "execution",
+    "pricing",
+    "selection",
+    "sizing"
+  ],
+  "selection_loss": 0.3,
+  "pricing_loss": 0.42,
+  "execution_loss": 0.47,
+  "exit_loss": 0.91,
+  "sizing_loss": 0.23,
+  "total_profit_loss": 2.33,
+  "tuning_priority": "exit",
+  "tuning_actions": [
+    "tighten aging/stale exit thresholds so weak positions recycle earlier",
+    "lower max_holding_multiplier for presets with repeated negative closed trades",
+    "design the next variant to also address secondary loss in execution instead of retuning exit in isolation",
+    "keep execution-loss on watch even if another component is currently weaker"
+  ],
+  "component_reasons": {
+    "selection": [
+      "runtime still blocks ladder families",
+      "filter removes more orders than it preserves"
+    ],
+    "pricing": [
+      "negative filtered pnl",
+      "barrier and surface models disagree too much"
+    ],
+    "execution": [
+      "maker fill rate is weak versus expiration",
+      "recent execution feedback prefers more passive routing",
+      "fills give up too much edge versus mid-price",
+      "trade-level execution drag remains too high"
+    ],
+    "exit": [
+      "negative pnl per submitted order",
+      "closed trades are repeatedly stopping out",
+      "exits fail to convert enough positions into positive closes",
+      "losing exits are materially larger than winning exits",
+      "exit path is not preserving positive close quality",
+      "trade-level realized pnl stays negative after execution and exit effects"
+    ],
+    "sizing": [
+      "average closed-trade pnl is negative",
+      "deployed notional is not producing positive net capture"
+    ]
+  },
+  "promotion_decision": "review",
+  "promotion_stage_label": "paper available",
+  "promotion_blocking_reasons": [
+    "insufficient_closed_trade_count",
+    "pnl_per_notional_not_positive"
+  ],
+  "promotion_min_closed_trades": 3,
+  "promotion_min_edge_capture_ratio": 0.35,
+  "promotion_max_execution_loss_ratio": 0.65,
+  "promotion_min_pnl_per_notional": 0.0,
+  "observed_execution_loss_ratio": 0.30553688534600776
+}

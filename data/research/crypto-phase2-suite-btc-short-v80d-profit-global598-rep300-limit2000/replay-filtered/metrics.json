@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v80d-profit-global598-rep300",
+  "events_recorded": 1985,
+  "generated_at": "2026-03-27T12:40:28.171000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 11
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v80d-profit-global598-rep300-limit2000\\replay-filtered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-suite-cli-filtered",
+  "signals_generated": 11,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-combined.v74.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 11
+  },
+  "submitted_orders": 11,
+  "today_pnl": -0.447438414360001,
+  "total_equity": 24.55256158564
+}

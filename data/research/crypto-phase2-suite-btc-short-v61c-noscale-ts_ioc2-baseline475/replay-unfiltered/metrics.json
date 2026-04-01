@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v61c-noscale-ts_ioc2",
+  "events_recorded": 510,
+  "generated_at": "2026-03-28T12:31:49.865000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 19
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v61c-noscale-ts_ioc2-baseline475\\replay-unfiltered",
+  "processed_snapshots": 475,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 19,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.long.v35.20260328.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 19
+  },
+  "submitted_orders": 19,
+  "today_pnl": -0.7460091316600015,
+  "total_equity": 24.253990868339997
+}

@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v68a-rep297-edge80",
+  "events_recorded": 514,
+  "generated_at": "2026-03-28T12:31:49.865000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 22
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 1,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v68a-rep297-edge80-baseline475\\replay-unfiltered",
+  "processed_snapshots": 475,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 22,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.long.v35.20260328.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 21
+  },
+  "submitted_orders": 21,
+  "today_pnl": -0.5142253438200015,
+  "total_equity": 24.48577465618
+}

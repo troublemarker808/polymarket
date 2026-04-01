@@ -1,0 +1,96 @@
+{
+  "generated_at": "2026-03-31T21:42:01.997855+00:00",
+  "snapshot_path": "data\\research\\mined-windows-phase2-v35-btc-reach\\window-03.snapshots.jsonl",
+  "model_parameters": {
+    "baseline_preset": "crypto-calibration-baseline-20260328",
+    "baseline_candidate": "btc-r1-s165-b35-s65",
+    "barrier_steepness": 1.65,
+    "fusion_barrier_weight": 0.35,
+    "fusion_surface_weight": 0.65
+  },
+  "series_reports": [
+    {
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "market_count": 2,
+      "runtime_actionable_market_count": 0,
+      "positive_net_edge_count": 2,
+      "mean_net_edge_bps": 615.3735595542956,
+      "median_net_edge_bps": 615.3735595542956,
+      "mean_entry_cost_bps": 100.00000000000006,
+      "min_liquidity_score": 0.8709094471902284,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "watch_only",
+      "reasons": [
+        "wide_spread",
+        "thin_liquidity",
+        "no_runtime_actionable_markets"
+      ],
+      "profit_quality_score": 0.7318,
+      "selection_rank": 1
+    }
+  ],
+  "market_rows": [
+    {
+      "market_id": "701492",
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "instrument_key": "BTC:reach:2027-01-01:140000",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "observed_probability": 0.11499999999999999,
+      "fair_probability": 0.1804758732877128,
+      "net_edge_bps": 539.7587328771283,
+      "entry_cost_bps": 49.99999999999997,
+      "spread_bps": 99.99999999999994,
+      "liquidity_score": 0.8709094471902284,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "top_book_depth": 243.61,
+      "nearby_book_depth": 23944.12,
+      "quote_age_seconds": 67.448,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "watch_market",
+      "reasons": [
+        "thin_liquidity"
+      ],
+      "profit_quality_score": 0.8083
+    },
+    {
+      "market_id": "701495",
+      "series_key": "what-price-will-bitcoin-hit-before-2027",
+      "instrument_key": "BTC:reach:2027-01-01:110000",
+      "underlying": "BTC",
+      "event_family": "reach",
+      "observed_probability": 0.245,
+      "fair_probability": 0.14440116137685366,
+      "net_edge_bps": 690.988386231463,
+      "entry_cost_bps": 150.00000000000014,
+      "spread_bps": 300.0000000000003,
+      "liquidity_score": 0.938945095185559,
+      "tick_size": 0.01,
+      "min_order_size": 5.0,
+      "top_book_depth": 959.27,
+      "nearby_book_depth": 2505.09,
+      "quote_age_seconds": 189.503,
+      "signal_count": 0,
+      "submitted_order_count": 0,
+      "filled_order_count": 0,
+      "expired_order_count": 0,
+      "recommended_action": "watch_market",
+      "reasons": [
+        "stale_quote",
+        "wide_runtime_spread",
+        "wide_spread",
+        "thin_liquidity"
+      ],
+      "profit_quality_score": 0.6553
+    }
+  ]
+}

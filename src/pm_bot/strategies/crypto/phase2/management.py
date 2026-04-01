@@ -110,7 +110,10 @@ def evaluate_exit(
     if holding_seconds < min_holding_seconds_before_exit:
         return _hold_decision(fair_value.market_id, "fresh_fill_hold", remaining_edge_bps)
     expected_holding_seconds: float = max(float(intent.expected_holding_seconds), 1.0)
-    if execution_max_holding_seconds is not None and intent.effective_horizon_days < 7.0:
+    if execution_max_holding_seconds is not None and (
+        intent.effective_horizon_days < 7.0
+        or intent.signal_type in {"repricing_edge", "liquidity_edge"}
+    ):
         expected_holding_seconds = min(expected_holding_seconds, max(execution_max_holding_seconds, 1.0))
     holding_fraction = holding_seconds / expected_holding_seconds
     time_stop_triggered = holding_seconds >= (expected_holding_seconds * max_holding_multiplier)

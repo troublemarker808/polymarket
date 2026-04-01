@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v62-cap-1280",
+  "events_recorded": 504,
+  "generated_at": "2026-03-28T12:31:49.865000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 16
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 0,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v62-cap-1280-baseline475\\replay-unfiltered",
+  "processed_snapshots": 475,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 16,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.long.v35.20260328.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 16
+  },
+  "submitted_orders": 16,
+  "today_pnl": -0.5764706743600008,
+  "total_equity": 24.423529325639997
+}

@@ -1,0 +1,1 @@
+{"category": "crypto", "execution_error_bps": -695.3883545112932, "market_id": "1345531", "notes": ["barrier_model", "surface_consistency"], "predicted_edge_bps": -405.19417725564665, "prediction_error_bps": -405.19417725564665, "realized_pnl": 0.0, "strategy_id": "crypto.phase2", "timing_error_bps": 0.0}

@@ -19,6 +19,7 @@ class CryptoPhase2ResolvedConfig:
     max_spread_bps: float
     min_liquidity_score: float
     min_contract_price: float
+    repricing_max_net_edge_bps: float
     taker_urgency_threshold: float
     maker_min_edge_bps: float
     resolution_maker_min_edge_bps: float
@@ -26,6 +27,8 @@ class CryptoPhase2ResolvedConfig:
     high_edge_taker_max_spread_bps: float
     taker_max_entry_premium_bps: float
     repricing_taker_max_entry_premium_bps: float
+    repricing_fallback_taker_after_no_fill_attempts: int
+    repricing_fallback_taker_retry_max_entry_premium_bps: float | None
     taker_slippage_guard_bps: float
     taker_min_net_edge_after_premium_bps: float
     taker_time_in_force: str
@@ -46,9 +49,14 @@ class CryptoPhase2ResolvedConfig:
     stop_loss_max_remaining_edge_bps: float
     adverse_fill_exit_bps: float
     adverse_fill_max_remaining_edge_bps: float
+    adverse_fill_force_ioc: bool
     time_stop_max_remaining_edge_bps: float | None
     max_holding_multiplier: float
     exit_repost_cooldown_seconds: float
+    exit_scaleout_enabled: bool
+    time_stop_scaleout_fraction: float
+    adverse_fill_scaleout_fraction: float
+    exit_scaleout_min_notional: float
     entry_repost_cooldown_seconds: float
     repricing_fallback_entry_repost_cooldown_seconds: float
     entry_failure_cooldown_seconds: float
@@ -59,6 +67,7 @@ class CryptoPhase2ResolvedConfig:
     max_loss_trades_per_market: int
     max_loss_trades_per_exposure_group: int
     time_stop_force_ioc_after_expiries: int
+    time_stop_force_ioc_for_repricing_taker: bool
     thesis_entry_cooldown_seconds: float
     single_active_market_per_thesis: bool
     max_no_fill_entry_attempts_per_market: int
@@ -71,9 +80,15 @@ class CryptoPhase2ResolvedConfig:
     dynamic_taker_max_entry_premium_ceiling_bps: float
     dynamic_repricing_taker_max_entry_premium_floor_bps: float
     dynamic_repricing_taker_max_entry_premium_ceiling_bps: float
+    entry_execution_drag_bps: float
+    entry_execution_spread_weight: float
+    entry_execution_feedback_weight: float
+    entry_execution_drag_cap_bps: float
     route_adaptation_enabled: bool
     route_adaptation_min_samples: int
     route_adaptation_cooldown_seconds: float
+    selective_market_allow_taker: bool
+    selective_market_allow_taker_when_aggressive: bool
     quality_sizing_enabled: bool
     quality_sizing_min_multiplier: float
     quality_sizing_max_multiplier: float
@@ -150,6 +165,7 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         max_spread_bps=base.max_spread_bps,
         min_liquidity_score=base.min_liquidity_score,
         min_contract_price=base.min_contract_price,
+        repricing_max_net_edge_bps=base.repricing_max_net_edge_bps,
         taker_urgency_threshold=base.taker_urgency_threshold,
         maker_min_edge_bps=base.maker_min_edge_bps,
         resolution_maker_min_edge_bps=base.resolution_maker_min_edge_bps,
@@ -157,6 +173,8 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         high_edge_taker_max_spread_bps=base.high_edge_taker_max_spread_bps,
         taker_max_entry_premium_bps=base.taker_max_entry_premium_bps,
         repricing_taker_max_entry_premium_bps=base.repricing_taker_max_entry_premium_bps,
+        repricing_fallback_taker_after_no_fill_attempts=base.repricing_fallback_taker_after_no_fill_attempts,
+        repricing_fallback_taker_retry_max_entry_premium_bps=base.repricing_fallback_taker_retry_max_entry_premium_bps,
         taker_slippage_guard_bps=base.taker_slippage_guard_bps,
         taker_min_net_edge_after_premium_bps=base.taker_min_net_edge_after_premium_bps,
         taker_time_in_force=base.taker_time_in_force,
@@ -177,9 +195,14 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         stop_loss_max_remaining_edge_bps=base.stop_loss_max_remaining_edge_bps,
         adverse_fill_exit_bps=base.adverse_fill_exit_bps,
         adverse_fill_max_remaining_edge_bps=base.adverse_fill_max_remaining_edge_bps,
+        adverse_fill_force_ioc=base.adverse_fill_force_ioc,
         time_stop_max_remaining_edge_bps=base.time_stop_max_remaining_edge_bps,
         max_holding_multiplier=base.max_holding_multiplier,
         exit_repost_cooldown_seconds=base.exit_repost_cooldown_seconds,
+        exit_scaleout_enabled=base.exit_scaleout_enabled,
+        time_stop_scaleout_fraction=base.time_stop_scaleout_fraction,
+        adverse_fill_scaleout_fraction=base.adverse_fill_scaleout_fraction,
+        exit_scaleout_min_notional=base.exit_scaleout_min_notional,
         entry_repost_cooldown_seconds=base.entry_repost_cooldown_seconds,
         repricing_fallback_entry_repost_cooldown_seconds=base.repricing_fallback_entry_repost_cooldown_seconds,
         entry_failure_cooldown_seconds=base.entry_failure_cooldown_seconds,
@@ -190,6 +213,7 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         max_loss_trades_per_market=base.max_loss_trades_per_market,
         max_loss_trades_per_exposure_group=base.max_loss_trades_per_exposure_group,
         time_stop_force_ioc_after_expiries=base.time_stop_force_ioc_after_expiries,
+        time_stop_force_ioc_for_repricing_taker=base.time_stop_force_ioc_for_repricing_taker,
         thesis_entry_cooldown_seconds=base.thesis_entry_cooldown_seconds,
         single_active_market_per_thesis=base.single_active_market_per_thesis,
         max_no_fill_entry_attempts_per_market=base.max_no_fill_entry_attempts_per_market,
@@ -202,9 +226,15 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         dynamic_taker_max_entry_premium_ceiling_bps=base.dynamic_taker_max_entry_premium_ceiling_bps,
         dynamic_repricing_taker_max_entry_premium_floor_bps=base.dynamic_repricing_taker_max_entry_premium_floor_bps,
         dynamic_repricing_taker_max_entry_premium_ceiling_bps=base.dynamic_repricing_taker_max_entry_premium_ceiling_bps,
+        entry_execution_drag_bps=base.entry_execution_drag_bps,
+        entry_execution_spread_weight=base.entry_execution_spread_weight,
+        entry_execution_feedback_weight=base.entry_execution_feedback_weight,
+        entry_execution_drag_cap_bps=base.entry_execution_drag_cap_bps,
         route_adaptation_enabled=base.route_adaptation_enabled,
         route_adaptation_min_samples=base.route_adaptation_min_samples,
         route_adaptation_cooldown_seconds=base.route_adaptation_cooldown_seconds,
+        selective_market_allow_taker=base.selective_market_allow_taker,
+        selective_market_allow_taker_when_aggressive=base.selective_market_allow_taker_when_aggressive,
         quality_sizing_enabled=base.quality_sizing_enabled,
         quality_sizing_min_multiplier=base.quality_sizing_min_multiplier,
         quality_sizing_max_multiplier=base.quality_sizing_max_multiplier,
@@ -238,6 +268,7 @@ def _apply_overrides(
             "max_loss_trades_per_exposure_group",
             "dynamic_gate_min_samples",
             "route_adaptation_min_samples",
+            "repricing_fallback_taker_after_no_fill_attempts",
         }:
             allowed[field_name] = int(cast(Any, raw_value))
         elif field_name == "taker_time_in_force":
@@ -247,10 +278,19 @@ def _apply_overrides(
             "skip_selective_wide_spread_markets",
             "dynamic_gates_enabled",
             "route_adaptation_enabled",
+            "selective_market_allow_taker",
+            "selective_market_allow_taker_when_aggressive",
             "quality_sizing_enabled",
+            "adverse_fill_force_ioc",
+            "exit_scaleout_enabled",
+            "time_stop_force_ioc_for_repricing_taker",
         }:
             allowed[field_name] = bool(cast(Any, raw_value))
-        elif field_name in {"execution_max_holding_seconds", "time_stop_max_remaining_edge_bps"}:
+        elif field_name in {
+            "execution_max_holding_seconds",
+            "time_stop_max_remaining_edge_bps",
+            "repricing_fallback_taker_retry_max_entry_premium_bps",
+        }:
             allowed[field_name] = None if raw_value in (None, "") else float(cast(Any, raw_value))
         else:
             allowed[field_name] = float(cast(Any, raw_value))

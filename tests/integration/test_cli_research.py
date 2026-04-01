@@ -360,6 +360,24 @@ def test_cli_crypto_phase2_suite_runs_end_to_end(tmp_path: Path) -> None:
     assert (output_dir / "replay-filtered" / "metrics.json").exists()
 
 
+def test_cli_crypto_phase2_final_report_prints_btc_promotion_gate_payload(tmp_path: Path) -> None:
+    output_dir = tmp_path / "crypto-phase2-final-report"
+
+    completed = _run_cli(
+        "crypto-phase2-final-report",
+        "--snapshot-path",
+        str(ROOT / "tests" / "fixtures" / "crypto_phase2" / "btc_runtime_ladder_window.jsonl"),
+        "--underlying-state-path",
+        str(ROOT / "tests" / "fixtures" / "crypto_phase2" / "runtime_underlying_states.json"),
+        "--output-dir",
+        str(output_dir),
+    )
+
+    assert "promotion_decision:" in completed.stdout
+    assert "promotion_stage_label:" in completed.stdout
+    assert (output_dir / "final_scorecard.json").exists()
+
+
 def _run_cli(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "pm_bot", *args],

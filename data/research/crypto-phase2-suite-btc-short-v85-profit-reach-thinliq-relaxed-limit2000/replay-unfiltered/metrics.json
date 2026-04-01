@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/research-btc-short-profit-v1",
+  "events_recorded": 2010,
+  "generated_at": "2026-03-27T12:40:28.171000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 28
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 2,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v85-profit-reach-thinliq-relaxed-limit2000\\replay-unfiltered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 28,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-combined.v74.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 24
+  },
+  "submitted_orders": 24,
+  "today_pnl": -0.3851930838200017,
+  "total_equity": 24.61480691618
+}

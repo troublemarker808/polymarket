@@ -13,6 +13,24 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True, frozen=True)
+class _CryptoPromotionGateEvaluation:
+    decision: str
+    stage_label: str
+    blocking_reasons: tuple[str, ...]
+    min_closed_trades: int
+    min_edge_capture_ratio: float
+    max_execution_loss_ratio: float
+    min_pnl_per_notional: float
+    observed_execution_loss_ratio: float
+
+
+_PROMOTION_MIN_CLOSED_TRADES = 3
+_PROMOTION_MIN_EDGE_CAPTURE_RATIO = 0.35
+_PROMOTION_MAX_EXECUTION_LOSS_RATIO = 0.65
+_PROMOTION_MIN_PNL_PER_NOTIONAL = 0.0
+
+
+@dataclass(slots=True, frozen=True)
 class CryptoPhase2FinalScorecard:
     generated_at: datetime
     recommended_action: str
@@ -69,6 +87,14 @@ class CryptoPhase2FinalScorecard:
     tuning_priority: str
     tuning_actions: tuple[str, ...]
     component_reasons: dict[str, tuple[str, ...]]
+    promotion_decision: str
+    promotion_stage_label: str
+    promotion_blocking_reasons: tuple[str, ...]
+    promotion_min_closed_trades: int
+    promotion_min_edge_capture_ratio: float
+    promotion_max_execution_loss_ratio: float
+    promotion_min_pnl_per_notional: float
+    observed_execution_loss_ratio: float
 
 
 def build_crypto_phase2_final_scorecard(
@@ -98,13 +124,10 @@ def build_crypto_phase2_final_scorecard(
         execution_quality = "fragile"
     if suite_result.selection_blocked_series_keys:
         reasons.append("selection filter still blocks runtime ladder families")
-
-    if evidence_status == "blocked":
-        recommended_action = "pause"
-    elif filtered.submitted_orders > 0 and filtered.status != "halted":
-        recommended_action = "proceed"
-    else:
-        recommended_action = "review"
+    promotion_gate = _evaluate_btc_promotion_gate(filtered=filtered)
+    recommended_action = promotion_gate.decision
+    if promotion_gate.blocking_reasons:
+        reasons.extend(f"promotion gate blocked: {reason}" for reason in promotion_gate.blocking_reasons)
 
     score = 1.0
     if filtered.status == "halted":
@@ -117,6 +140,10 @@ def build_crypto_phase2_final_scorecard(
         score -= 0.1
     if filter_order_delta < 0:
         score -= 0.05
+    if promotion_gate.decision == "pause":
+        score -= 0.2
+    elif promotion_gate.decision == "review":
+        score -= 0.1
     readiness_score = max(0.0, round(score, 4))
     component_scores, component_losses, profit_focus = _profit_component_scores(
         filtered=filtered,
@@ -194,6 +221,14 @@ def build_crypto_phase2_final_scorecard(
         tuning_priority=tuning_priority,
         tuning_actions=tuning_actions,
         component_reasons={key: value[1] for key, value in component_scores.items()},
+        promotion_decision=promotion_gate.decision,
+        promotion_stage_label=promotion_gate.stage_label,
+        promotion_blocking_reasons=promotion_gate.blocking_reasons,
+        promotion_min_closed_trades=promotion_gate.min_closed_trades,
+        promotion_min_edge_capture_ratio=promotion_gate.min_edge_capture_ratio,
+        promotion_max_execution_loss_ratio=promotion_gate.max_execution_loss_ratio,
+        promotion_min_pnl_per_notional=promotion_gate.min_pnl_per_notional,
+        observed_execution_loss_ratio=promotion_gate.observed_execution_loss_ratio,
     )
 
 
@@ -214,6 +249,17 @@ def format_crypto_phase2_final_scorecard(scorecard: CryptoPhase2FinalScorecard) 
         f"- secondary_profit_focus: {scorecard.secondary_profit_focus}",
         f"- loss_ranking: {', '.join(scorecard.loss_ranking)}",
         f"- blocked_series_keys: {', '.join(scorecard.blocked_series_keys) if scorecard.blocked_series_keys else 'none'}",
+        "",
+        "## BTC Promotion Gate",
+        "",
+        f"- promotion_decision: {scorecard.promotion_decision}",
+        f"- promotion_stage_label: {scorecard.promotion_stage_label}",
+        f"- promotion_min_closed_trades: {scorecard.promotion_min_closed_trades}",
+        f"- promotion_min_edge_capture_ratio: {scorecard.promotion_min_edge_capture_ratio:.4f}",
+        f"- promotion_max_execution_loss_ratio: {scorecard.promotion_max_execution_loss_ratio:.4f}",
+        f"- promotion_min_pnl_per_notional: {scorecard.promotion_min_pnl_per_notional:.6f}",
+        f"- observed_execution_loss_ratio: {scorecard.observed_execution_loss_ratio:.4f}",
+        f"- promotion_blocking_reasons: {', '.join(scorecard.promotion_blocking_reasons) if scorecard.promotion_blocking_reasons else 'none'}",
         "",
         "## Profit Components",
         "",
@@ -306,6 +352,59 @@ def _normalize(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(key): _normalize(item) for key, item in value.items()}
     return value
+
+
+def _evaluate_btc_promotion_gate(
+    *,
+    filtered: "CryptoPhase2ReplayDigest",
+) -> _CryptoPromotionGateEvaluation:
+    blocking_reasons: list[str] = []
+    if filtered.status == "halted":
+        blocking_reasons.append("risk_status_halted")
+    if filtered.closed_trade_count < _PROMOTION_MIN_CLOSED_TRADES:
+        blocking_reasons.append("insufficient_closed_trade_count")
+    if filtered.edge_capture_ratio < _PROMOTION_MIN_EDGE_CAPTURE_RATIO:
+        blocking_reasons.append("edge_capture_ratio_below_floor")
+    observed_execution_loss_ratio = _execution_loss_ratio(filtered=filtered)
+    if observed_execution_loss_ratio > _PROMOTION_MAX_EXECUTION_LOSS_RATIO:
+        blocking_reasons.append("execution_loss_ratio_above_ceiling")
+    pnl_per_notional = (
+        filtered.closed_trade_net_pnl / filtered.submitted_notional
+        if filtered.submitted_notional > 0
+        else 0.0
+    )
+    if pnl_per_notional <= _PROMOTION_MIN_PNL_PER_NOTIONAL:
+        blocking_reasons.append("pnl_per_notional_not_positive")
+    if "risk_status_halted" in blocking_reasons:
+        decision = "pause"
+    elif blocking_reasons:
+        decision = "review"
+    else:
+        decision = "proceed"
+    return _CryptoPromotionGateEvaluation(
+        decision=decision,
+        stage_label=_promotion_stage_label(decision=decision),
+        blocking_reasons=tuple(blocking_reasons),
+        min_closed_trades=_PROMOTION_MIN_CLOSED_TRADES,
+        min_edge_capture_ratio=_PROMOTION_MIN_EDGE_CAPTURE_RATIO,
+        max_execution_loss_ratio=_PROMOTION_MAX_EXECUTION_LOSS_RATIO,
+        min_pnl_per_notional=_PROMOTION_MIN_PNL_PER_NOTIONAL,
+        observed_execution_loss_ratio=observed_execution_loss_ratio,
+    )
+
+
+def _execution_loss_ratio(*, filtered: "CryptoPhase2ReplayDigest") -> float:
+    expected_edge = filtered.average_trade_expected_edge_bps
+    execution_drag = filtered.average_trade_execution_drag_bps
+    if expected_edge <= 0:
+        return 1.0 if execution_drag > 0 else 0.0
+    return max(0.0, min(2.0, execution_drag / expected_edge))
+
+
+def _promotion_stage_label(*, decision: str) -> str:
+    if decision == "proceed":
+        return "shadow validation"
+    return "paper available"
 
 
 def _profit_component_scores(
