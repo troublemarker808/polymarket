@@ -1,0 +1,25 @@
+{
+  "board": "crypto",
+  "config_dir": "configs/profiles/v98b-reach30-dip35-takermin350",
+  "events_recorded": 2022,
+  "generated_at": "2026-03-27T12:40:28.171000+00:00",
+  "generated_by_strategy": {
+    "crypto.phase2": 35
+  },
+  "halt_reason": "none",
+  "mode": "replay",
+  "orders_rejected": 4,
+  "output_dir": "data\\research\\crypto-phase2-suite-btc-short-v98b-reach30-dip35-takermin350-limit2000\\replay-unfiltered",
+  "processed_snapshots": 2000,
+  "run_id": "crypto-phase2-suite-cli-unfiltered",
+  "signals_generated": 35,
+  "signals_rejected": 0,
+  "snapshot_path": "data\\runtime\\phase2-paper-snapshots.btc-combined.v74.jsonl",
+  "status": "completed",
+  "submitted_by_strategy": {
+    "crypto.phase2": 29
+  },
+  "submitted_orders": 29,
+  "today_pnl": -0.5462919408600015,
+  "total_equity": 24.45370805914
+}

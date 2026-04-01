@@ -864,7 +864,7 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             min_top_book_depth=15.0,
             min_nearby_book_depth=100.0,
             max_quote_age_seconds=780.0,
-            min_tradeable_contract_price=0.10,
+            min_tradeable_contract_price=0.30,
             watch_thin_liquidity=False,
             execution_no_fill_min_expired_orders=3,
         )
@@ -874,7 +874,7 @@ def _runtime_tradability_policy(*, underlying: str, event_family: str) -> Crypto
             min_top_book_depth=5.0,
             min_nearby_book_depth=50.0,
             max_quote_age_seconds=780.0,
-            min_tradeable_contract_price=0.10,
+            min_tradeable_contract_price=0.35,
             watch_thin_liquidity=True,
             execution_no_fill_min_expired_orders=3,
         )
