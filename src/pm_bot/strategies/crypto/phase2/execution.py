@@ -110,6 +110,7 @@ def route_execution(
     repricing_fallback_quote_ttl_seconds: int | None = None,
     maker_aggressiveness: float = 1.0,
     route_policy_bias: str = "stable",
+    taker_cross_ticks: int = 0,
 ) -> CryptoExecutionDecision:
     if not eligibility.eligible:
         return CryptoExecutionDecision(
@@ -171,7 +172,12 @@ def route_execution(
             market_id=fair_value.market_id,
             route="taker",
             side=classification.side,
-            target_price=_taker_price(snapshot=snapshot, side=classification.side, fair_probability=fair_value.fair_probability),
+            target_price=_taker_price(
+                snapshot=snapshot,
+                side=classification.side,
+                fair_probability=fair_value.fair_probability,
+                cross_ticks=taker_cross_ticks,
+            ),
             quote_ttl_seconds=30,
             urgency_score=classification.urgency_score,
             rationale_tags=tuple(tags),
@@ -208,7 +214,12 @@ def route_execution(
             market_id=fair_value.market_id,
             route="taker",
             side=classification.side,
-            target_price=_taker_price(snapshot=snapshot, side=classification.side, fair_probability=fair_value.fair_probability),
+            target_price=_taker_price(
+                snapshot=snapshot,
+                side=classification.side,
+                fair_probability=fair_value.fair_probability,
+                cross_ticks=taker_cross_ticks,
+            ),
             quote_ttl_seconds=15,
             urgency_score=classification.urgency_score,
             rationale_tags=tuple(tags),
@@ -402,10 +413,20 @@ def _maker_price(
     return round(max(0.01, (1.0 - observed_probability) - tick_size), 4)
 
 
-def _taker_price(*, snapshot: MarketSnapshot, side: SignalSide, fair_probability: float) -> float:
+def _taker_price(
+    *,
+    snapshot: MarketSnapshot,
+    side: SignalSide,
+    fair_probability: float,
+    cross_ticks: int = 0,
+) -> float:
+    tick = snapshot.tick_size or 0.01
+    cross = max(0, int(cross_ticks)) * tick
     if side == SignalSide.BUY_YES:
-        return round(snapshot.best_ask_yes or fair_probability, 4)
-    return round(snapshot.best_ask_no or (1.0 - fair_probability), 4)
+        base = snapshot.best_ask_yes or fair_probability
+        return round(min(0.99, base + cross), 4)
+    base = snapshot.best_ask_no or (1.0 - fair_probability)
+    return round(min(0.99, base + cross), 4)
 
 
 def _taker_entry_premium_bps(*, snapshot: MarketSnapshot, side: SignalSide) -> float:

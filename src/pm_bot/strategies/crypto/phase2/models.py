@@ -102,11 +102,13 @@ class CryptoRoutePolicyState:
     route_key: str
     sample_count: int
     route_bias: str
+    repricing_route_stage: str
     aggressiveness_adjustment: float
     taker_urgency_adjustment: float
     taker_premium_adjustment_bps: float
     updated_at: datetime
     cooldown_until: datetime
+    repricing_route_cooldown_until: datetime
 
 
 @dataclass(slots=True, frozen=True)

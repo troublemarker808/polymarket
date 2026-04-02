@@ -13,7 +13,7 @@ from pm_bot.strategies.crypto.phase2 import (
     build_position_intent,
     classify_crypto_signal,
 )
-from pm_bot.strategies.crypto.phase2.models import CryptoReentryState
+from pm_bot.strategies.crypto.phase2.models import CryptoReentryState, CryptoRoutePolicyState
 
 
 FIXTURE_CASES = Path("tests/fixtures/crypto_phase2/execution_cases.json")
@@ -556,7 +556,7 @@ def test_crypto_phase2_strategy_applies_taker_slippage_guard_before_repricing_ta
     assert len(signals) == 1
     signal = signals[0]
     assert signal.time_in_force == "GTC"
-    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+    assert signal.rationale_tags[:2] == ("repricing_taker_too_expensive", "maker_fallback")
     assert signal.diagnostics["execution_route"] == "maker"
 
 
@@ -2277,6 +2277,355 @@ def test_crypto_phase2_strategy_allows_family_override_to_enable_escalated_tail_
     assert signal.rationale_tags == ("adverse_fill_reversal",)
     assert signal.diagnostics["escalated_entry_tail_guard_active"] is True
     assert signal.diagnostics["escalated_entry_tail_guard_family_enabled"] is True
+
+
+def test_crypto_phase2_strategy_treats_probe_taker_as_escalated_lineage_for_tail_guard() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "exit_edge_bps": 0.0,
+            "escalated_entry_exit_containment_enabled": True,
+            "escalated_entry_adverse_fill_exit_bps": 50.0,
+            "escalated_entry_adverse_fill_max_remaining_edge_bps": 300.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 2, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-probe-lineage",
+        best_bid_yes=0.368,
+        best_ask_yes=0.369,
+        best_bid_no=0.631,
+        best_ask_no=0.632,
+    )
+    fair_value = FairValueEstimate(
+        market_id="btc-reach-probe-lineage",
+        category=Category.CRYPTO,
+        fair_probability=0.37,
+        confidence=0.72,
+        half_life_seconds=3600,
+        observed_probability=0.34,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model",),
+        supporting_values={"net_edge_bps": 600.0, "gross_edge_bps": 700.0},
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-reach-probe-lineage-yes",
+        created_at=now - timedelta(minutes=2),
+        entry_fill_price=0.37,
+        entry_mid_price=0.365,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="btc-reach-probe-lineage",
+        token_id="btc-reach-probe-lineage-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        notional=5.0,
+        opened_at=now - timedelta(minutes=2),
+        shares=13.5,
+        average_entry_price=0.37,
+        mark_price=0.368,
+    )
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(position=position),
+                "fair_values_by_market_id": {"btc-reach-probe-lineage": fair_value},
+                "position_intents_by_market_id": {"btc-reach-probe-lineage": intent},
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-probe-entry",
+                            "market_id": "btc-reach-probe-lineage",
+                            "side": SignalSide.BUY_YES.value,
+                            "diagnostics": {
+                                "repricing_fallback_taker_escalated": False,
+                                "repricing_fallback_probe_taker_active": True,
+                            },
+                            "created_at": (now - timedelta(minutes=2)).isoformat(),
+                        },
+                    },
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "order_id": "paper-probe-entry",
+                            "market_id": "btc-reach-probe-lineage",
+                            "token_id": "btc-reach-probe-lineage-yes",
+                            "trade_side": "BUY",
+                            "fill_source": "taker",
+                            "updated_at": (now - timedelta(minutes=2)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.rationale_tags == ("adverse_fill_reversal",)
+    assert signal.diagnostics["escalated_entry_lineage"] is True
+    assert signal.diagnostics["escalated_entry_tail_guard_active"] is True
+
+
+def test_crypto_phase2_strategy_lineage_ignores_other_token_closed_events() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "exit_edge_bps": 0.0,
+            "escalated_entry_exit_containment_enabled": True,
+            "escalated_entry_adverse_fill_exit_bps": 50.0,
+            "escalated_entry_adverse_fill_max_remaining_edge_bps": 300.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 2, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-lineage-token-filter",
+        best_bid_yes=0.368,
+        best_ask_yes=0.369,
+        best_bid_no=0.631,
+        best_ask_no=0.632,
+    )
+    fair_value = FairValueEstimate(
+        market_id="btc-reach-lineage-token-filter",
+        category=Category.CRYPTO,
+        fair_probability=0.37,
+        confidence=0.72,
+        half_life_seconds=3600,
+        observed_probability=0.34,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model",),
+        supporting_values={"net_edge_bps": 600.0, "gross_edge_bps": 700.0},
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-reach-lineage-token-filter-yes",
+        created_at=now - timedelta(minutes=2),
+        entry_fill_price=0.37,
+        entry_mid_price=0.365,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="btc-reach-lineage-token-filter",
+        token_id="btc-reach-lineage-token-filter-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        notional=5.0,
+        opened_at=now - timedelta(minutes=2),
+        shares=13.5,
+        average_entry_price=0.37,
+        mark_price=0.368,
+    )
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(position=position),
+                "fair_values_by_market_id": {"btc-reach-lineage-token-filter": fair_value},
+                "position_intents_by_market_id": {"btc-reach-lineage-token-filter": intent},
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-probe-entry-token-filter",
+                            "market_id": "btc-reach-lineage-token-filter",
+                            "token_id": "btc-reach-lineage-token-filter-yes",
+                            "side": SignalSide.BUY_YES.value,
+                            "diagnostics": {
+                                "repricing_fallback_probe_taker_active": True,
+                            },
+                            "created_at": (now - timedelta(minutes=2)).isoformat(),
+                        },
+                    },
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "order_id": "paper-probe-entry-token-filter",
+                            "market_id": "btc-reach-lineage-token-filter",
+                            "token_id": "btc-reach-lineage-token-filter-yes",
+                            "trade_side": "BUY",
+                            "fill_source": "taker",
+                            "updated_at": (now - timedelta(minutes=2)).isoformat(),
+                        },
+                    },
+                    {
+                        "event_type": "trade.closed",
+                        "payload": {
+                            "market_id": "btc-reach-lineage-token-filter",
+                            "token_id": "btc-reach-lineage-token-filter-no",
+                            "close_reason": "time_stop",
+                            "closed_at": (now - timedelta(seconds=5)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.rationale_tags == ("adverse_fill_reversal",)
+    assert signal.diagnostics["escalated_entry_lineage"] is True
+    assert signal.diagnostics["escalated_entry_tail_guard_active"] is True
+
+
+def test_crypto_phase2_strategy_lineage_uses_buy_fill_fallback_when_submit_event_missing() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "exit_edge_bps": 0.0,
+            "escalated_entry_exit_containment_enabled": True,
+            "escalated_entry_adverse_fill_exit_bps": 50.0,
+            "escalated_entry_adverse_fill_max_remaining_edge_bps": 300.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 2, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-lineage-fill-fallback",
+        best_bid_yes=0.368,
+        best_ask_yes=0.369,
+        best_bid_no=0.631,
+        best_ask_no=0.632,
+    )
+    fair_value = FairValueEstimate(
+        market_id="btc-reach-lineage-fill-fallback",
+        category=Category.CRYPTO,
+        fair_probability=0.37,
+        confidence=0.72,
+        half_life_seconds=3600,
+        observed_probability=0.34,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model",),
+        supporting_values={"net_edge_bps": 600.0, "gross_edge_bps": 700.0},
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-reach-lineage-fill-fallback-yes",
+        created_at=now - timedelta(minutes=2),
+        entry_fill_price=0.37,
+        entry_mid_price=0.365,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="btc-reach-lineage-fill-fallback",
+        token_id="btc-reach-lineage-fill-fallback-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        notional=5.0,
+        opened_at=now - timedelta(minutes=2),
+        shares=13.5,
+        average_entry_price=0.37,
+        mark_price=0.368,
+    )
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(position=position),
+                "fair_values_by_market_id": {"btc-reach-lineage-fill-fallback": fair_value},
+                "position_intents_by_market_id": {"btc-reach-lineage-fill-fallback": intent},
+                "recent_events": (
+                    {
+                        "event_type": "order.filled",
+                        "payload": {
+                            "order_id": "paper-probe-entry-fill-only",
+                            "market_id": "btc-reach-lineage-fill-fallback",
+                            "token_id": "btc-reach-lineage-fill-fallback-yes",
+                            "trade_side": "BUY",
+                            "fill_source": "taker",
+                            "signal_type": "repricing_edge",
+                            "execution_route": "taker",
+                            "updated_at": (now - timedelta(minutes=2)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.rationale_tags == ("adverse_fill_reversal",)
+    assert signal.diagnostics["escalated_entry_lineage"] is True
+    assert signal.diagnostics["escalated_entry_tail_guard_active"] is True
+
+
+def test_crypto_phase2_strategy_lineage_falls_back_to_intent_for_repricing_taker_entry() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "exit_edge_bps": 0.0,
+            "escalated_entry_exit_containment_enabled": True,
+            "escalated_entry_adverse_fill_exit_bps": 50.0,
+            "escalated_entry_adverse_fill_max_remaining_edge_bps": 300.0,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 2, tzinfo=UTC)
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id="btc-reach-lineage-intent-fallback",
+        best_bid_yes=0.368,
+        best_ask_yes=0.369,
+        best_bid_no=0.631,
+        best_ask_no=0.632,
+    )
+    fair_value = FairValueEstimate(
+        market_id="btc-reach-lineage-intent-fallback",
+        category=Category.CRYPTO,
+        fair_probability=0.37,
+        confidence=0.72,
+        half_life_seconds=3600,
+        observed_probability=0.34,
+        model_id="crypto.phase1.fused",
+        rationale_tags=("barrier_model",),
+        supporting_values={"net_edge_bps": 600.0, "gross_edge_bps": 700.0},
+    )
+    classification = classify_crypto_signal(fair_value=fair_value)
+    intent = build_position_intent(
+        fair_value=fair_value,
+        classification=classification,
+        token_id="btc-reach-lineage-intent-fallback-yes",
+        created_at=now - timedelta(minutes=2),
+        entry_fill_price=0.37,
+        entry_mid_price=0.365,
+        entry_fill_source="taker",
+    )
+    position = PositionState(
+        market_id="btc-reach-lineage-intent-fallback",
+        token_id="btc-reach-lineage-intent-fallback-yes",
+        category=Category.CRYPTO,
+        strategy_id="crypto.phase2",
+        notional=5.0,
+        opened_at=now - timedelta(minutes=2),
+        shares=13.5,
+        average_entry_price=0.37,
+        mark_price=0.368,
+    )
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(position=position),
+                "fair_values_by_market_id": {"btc-reach-lineage-intent-fallback": fair_value},
+                "position_intents_by_market_id": {"btc-reach-lineage-intent-fallback": intent},
+                "recent_events": (),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.rationale_tags == ("adverse_fill_reversal",)
+    assert signal.diagnostics["escalated_entry_lineage"] is True
+    assert signal.diagnostics["escalated_entry_tail_guard_active"] is True
 
 
 def test_crypto_phase2_strategy_allows_family_override_to_disable_escalated_tail_guard_for_dip() -> None:
@@ -4060,7 +4409,7 @@ def test_crypto_phase2_strategy_allows_fast_repost_for_repricing_maker_fallback(
     assert len(signals) == 1
     signal = signals[0]
     assert signal.time_in_force == "GTC"
-    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+    assert signal.rationale_tags[:2] == ("repricing_taker_too_expensive", "maker_fallback")
 
 
 def test_crypto_phase2_strategy_allows_faster_market_retry_for_repricing_maker_fallback() -> None:
@@ -4107,7 +4456,7 @@ def test_crypto_phase2_strategy_allows_faster_market_retry_for_repricing_maker_f
     assert len(signals) == 1
     signal = signals[0]
     assert signal.time_in_force == "GTC"
-    assert signal.rationale_tags == ("repricing_taker_too_expensive", "maker_fallback")
+    assert signal.rationale_tags[:2] == ("repricing_taker_too_expensive", "maker_fallback")
 
 
 def test_crypto_phase2_strategy_escalates_repricing_maker_fallback_to_taker_after_no_fill_attempts() -> None:
@@ -4394,6 +4743,80 @@ def test_crypto_phase2_strategy_activates_constrained_probe_taker_for_repricing_
     assert signal.diagnostics["repricing_fallback_probe_notional_multiplier"] == 0.2
 
 
+def test_crypto_phase2_strategy_activates_probe_taker_after_plain_repricing_maker_no_fill_attempts() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "taker_urgency_threshold": 0.99,
+            "taker_max_entry_premium_bps": 600.0,
+            "repricing_taker_max_entry_premium_bps": 600.0,
+            "repricing_fallback_probe_taker_enabled": True,
+            "repricing_fallback_probe_after_no_fill_attempts": 2,
+            "repricing_fallback_probe_taker_max_entry_premium_bps": 1000.0,
+            "repricing_fallback_probe_min_net_edge_bps": 100.0,
+            "entry_repost_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_repost_cooldown_seconds": 0.0,
+            "entry_market_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_market_cooldown_seconds": 0.0,
+            "entry_failure_cooldown_seconds": 0.0,
+            "max_no_fill_entry_attempts_per_market": 10,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    market_id = "eth-dip-plain-maker-probe"
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id=market_id,
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {market_id: fair_value},
+                "market_selection_actions": {market_id: "tradable_market"},
+                "market_selection_reasons": {market_id: ("tight_runtime_spread",)},
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-old-plain-1",
+                            "market_id": market_id,
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_edge", "maker"],
+                            "created_at": (now - timedelta(seconds=40)).isoformat(),
+                        },
+                    },
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-old-plain-2",
+                            "market_id": market_id,
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_edge", "maker"],
+                            "created_at": (now - timedelta(seconds=20)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "IOC"
+    assert signal.rationale_tags == ("repricing_edge", "taker")
+    assert signal.diagnostics["repricing_route_stage"] == "probe"
+    assert signal.diagnostics["repricing_fallback_probe_taker_eligible"] is True
+    assert signal.diagnostics["repricing_fallback_probe_taker_active"] is True
+    assert signal.diagnostics["repricing_fallback_probe_taker_block_reason"] is None
+
+
 def test_crypto_phase2_strategy_blocks_probe_taker_when_net_edge_below_probe_floor() -> None:
     strategy = CryptoPhase2Strategy(
         {
@@ -4480,6 +4903,206 @@ def test_crypto_phase2_strategy_blocks_probe_taker_when_net_edge_below_probe_flo
     )
 
 
+def test_crypto_phase2_strategy_allows_selective_probe_taker_on_maker_fallback_bootstrap() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "taker_urgency_threshold": 0.0,
+            "taker_max_entry_premium_bps": 600.0,
+            "repricing_taker_max_entry_premium_bps": 1.0,
+            "repricing_fallback_probe_taker_enabled": True,
+            "repricing_fallback_probe_after_no_fill_attempts": 1,
+            "repricing_fallback_probe_taker_max_entry_premium_bps": 1000.0,
+            "repricing_fallback_probe_min_net_edge_bps": 100.0,
+            "repricing_fallback_probe_allow_on_maker_fallback": True,
+            "entry_repost_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_repost_cooldown_seconds": 0.0,
+            "entry_market_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_market_cooldown_seconds": 0.0,
+            "entry_failure_cooldown_seconds": 0.0,
+            "max_no_fill_entry_attempts_per_market": 10,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    market_id = "eth-dip-selective-probe-bootstrap"
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id=market_id,
+        best_bid_yes=0.64,
+        best_ask_yes=0.65,
+        best_bid_no=0.35,
+        best_ask_no=0.36,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {market_id: fair_value},
+                "market_selection_actions": {market_id: "selective_market"},
+                "market_selection_reasons": {market_id: ("tight_runtime_spread",)},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "IOC"
+    assert signal.diagnostics["repricing_route_stage"] == "maker"
+    assert signal.diagnostics["repricing_fallback_probe_bootstrap_eligible"] is True
+    assert signal.diagnostics["repricing_fallback_probe_taker_active"] is True
+    assert signal.diagnostics["execution_route"] == "taker"
+
+
+def test_crypto_phase2_strategy_blocks_bootstrap_probe_on_wide_spread_selective_market() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "taker_urgency_threshold": 0.0,
+            "taker_max_entry_premium_bps": 600.0,
+            "repricing_taker_max_entry_premium_bps": 1.0,
+            "repricing_fallback_probe_taker_enabled": True,
+            "repricing_fallback_probe_after_no_fill_attempts": 1,
+            "repricing_fallback_probe_taker_max_entry_premium_bps": 1000.0,
+            "repricing_fallback_probe_min_net_edge_bps": 100.0,
+            "repricing_fallback_probe_allow_on_maker_fallback": True,
+            "entry_repost_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_repost_cooldown_seconds": 0.0,
+            "entry_market_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_market_cooldown_seconds": 0.0,
+            "entry_failure_cooldown_seconds": 0.0,
+            "max_no_fill_entry_attempts_per_market": 10,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    market_id = "eth-dip-selective-probe-wide-block"
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id=market_id,
+        best_bid_yes=0.64,
+        best_ask_yes=0.65,
+        best_bid_no=0.35,
+        best_ask_no=0.36,
+    )
+    fair_value = _fair_value("repricing_yes")
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {market_id: fair_value},
+                "market_selection_actions": {market_id: "selective_market"},
+                "market_selection_reasons": {market_id: ("wide_runtime_spread", "wide_spread")},
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.diagnostics["repricing_fallback_probe_bootstrap_eligible"] is False
+    assert signal.diagnostics["repricing_fallback_probe_taker_active"] is False
+    assert signal.diagnostics["execution_route"] == "maker"
+
+
+def test_crypto_phase2_strategy_holds_repricing_fallback_in_cooldown_stage() -> None:
+    strategy = CryptoPhase2Strategy(
+        {
+            "taker_urgency_threshold": 0.0,
+            "taker_max_entry_premium_bps": 600.0,
+            "repricing_taker_max_entry_premium_bps": 1.0,
+            "repricing_fallback_taker_after_no_fill_attempts": 2,
+            "repricing_fallback_probe_taker_enabled": True,
+            "repricing_fallback_probe_after_no_fill_attempts": 2,
+            "entry_repost_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_repost_cooldown_seconds": 0.0,
+            "entry_market_cooldown_seconds": 0.0,
+            "repricing_fallback_entry_market_cooldown_seconds": 0.0,
+            "entry_failure_cooldown_seconds": 0.0,
+            "max_no_fill_entry_attempts_per_market": 10,
+        }
+    )
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=UTC)
+    market_id = "eth-dip-fallback-cooldown"
+    snapshot = _snapshot(
+        timestamp=now,
+        market_id=market_id,
+        best_bid_yes=0.10,
+        best_ask_yes=0.11,
+        best_bid_no=0.89,
+        best_ask_no=0.90,
+    )
+    fair_value = _fair_value("repricing_yes")
+    route_key = "ETH:dip:repricing_edge"
+
+    signals = asyncio.run(
+        strategy.evaluate(
+            snapshot=snapshot,
+            context={
+                "dashboard_state": _dashboard(),
+                "fair_values_by_market_id": {market_id: fair_value},
+                "market_selection_actions": {market_id: "tradable_market"},
+                "market_selection_reasons": {market_id: ("tight_runtime_spread",)},
+                "route_policy_state_by_key": {
+                    route_key: CryptoRoutePolicyState(
+                        route_key=route_key,
+                        sample_count=8,
+                        route_bias="more_passive",
+                        repricing_route_stage="cooldown",
+                        aggressiveness_adjustment=-0.15,
+                        taker_urgency_adjustment=0.06,
+                        taker_premium_adjustment_bps=-80.0,
+                        updated_at=now - timedelta(seconds=30),
+                        cooldown_until=now + timedelta(seconds=120),
+                        repricing_route_cooldown_until=now + timedelta(seconds=120),
+                    )
+                },
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-old-1",
+                            "market_id": market_id,
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_taker_too_expensive", "maker_fallback"],
+                            "created_at": (now - timedelta(seconds=40)).isoformat(),
+                        },
+                    },
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-old-2",
+                            "market_id": market_id,
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_taker_too_expensive", "maker_fallback"],
+                            "created_at": (now - timedelta(seconds=20)).isoformat(),
+                        },
+                    },
+                ),
+            },
+        )
+    )
+
+    assert len(signals) == 1
+    signal = signals[0]
+    assert signal.time_in_force == "GTC"
+    assert signal.rationale_tags[:2] == ("repricing_taker_too_expensive", "maker_fallback")
+    assert "route_adapted_more_passive" in signal.rationale_tags
+    assert signal.diagnostics["repricing_route_stage"] == "cooldown"
+    assert signal.diagnostics["repricing_route_cooldown_active"] is True
+    assert signal.diagnostics["repricing_fallback_taker_escalated"] is False
+    assert (
+        signal.diagnostics["repricing_fallback_taker_escalation_block_reason"]
+        == "repricing_route_stage_cooldown_active"
+    )
+    assert signal.diagnostics["repricing_fallback_probe_taker_eligible"] is False
+    assert (
+        signal.diagnostics["repricing_fallback_probe_taker_block_reason"]
+        == "repricing_route_stage_cooldown_active"
+    )
+
+
 def test_crypto_phase2_strategy_applies_probe_notional_floor_for_market_min_order_size() -> None:
     strategy = CryptoPhase2Strategy(
         {
@@ -4487,7 +5110,7 @@ def test_crypto_phase2_strategy_applies_probe_notional_floor_for_market_min_orde
             "taker_max_entry_premium_bps": 600.0,
             "repricing_taker_max_entry_premium_bps": 1.0,
             "repricing_fallback_probe_taker_enabled": True,
-            "repricing_fallback_probe_after_no_fill_attempts": 0,
+            "repricing_fallback_probe_after_no_fill_attempts": 1,
             "repricing_fallback_probe_taker_max_entry_premium_bps": 1000.0,
             "repricing_fallback_probe_min_net_edge_bps": 100.0,
             "repricing_fallback_probe_notional_multiplier": 0.15,
@@ -4519,6 +5142,18 @@ def test_crypto_phase2_strategy_applies_probe_notional_floor_for_market_min_orde
                 "fair_values_by_market_id": {"eth-dip-fallback-probe-min-order-size": fair_value},
                 "market_selection_actions": {"eth-dip-fallback-probe-min-order-size": "tradable_market"},
                 "market_selection_reasons": {"eth-dip-fallback-probe-min-order-size": ("tight_runtime_spread",)},
+                "recent_events": (
+                    {
+                        "event_type": "order.submitted",
+                        "payload": {
+                            "order_id": "paper-old-probe-1",
+                            "market_id": "eth-dip-fallback-probe-min-order-size",
+                            "side": SignalSide.BUY_YES.value,
+                            "rationale_tags": ["repricing_taker_too_expensive", "maker_fallback"],
+                            "created_at": (now - timedelta(seconds=30)).isoformat(),
+                        },
+                    },
+                ),
             },
         )
     )
@@ -4526,6 +5161,7 @@ def test_crypto_phase2_strategy_applies_probe_notional_floor_for_market_min_orde
     assert len(signals) == 1
     signal = signals[0]
     assert signal.time_in_force == "IOC"
+    assert signal.diagnostics["repricing_route_stage"] == "probe"
     assert signal.diagnostics["repricing_fallback_probe_taker_active"] is True
     assert signal.diagnostics["repricing_fallback_probe_notional_floor_applied"] is True
     assert signal.target_size == 3.25

@@ -17,3 +17,5 @@ logs/
 coverage.xml
 .coverage
 .tmpdeps_*/
+.tmp/
+configs/profiles/tmp-*/

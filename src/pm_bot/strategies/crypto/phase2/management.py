@@ -560,11 +560,13 @@ def update_route_policy_state(
             route_key=route_key,
             sample_count=sample_count,
             route_bias="stable",
+            repricing_route_stage="maker",
             aggressiveness_adjustment=0.0,
             taker_urgency_adjustment=0.0,
             taker_premium_adjustment_bps=0.0,
             updated_at=as_of,
             cooldown_until=as_of,
+            repricing_route_cooldown_until=as_of,
         )
     route_bias = feedback.recommended_route_bias
     if route_bias == "more_passive":
@@ -572,32 +574,38 @@ def update_route_policy_state(
             route_key=route_key,
             sample_count=sample_count,
             route_bias=route_bias,
+            repricing_route_stage="cooldown",
             aggressiveness_adjustment=-0.15,
             taker_urgency_adjustment=0.06,
             taker_premium_adjustment_bps=-80.0,
             updated_at=as_of,
             cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
+            repricing_route_cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
         )
     if route_bias == "more_aggressive":
         return CryptoRoutePolicyState(
             route_key=route_key,
             sample_count=sample_count,
             route_bias=route_bias,
+            repricing_route_stage="escalation",
             aggressiveness_adjustment=0.20,
             taker_urgency_adjustment=-0.06,
             taker_premium_adjustment_bps=80.0,
             updated_at=as_of,
             cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
+            repricing_route_cooldown_until=as_of,
         )
     return CryptoRoutePolicyState(
         route_key=route_key,
         sample_count=sample_count,
         route_bias="stable",
+        repricing_route_stage="probe",
         aggressiveness_adjustment=0.0,
         taker_urgency_adjustment=0.0,
         taker_premium_adjustment_bps=0.0,
         updated_at=as_of,
         cooldown_until=as_of + timedelta(seconds=cooldown_seconds),
+        repricing_route_cooldown_until=as_of,
     )
 
 

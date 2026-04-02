@@ -87,6 +87,9 @@ class CryptoPhase2Config:
         self.repricing_fallback_probe_notional_multiplier = float(
             config.get("repricing_fallback_probe_notional_multiplier", 0.25)
         )
+        self.repricing_fallback_probe_allow_on_maker_fallback = bool(
+            config.get("repricing_fallback_probe_allow_on_maker_fallback", False)
+        )
         raw_repricing_fallback_taker_retry_max_entry_premium_bps = config.get(
             "repricing_fallback_taker_retry_max_entry_premium_bps"
         )
@@ -662,21 +665,55 @@ class CryptoPhase2Strategy:
             gate=dynamic_gate,
             config=resolved_config,
         )
-        repricing_fallback_no_fill_attempts = _repricing_maker_fallback_no_fill_attempts(
+        market_repricing_no_fill_attempts = _repricing_maker_fallback_no_fill_attempts(
             snapshot=snapshot,
             context=context,
             side=classification.side,
+        )
+        family_repricing_no_fill_attempts = _repricing_family_maker_no_fill_attempts(
+            snapshot=snapshot,
+            context=context,
+        )
+        repricing_fallback_no_fill_attempts = max(
+            market_repricing_no_fill_attempts,
+            family_repricing_no_fill_attempts,
         )
         repricing_fallback_taker_escalated = False
         repricing_fallback_taker_escalation_block_reason: str | None = None
         repricing_fallback_probe_taker_eligible = False
         repricing_fallback_probe_taker_active = False
         repricing_fallback_probe_taker_block_reason: str | None = None
+        repricing_fallback_probe_bootstrap_eligible = False
         repricing_fallback_probe_notional_multiplier = 1.0
         repricing_fallback_probe_notional_floor_applied = False
+        repricing_route_stage = "not_applicable"
+        repricing_route_stage_source = "not_applicable"
+        repricing_route_cooldown_active = False
+        repricing_route_cooldown_until_iso: str | None = None
         selection_action = _selection_action_for_market(snapshot=snapshot, context=context)
         selection_reasons = _selection_reasons_for_market(snapshot=snapshot, context=context)
         signal_net_edge_bps = parse_float(fair_value.supporting_values, "net_edge_bps") or 0.0
+        if classification.signal_type == "repricing_edge":
+            base_repricing_route_stage = _repricing_route_stage_from_no_fill_progression(
+                no_fill_attempts=repricing_fallback_no_fill_attempts,
+                probe_enabled=resolved_config.repricing_fallback_probe_taker_enabled,
+                probe_after_no_fill_attempts=resolved_config.repricing_fallback_probe_after_no_fill_attempts,
+                taker_after_no_fill_attempts=resolved_config.repricing_fallback_taker_after_no_fill_attempts,
+            )
+            (
+                repricing_route_stage,
+                repricing_route_stage_source,
+                repricing_route_cooldown_active,
+                repricing_route_cooldown_until,
+            ) = _resolve_repricing_route_stage(
+                snapshot=snapshot,
+                signal_type=classification.signal_type,
+                context=context,
+                as_of=snapshot.timestamp,
+                base_stage=base_repricing_route_stage,
+            )
+            if repricing_route_cooldown_until is not None:
+                repricing_route_cooldown_until_iso = repricing_route_cooldown_until.isoformat()
         if (
             classification.signal_type == "repricing_edge"
             and signal_net_edge_bps > resolved_config.repricing_max_net_edge_bps
@@ -721,11 +758,7 @@ class CryptoPhase2Strategy:
             min_contract_price=resolved_config.min_contract_price,
             min_net_edge_reason=effective_min_net_edge_reason,
         )
-        if (
-            classification.signal_type == "repricing_edge"
-            and resolved_config.repricing_fallback_taker_after_no_fill_attempts > 0
-            and repricing_fallback_no_fill_attempts >= resolved_config.repricing_fallback_taker_after_no_fill_attempts
-        ):
+        if classification.signal_type == "repricing_edge" and repricing_route_stage == "escalation":
             escalation_allowed = True
             max_spread_bps = resolved_config.repricing_fallback_taker_escalation_max_spread_bps
             if max_spread_bps is not None and eligibility.market_spread_bps > max_spread_bps:
@@ -744,6 +777,15 @@ class CryptoPhase2Strategy:
                     retry_taker_cap,
                 )
                 repricing_fallback_taker_escalated = True
+        elif (
+            classification.signal_type == "repricing_edge"
+            and resolved_config.repricing_fallback_taker_after_no_fill_attempts > 0
+            and repricing_fallback_no_fill_attempts >= resolved_config.repricing_fallback_taker_after_no_fill_attempts
+        ):
+            if repricing_route_stage == "cooldown":
+                repricing_fallback_taker_escalation_block_reason = "repricing_route_stage_cooldown_active"
+            else:
+                repricing_fallback_taker_escalation_block_reason = "repricing_route_stage_not_escalation"
         effective_taker_urgency_threshold = _feedback_taker_urgency_threshold(
             base_threshold=resolved_config.taker_urgency_threshold,
             feedback=execution_feedback,
@@ -797,15 +839,31 @@ class CryptoPhase2Strategy:
             ),
             route_policy_bias=route_policy_bias,
         )
+        probe_stage_eligible = repricing_route_stage in {"probe", "escalation"}
+        probe_bootstrap_eligible = (
+            resolved_config.repricing_fallback_probe_allow_on_maker_fallback
+            and selection_action == "selective_market"
+            and not _has_wide_spread_selection_reason(selection_reasons)
+            and classification.signal_type == "repricing_edge"
+            and repricing_route_stage == "maker"
+            and decision.route == "maker"
+        )
+        repricing_fallback_probe_bootstrap_eligible = probe_bootstrap_eligible
         if (
             classification.signal_type == "repricing_edge"
             and resolved_config.repricing_fallback_probe_taker_enabled
-            and repricing_fallback_no_fill_attempts >= resolved_config.repricing_fallback_probe_after_no_fill_attempts
+            and (probe_stage_eligible or probe_bootstrap_eligible)
         ):
             repricing_fallback_probe_taker_eligible = True
             if signal_net_edge_bps < resolved_config.repricing_fallback_probe_min_net_edge_bps:
                 repricing_fallback_probe_taker_block_reason = "repricing_fallback_probe_net_edge_too_low"
-            elif decision.route != "maker" or "maker_fallback" not in decision.rationale_tags:
+            elif decision.route != "maker":
+                repricing_fallback_probe_taker_block_reason = "repricing_fallback_probe_route_not_maker"
+            elif (
+                not probe_stage_eligible
+                and "maker_fallback" not in decision.rationale_tags
+                and not probe_bootstrap_eligible
+            ):
                 repricing_fallback_probe_taker_block_reason = "repricing_fallback_probe_not_maker_fallback"
             else:
                 probe_decision = route_execution(
@@ -813,13 +871,9 @@ class CryptoPhase2Strategy:
                     snapshot=snapshot,
                     classification=classification,
                     eligibility=eligibility,
-                    allow_taker_routes=_allow_taker_routes_for_selection(
-                        snapshot=snapshot,
-                        selection_action=selection_action,
-                        route_policy_bias=route_policy_bias,
-                        feedback=execution_feedback,
-                        config=resolved_config,
-                    ),
+                    # Probe lane is already guarded by strict stage/premium/net-edge conditions.
+                    # Bypass selective-market generic taker block so constrained probe IOC can execute.
+                    allow_taker_routes=True,
                     taker_urgency_threshold=0.0,
                     maker_min_edge_bps=resolved_config.maker_min_edge_bps,
                     resolution_maker_min_edge_bps=resolved_config.resolution_maker_min_edge_bps,
@@ -849,6 +903,7 @@ class CryptoPhase2Strategy:
                         feedback=execution_feedback,
                     ),
                     route_policy_bias=route_policy_bias,
+                    taker_cross_ticks=(1 if selection_action == "selective_market" else 0),
                 )
                 if probe_decision.route == "taker":
                     decision = probe_decision
@@ -859,6 +914,15 @@ class CryptoPhase2Strategy:
                     )
                 else:
                     repricing_fallback_probe_taker_block_reason = "repricing_fallback_probe_route_not_taker"
+        elif (
+            classification.signal_type == "repricing_edge"
+            and resolved_config.repricing_fallback_probe_taker_enabled
+            and repricing_fallback_no_fill_attempts >= resolved_config.repricing_fallback_probe_after_no_fill_attempts
+        ):
+            if repricing_route_stage == "cooldown":
+                repricing_fallback_probe_taker_block_reason = "repricing_route_stage_cooldown_active"
+            else:
+                repricing_fallback_probe_taker_block_reason = "repricing_route_stage_not_probe_or_escalation"
         quote_age_seconds = _snapshot_quote_age_seconds(snapshot)
         if _should_block_selective_repricing_taker_due_quote_age(
             decision=decision,
@@ -929,6 +993,13 @@ class CryptoPhase2Strategy:
                     "repricing_fallback_probe_taker_eligible": repricing_fallback_probe_taker_eligible,
                     "repricing_fallback_probe_taker_active": repricing_fallback_probe_taker_active,
                     "repricing_fallback_probe_taker_block_reason": repricing_fallback_probe_taker_block_reason,
+                    "repricing_fallback_probe_bootstrap_eligible": repricing_fallback_probe_bootstrap_eligible,
+                    "repricing_route_stage": repricing_route_stage,
+                    "repricing_route_stage_source": repricing_route_stage_source,
+                    "repricing_route_cooldown_active": repricing_route_cooldown_active,
+                    "repricing_route_cooldown_until": repricing_route_cooldown_until_iso,
+                    "repricing_market_no_fill_attempts": market_repricing_no_fill_attempts,
+                    "repricing_family_no_fill_attempts": family_repricing_no_fill_attempts,
                 },
             )
             return []
@@ -1206,8 +1277,15 @@ class CryptoPhase2Strategy:
                     "repricing_fallback_probe_taker_eligible": repricing_fallback_probe_taker_eligible,
                     "repricing_fallback_probe_taker_active": repricing_fallback_probe_taker_active,
                     "repricing_fallback_probe_taker_block_reason": repricing_fallback_probe_taker_block_reason,
+                    "repricing_fallback_probe_bootstrap_eligible": repricing_fallback_probe_bootstrap_eligible,
                     "repricing_fallback_probe_notional_multiplier": repricing_fallback_probe_notional_multiplier,
                     "repricing_fallback_probe_notional_floor_applied": repricing_fallback_probe_notional_floor_applied,
+                    "repricing_route_stage": repricing_route_stage,
+                    "repricing_route_stage_source": repricing_route_stage_source,
+                    "repricing_route_cooldown_active": repricing_route_cooldown_active,
+                    "repricing_route_cooldown_until": repricing_route_cooldown_until_iso,
+                    "repricing_market_no_fill_attempts": market_repricing_no_fill_attempts,
+                    "repricing_family_no_fill_attempts": family_repricing_no_fill_attempts,
                     "recent_no_fill_attempts": recent_no_fill_attempts,
                     "counterfactual_blocked": (
                         counterfactual_result.blocked if counterfactual_result is not None else False
@@ -1231,6 +1309,7 @@ class CryptoPhase2Strategy:
                     "family_budget_cap_share": family_budget_state["cap_share"],
                     "family_budget_projected_share": family_budget_state["projected_share"],
                     "family_budget_sample_count": family_budget_state["sample_count"],
+                    "market_family_key": _market_family_key(snapshot),
                 },
             )
         ]
@@ -1449,6 +1528,12 @@ class CryptoPhase2Strategy:
             position=position,
             context=context,
         )
+        if (
+            not escalated_entry_lineage
+            and intent.signal_type == "repricing_edge"
+            and intent.entry_fill_source == "taker"
+        ):
+            escalated_entry_lineage = True
         (
             family_escalated_entry_exit_containment_enabled,
             family_escalated_entry_adverse_fill_exit_bps,
@@ -2622,17 +2707,69 @@ def _route_policy_bias_for_snapshot(
     signal_type: str,
     context: Mapping[str, object],
 ) -> str:
-    payload = context.get("route_policy_state_by_key")
-    if not isinstance(payload, Mapping):
-        return "stable"
-    family_key = _market_family_key(snapshot)
-    if family_key is None:
-        return "stable"
-    route_key = f"{family_key}:{signal_type}"
-    state = payload.get(route_key)
+    state = _route_policy_state_for_snapshot(
+        snapshot=snapshot,
+        signal_type=signal_type,
+        context=context,
+    )
     if isinstance(state, CryptoRoutePolicyState):
         return state.route_bias
     return "stable"
+
+
+def _route_policy_state_for_snapshot(
+    *,
+    snapshot: MarketSnapshot,
+    signal_type: str,
+    context: Mapping[str, object],
+) -> CryptoRoutePolicyState | None:
+    payload = context.get("route_policy_state_by_key")
+    if not isinstance(payload, Mapping):
+        return None
+    family_key = _market_family_key(snapshot)
+    if family_key is None:
+        return None
+    route_key = f"{family_key}:{signal_type}"
+    state = payload.get(route_key)
+    if isinstance(state, CryptoRoutePolicyState):
+        return state
+    return None
+
+
+def _repricing_route_stage_from_no_fill_progression(
+    *,
+    no_fill_attempts: int,
+    probe_enabled: bool,
+    probe_after_no_fill_attempts: int,
+    taker_after_no_fill_attempts: int,
+) -> str:
+    if taker_after_no_fill_attempts > 0 and no_fill_attempts >= taker_after_no_fill_attempts:
+        return "escalation"
+    if probe_enabled and probe_after_no_fill_attempts > 0 and no_fill_attempts >= probe_after_no_fill_attempts:
+        return "probe"
+    return "maker"
+
+
+def _resolve_repricing_route_stage(
+    *,
+    snapshot: MarketSnapshot,
+    signal_type: str,
+    context: Mapping[str, object],
+    as_of: datetime,
+    base_stage: str,
+) -> tuple[str, str, bool, datetime | None]:
+    state = _route_policy_state_for_snapshot(
+        snapshot=snapshot,
+        signal_type=signal_type,
+        context=context,
+    )
+    if (
+        state is not None
+        and state.repricing_route_stage == "cooldown"
+        and as_of < state.repricing_route_cooldown_until
+    ):
+        return ("cooldown", "policy_cooldown", True, state.repricing_route_cooldown_until)
+    return (base_stage, "no_fill_progression", False, None)
 
 
 def _allow_taker_routes_for_selection(
@@ -2850,6 +2987,7 @@ def _pending_order_is_refreshable_repricing_fallback(
         rationale_tags={
             ("repricing_taker_too_expensive", "maker_fallback"),
             ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
+            ("repricing_edge", "maker"),
         },
     ):
         return False
@@ -2879,8 +3017,18 @@ def _pending_order_submission_has_rationale(
         if not isinstance(raw_tags, Sequence) or isinstance(raw_tags, (str, bytes, bytearray)):
             return False
         normalized = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
-        return normalized in rationale_tags
+        return _rationale_tags_match(normalized=normalized, expected=rationale_tags)
     return False
+
+
+def _rationale_tags_match(
+    *,
+    normalized: tuple[str, ...],
+    expected: set[tuple[str, str]],
+) -> bool:
+    if normalized in expected:
+        return True
+    return len(normalized) >= 2 and normalized[:2] in expected
 
 
 def _pending_exit_order(
@@ -3123,7 +3271,14 @@ def _recent_entry_activity_for_family(
 
 
 def _payload_market_family_key(payload: Mapping[str, object]) -> str | None:
+    payload_market_family_key = str(payload.get("market_family_key", "")).strip()
+    if payload_market_family_key:
+        return payload_market_family_key
     diagnostics = payload.get("diagnostics")
+    if isinstance(diagnostics, Mapping):
+        diagnostics_market_family_key = str(diagnostics.get("market_family_key", "")).strip()
+        if diagnostics_market_family_key:
+            return diagnostics_market_family_key
     event_family: str | None = None
     if isinstance(diagnostics, Mapping):
         phase2_preset = str(diagnostics.get("phase2_preset", "")).lower()
@@ -3347,10 +3502,58 @@ def _repricing_maker_fallback_no_fill_attempts(
         if not isinstance(raw_tags, Sequence) or isinstance(raw_tags, (str, bytes, bytearray)):
             continue
         normalized_tags = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
-        if normalized_tags not in {
-            ("repricing_taker_too_expensive", "maker_fallback"),
-            ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
-        }:
+        if not _rationale_tags_match(
+            normalized=normalized_tags,
+            expected={
+                ("repricing_taker_too_expensive", "maker_fallback"),
+                ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
+                ("repricing_edge", "maker"),
+            },
+        ):
+            continue
+        order_id = str(payload.get("order_id", "")).strip()
+        if order_id and order_id in seen_order_ids:
+            continue
+        if order_id:
+            seen_order_ids.add(order_id)
+        attempts += 1
+    return attempts
+
+
+def _repricing_family_maker_no_fill_attempts(
+    *,
+    snapshot: MarketSnapshot,
+    context: Mapping[str, object],
+) -> int:
+    target_family_key = _market_family_key(snapshot)
+    if target_family_key is None:
+        return 0
+    attempts = 0
+    seen_order_ids: set[str] = set()
+    for event in reversed(recent_runtime_events(context)):
+        event_type = event.get("event_type")
+        payload = event.get("payload")
+        if not isinstance(event_type, str) or not isinstance(payload, Mapping):
+            continue
+        payload_family_key = _payload_market_family_key(payload)
+        if payload_family_key != target_family_key:
+            continue
+        if event_type in {"order.filled", "trade.closed", "position.closed"}:
+            break
+        if event_type != "order.submitted":
+            continue
+        raw_tags = payload.get("rationale_tags")
+        if not isinstance(raw_tags, Sequence) or isinstance(raw_tags, (str, bytes, bytearray)):
+            continue
+        normalized_tags = tuple(str(tag).strip() for tag in raw_tags if str(tag).strip())
+        if not _rationale_tags_match(
+            normalized=normalized_tags,
+            expected={
+                ("repricing_taker_too_expensive", "maker_fallback"),
+                ("repricing_taker_edge_buffer_too_thin", "maker_fallback"),
+                ("repricing_edge", "maker"),
+            },
+        ):
             continue
         order_id = str(payload.get("order_id", "")).strip()
         if order_id and order_id in seen_order_ids:
@@ -3375,13 +3578,17 @@ def _has_repricing_fallback_taker_escalation_lineage(
             continue
         if str(payload.get("market_id", "")) != snapshot.market_id:
             continue
+        payload_token_id = str(payload.get("token_id", "")).strip()
+        if payload_token_id and payload_token_id != position.token_id:
+            continue
         order_id = str(payload.get("order_id", "")).strip()
         if not order_id:
             continue
         diagnostics = payload.get("diagnostics")
-        if (
-            isinstance(diagnostics, Mapping)
-            and bool(diagnostics.get("repricing_fallback_taker_escalated", False))
+        if not isinstance(diagnostics, Mapping):
+            continue
+        if bool(diagnostics.get("repricing_fallback_taker_escalated", False)) or bool(
+            diagnostics.get("repricing_fallback_probe_taker_active", False)
         ):
             submitted_escalated_by_order_id[order_id] = True
 
@@ -3391,6 +3598,9 @@ def _has_repricing_fallback_taker_escalation_lineage(
         if not isinstance(payload, Mapping):
             continue
         if str(payload.get("market_id", "")) != snapshot.market_id:
+            continue
+        payload_token_id = str(payload.get("token_id", "")).strip()
+        if payload_token_id and payload_token_id != position.token_id:
             continue
         if event_type in {"trade.closed", "position.closed"}:
             return False
@@ -3406,7 +3616,11 @@ def _has_repricing_fallback_taker_escalation_lineage(
         order_id = str(payload.get("order_id", "")).strip()
         if not order_id:
             return False
-        return bool(submitted_escalated_by_order_id.get(order_id, False))
+        if submitted_escalated_by_order_id.get(order_id, False):
+            return True
+        signal_type = str(payload.get("signal_type", "")).strip().lower()
+        execution_route = str(payload.get("execution_route", "")).strip().lower()
+        return signal_type == "repricing_edge" and execution_route == "taker"
     return False
 
 

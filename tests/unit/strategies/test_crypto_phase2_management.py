@@ -847,8 +847,10 @@ def test_update_route_policy_state_switches_to_more_aggressive_after_expiry_clus
     )
 
     assert state.route_bias == "more_aggressive"
+    assert state.repricing_route_stage == "escalation"
     assert state.taker_urgency_adjustment < 0.0
     assert state.cooldown_until > now
+    assert state.repricing_route_cooldown_until == now
 
 
 def test_update_route_policy_state_respects_cooldown_and_does_not_oscillate() -> None:
@@ -886,6 +888,31 @@ def test_update_route_policy_state_respects_cooldown_and_does_not_oscillate() ->
     )
 
     assert second.route_bias == "more_aggressive"
+    assert second.repricing_route_stage == "escalation"
+
+
+def test_update_route_policy_state_enters_repricing_cooldown_on_more_passive_feedback() -> None:
+    route_key = build_route_policy_key(underlying="BTC", event_family="dip", signal_type="repricing_edge")
+    now = datetime(2026, 3, 28, 0, 0, tzinfo=timezone.utc)
+    state = update_route_policy_state(
+        route_key=route_key,
+        previous=None,
+        feedback=CryptoExecutionFeedback(
+            maker_fill_rate=0.5,
+            taker_shortfall_bps=180.0,
+            repeated_expiration_rate=0.0,
+            repeated_stop_out_rate=0.8,
+            recommended_route_bias="more_passive",
+        ),
+        sample_count=6,
+        as_of=now,
+        min_samples=3,
+        cooldown_seconds=180,
+    )
+
+    assert state.route_bias == "more_passive"
+    assert state.repricing_route_stage == "cooldown"
+    assert state.repricing_route_cooldown_until == now + timedelta(seconds=180)
 
 
 def test_summarize_market_probation_state_promotes_probation_and_quarantine() -> None:

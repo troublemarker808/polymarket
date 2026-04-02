@@ -177,6 +177,61 @@ def test_final_scorecard_route_stage_flags_signature_concentration_and_maps_acti
     assert scorecard.operator_summary.startswith("Primary blocker is signature-level loss concentration")
 
 
+def test_final_scorecard_does_not_fail_scan_quality_for_expected_policy_blocked_series() -> None:
+    filtered = _digest(
+        label="filtered",
+        status="running",
+        closed_trade_count=0,
+        closed_trade_net_pnl=0.0,
+        submitted_notional=5.0,
+        edge_capture_ratio=0.0,
+        average_trade_expected_edge_bps=0.0,
+        average_trade_execution_drag_bps=0.0,
+    )
+    filtered = replace(
+        filtered,
+        signals_generated=1,
+        submitted_orders=1,
+        closed_trade_count=0,
+        closed_trade_net_pnl=0.0,
+    )
+    unfiltered = replace(filtered, label="unfiltered")
+    scorecard = build_crypto_phase2_final_scorecard(
+        CryptoPhase2SuiteResult(
+            generated_at=datetime(2026, 4, 1, tzinfo=UTC),
+            snapshot_path="snapshot.jsonl",
+            selection_output_dir="selection",
+            selection_blocked_series_keys=("when-will-bitcoin-hit-150k",),
+            unfiltered_replay=unfiltered,
+            filtered_replay=filtered,
+            final_scorecard=cast(Any, None),
+        )
+    )
+
+    assert scorecard.route_stage_statuses["scan_quality"] == "pass"
+    assert scorecard.route_stage_blockers["scan_quality"] == ()
+    assert scorecard.next_constrained_action != "repair scan/selection input quality before adjusting execution thresholds."
+
+
+def test_final_scorecard_does_not_fail_selection_for_expected_filtered_order_delta() -> None:
+    filtered = _digest(
+        label="filtered",
+        status="running",
+        closed_trade_count=0,
+        closed_trade_net_pnl=0.0,
+        submitted_notional=5.0,
+        edge_capture_ratio=0.0,
+        average_trade_expected_edge_bps=0.0,
+        average_trade_execution_drag_bps=0.0,
+    )
+    filtered = replace(filtered, signals_generated=5, submitted_orders=5, submitted_notional=25.0)
+    unfiltered = replace(filtered, label="unfiltered", signals_generated=7, submitted_orders=6, submitted_notional=30.0)
+    scorecard = build_crypto_phase2_final_scorecard(_suite(filtered=filtered, unfiltered=unfiltered))
+
+    assert scorecard.route_stage_statuses["selection_pass_through"] == "pass"
+    assert scorecard.route_stage_blockers["selection_pass_through"] == ()
+
+
 def _suite(*, filtered: CryptoPhase2ReplayDigest, unfiltered: CryptoPhase2ReplayDigest) -> CryptoPhase2SuiteResult:
     return CryptoPhase2SuiteResult(
         generated_at=datetime(2026, 4, 1, tzinfo=UTC),

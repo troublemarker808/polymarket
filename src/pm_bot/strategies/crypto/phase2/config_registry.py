@@ -34,6 +34,7 @@ class CryptoPhase2ResolvedConfig:
     repricing_fallback_probe_taker_max_entry_premium_bps: float
     repricing_fallback_probe_min_net_edge_bps: float
     repricing_fallback_probe_notional_multiplier: float
+    repricing_fallback_probe_allow_on_maker_fallback: bool
     repricing_fallback_taker_retry_max_entry_premium_bps: float | None
     repricing_fallback_taker_escalation_max_spread_bps: float | None
     repricing_fallback_taker_escalation_min_net_edge_bps: float | None
@@ -258,6 +259,7 @@ def _base_resolved_config(base: "CryptoPhase2Config") -> CryptoPhase2ResolvedCon
         repricing_fallback_probe_taker_max_entry_premium_bps=base.repricing_fallback_probe_taker_max_entry_premium_bps,
         repricing_fallback_probe_min_net_edge_bps=base.repricing_fallback_probe_min_net_edge_bps,
         repricing_fallback_probe_notional_multiplier=base.repricing_fallback_probe_notional_multiplier,
+        repricing_fallback_probe_allow_on_maker_fallback=base.repricing_fallback_probe_allow_on_maker_fallback,
         repricing_fallback_taker_retry_max_entry_premium_bps=base.repricing_fallback_taker_retry_max_entry_premium_bps,
         repricing_fallback_taker_escalation_max_spread_bps=base.repricing_fallback_taker_escalation_max_spread_bps,
         repricing_fallback_taker_escalation_min_net_edge_bps=base.repricing_fallback_taker_escalation_min_net_edge_bps,
@@ -487,6 +489,7 @@ def _apply_overrides(
             "counterfactual_entry_gate_enabled",
             "market_probation_enabled",
             "repricing_fallback_probe_taker_enabled",
+            "repricing_fallback_probe_allow_on_maker_fallback",
             "family_trade_budget_enabled",
             "family_pnl_notional_haircut_enabled",
             "fragile_closer_notional_haircut_enabled",

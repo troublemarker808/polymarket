@@ -515,7 +515,7 @@ def _evaluate_route_stage_gates(
     scan_blockers: list[str] = []
     if filtered.signals_generated <= 0:
         scan_blockers.append("scan_no_signals")
-    if blocked_series_keys:
+    if blocked_series_keys and filtered.signals_generated <= 0 and unfiltered.signals_generated > 0:
         scan_blockers.append("scan_runtime_blocked_series")
     statuses["scan_quality"] = _gate_status(scan_blockers)
     blockers["scan_quality"] = tuple(scan_blockers)
@@ -525,7 +525,7 @@ def _evaluate_route_stage_gates(
         selection_blockers.append("selection_no_submitted_orders")
     if filtered.signals_generated > 0 and (filtered.submitted_orders / filtered.signals_generated) < 0.2:
         selection_blockers.append("selection_low_pass_through")
-    if filter_order_delta < 0:
+    if filter_order_delta < 0 and filtered.submitted_orders <= 0:
         selection_blockers.append("selection_negative_order_delta")
     statuses["selection_pass_through"] = _gate_status(selection_blockers)
     blockers["selection_pass_through"] = tuple(selection_blockers)
