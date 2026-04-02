@@ -1,4 +1,4 @@
-# polymarket_bot2.0
+# polymarket
 
 Polymarket V1 bot planning repository focused on three isolated category engines:
 
